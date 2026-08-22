@@ -94,10 +94,11 @@ Demo 只用于了解已证明的 Photoshop 操作和建立 JSX 基准。不得�
 | 2026-08-22 | `tools/uxp_validation_bridge.ps1` + loopback POST | PASS：本机 bridge 返回 200 和 `render-plan/v1`，一次握手后退出；UXP 内调用待实机 | `docs/验证/UXP技术可行性验证报告-阶段1.md` |
 | 2026-08-22 | 样本审计复核 | 选定 `G-详情-03.psd`（单框）和 `G-详情-05-细节.psd`（四框）；确认 `G-详情-01` 与 backup 哈希重复 | `docs/验证/UXP技术可行性验证报告-阶段1.md` |
 | 2026-08-22 | Git 基线检查 | 初次在受限沙箱中创建分支失败；获准写入 Git 元数据后已创建 `codex/uxp-validation-v1`。`.gitignore` 排除样本和生成物 | `docs/验证/UXP技术可行性验证报告-阶段1.md` |
+| 2026-08-22 | 首个白名单基线提交 | PASS：只提交治理、PRD、验证插件和工具；`需求样本/` 未进入提交 | `4ad6be211030c9ad82bc7f5dbfc79caeb5e39c59` |
 
 ## 交接
 
 - 已完成：需求、决策、范围和验收门已写入仓库；完成本地 UXP Manifest v5 探针、RenderPlan 样例、静态预检脚本、样本选择和计时/输出核对计划。
 - 遗留问题：Photoshop 精确版本、UXP 安装、通信、真实渲染、可编辑 PSD、失败恢复和 JSX 同机基准均未验证。
 - 下一步：用户通过 UU 远程提供 Photoshop 版本和机器信息；在获得安装动作确认后加载 `uxp-validation-plugin`，先运行只读 probe/握手，再在模板副本上开启渲染适配器。
-- 最后提交：将在完成本轮复核后写入此处。
+- 阶段 1 基线提交：`4ad6be211030c9ad82bc7f5dbfc79caeb5e39c59`；本轮交接更新见分支最新提交。

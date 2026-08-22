@@ -14,6 +14,7 @@
 | 2026-08-22 | bundled Node `--check uxp-validation-plugin/main.js` | PASS：插件 JavaScript 语法有效 | `uxp-validation-plugin/main.js` |
 | 2026-08-22 | 启动 `tools/uxp_validation_bridge.ps1` 后向 `http://127.0.0.1:17842/handshake` 发送协议探针 | PASS：返回 200、`render-plan/v1` 和会话 ID；接受一次握手后退出 | `tools/uxp_validation_bridge.ps1`（PowerShell 到 PowerShell；UXP 内调用待实机） |
 | 2026-08-22 | `git switch -c codex/uxp-validation-v1` | 初次受沙箱权限阻止；获得 Git 元数据写入批准后成功创建验证分支 | `git branch --show-current` |
+| 2026-08-22 | 白名单暂存、`git diff --cached --check`、凭据/大文件复核和 root commit | PASS：首个基线提交完成，样本未被跟踪 | `4ad6be211030c9ad82bc7f5dbfc79caeb5e39c59` |
 
 ## 当前验收矩阵状态
 
@@ -27,7 +28,7 @@
 
 ## 安全基线策略
 
-样本目录、PSD/PSB、`output`、缓存、日志、UXP 打包文件和凭据已加入 `.gitignore`。首个提交白名单是 `AGENTS.md`、`README.md`、PRD、`docs/`、`uxp-validation-plugin/`、`tools/` 和 `.gitignore`，不包含 `需求样本/`。验证分支为 `codex/uxp-validation-v1`；提交前执行白名单暂存、`git diff --cached --check` 和凭据/大文件复核。
+样本目录、PSD/PSB、`output`、缓存、日志、UXP 打包文件和凭据已加入 `.gitignore`。首个提交白名单是 `AGENTS.md`、`README.md`、PRD、`docs/`、`uxp-validation-plugin/`、`tools/` 和 `.gitignore`，不包含 `需求样本/`。验证分支为 `codex/uxp-validation-v1`；提交 `4ad6be211030c9ad82bc7f5dbfc79caeb5e39c59` 已通过暂存区空白、凭据和大文件复核。
 
 ## 实机阻塞与下一动作
 
