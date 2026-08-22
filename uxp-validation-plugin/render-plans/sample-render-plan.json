@@ -1,0 +1,93 @@
+{
+  "schema": "render-plan/v1",
+  "job_id": "uxp-validation-sample-001",
+  "template_group_id": "sample-first-group",
+  "source_batch_id": "sample-first-group-local",
+  "input_policy": {
+    "source_files_read_only": true,
+    "template_copies_only": true,
+    "allow_generated_imagery": false
+  },
+  "output": {
+    "directory": "D:/uxp-validation-output/sample-001",
+    "jpg": {
+      "enabled": true,
+      "quality": 94,
+      "color_profile": "sRGB",
+      "overwrite": false
+    },
+    "editable_psd": {
+      "enabled": true,
+      "overwrite": false
+    }
+  },
+  "pages": [
+    {
+      "page_id": "G-详情-03",
+      "template_copy": "sample-copies/G-详情-03.psd",
+      "template_sha256": "b94e7458a33f645e322f30efde675ccb268be5a72ca2ff4b7618f241eed14a35",
+      "generation": { "mode": "once_per_variant", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-03.frame-2",
+          "target": {
+            "layer_path": "2",
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": {
+            "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3750.jpg",
+            "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57"
+          },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "primary_product"
+        }
+      ]
+    },
+    {
+      "page_id": "G-详情-05-细节",
+      "template_copy": "sample-copies/G-详情-05-细节.psd",
+      "template_sha256": "69bf44a64e47cb8d6817fa8589888163b14ab08a19a0bcfcee02352c3392f5ef",
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-05.frame-3",
+          "target": { "layer_path": "3", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3751.jpg", "sha256": "f2862b0162aa2fb6bf969c88e9df9f0ec4839e5565b0a45ccf4af8b3721e0df3" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "detail"
+        },
+        {
+          "frame_id": "G-详情-05.frame-7",
+          "target": { "layer_path": "7", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3752.jpg", "sha256": "99f7bebd5a6d7cab862e82fd084494fb1ac99c5f4108cc3c0ce8258fe2e08477" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "detail"
+        },
+        {
+          "frame_id": "G-详情-05.frame-11",
+          "target": { "layer_path": "11", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3755.jpg", "sha256": "868e85930c3996e2565490a89e80154cc6ef26edabf58044e635b475779079ca" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "detail"
+        },
+        {
+          "frame_id": "G-详情-05.frame-15",
+          "target": { "layer_path": "15", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3756.jpg", "sha256": "4b219fd1915c2ec045744223b5e31dec3679154d94ff65b4e28a20fd278d11eb" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "detail"
+        }
+      ]
+    }
+  ]
+}

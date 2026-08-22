@@ -1,0 +1,25 @@
+# User-provided samples and Photoshop documents are local test inputs only.
+需求样本/
+**/*.psd
+**/*.psb
+# Generated inspection, render, cache, and packaging outputs.
+**/output/
+**/.cache/
+**/cache/
+**/tmp/
+*.ccx
+*.uxp
+*.log
+
+# Local credentials and machine-specific settings.
+.env
+.env.*
+!.env.example
+secrets/
+**/credentials.json
+
+# Tool and editor noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
