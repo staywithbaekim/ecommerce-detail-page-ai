@@ -9,7 +9,7 @@ Build the Windows desktop application defined by the signed PRD. Photoshop is a 
 Read these sources in order before changing behavior:
 
 1. `项目总览.md` defines the active project flow and reading entry points.
-2. `产品需求文档-电商详情页智能生产系统-PRD-1.0.md` is the signed product baseline.
+2. `产品需求文档-电商详情页智能生产系统-PRD-1.1.md` is the signed product baseline and the only active product requirement source.
 3. Approved records under `docs/架构决策/` define technical decisions without lowering PRD goals.
 4. The active brief under `docs/任务/` defines the current bounded outcome.
 5. `docs/验收矩阵.md` defines traceable verification.
