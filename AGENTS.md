@@ -8,11 +8,14 @@ Build the Windows desktop application defined by the signed PRD. Photoshop is a 
 
 Read these sources in order before changing behavior:
 
-1. `产品需求文档-电商详情页智能生产系统-PRD-1.0.md` is the signed product baseline.
-2. Approved records under `docs/架构决策/` define technical decisions without lowering PRD goals.
-3. The active brief under `docs/任务/` defines the current bounded outcome.
-4. `docs/验收矩阵.md` defines traceable verification.
-5. `docs/当前项目状态.md` records the latest handoff and blockers.
+1. `项目总览.md` defines the active project flow and reading entry points.
+2. `产品需求文档-电商详情页智能生产系统-PRD-1.0.md` is the signed product baseline.
+3. Approved records under `docs/架构决策/` define technical decisions without lowering PRD goals.
+4. The active brief under `docs/任务/` defines the current bounded outcome.
+5. `docs/验收矩阵.md` defines traceable verification.
+6. `docs/当前项目状态.md` records the latest handoff and blockers.
+
+Historical reports under `docs/验证/` and archived transport packages are not default reading inputs. Read them only when the active task explicitly needs their evidence or a technical contract.
 
 Chat conclusions are not durable until they are reflected in the appropriate repository document. A newer approved change must update the affected baseline or decision record instead of silently contradicting it.
 
@@ -25,8 +28,8 @@ Chat conclusions are not durable until they are reflected in the appropriate rep
 - Do not guess missing size-table values or missing required product assets.
 - Keep AI and product rules outside the Photoshop execution adapter.
 - Preserve a renderer-neutral `RenderPlan` boundary so Photoshop UXP, JSX, or a future renderer can consume the same plan.
-- The existing external Demo is evidence and a benchmark only. Do not make the new application depend on its fixed templates, fixed page roles, or source tree.
-- UXP v5 is the approved first validation candidate, not a production choice until the validation gates pass.
+- The existing external Demo is evidence and an operation reference only. Do not make the new application depend on its fixed templates, fixed page roles, or source tree.
+- UXP v5 is the approved V1 Photoshop execution adapter; keep its validated safety gates and renderer-neutral `RenderPlan` boundary.
 - Do not add account systems, payments, cloud template sync, platform upload, or other PRD exclusions to V1.
 - Never commit API keys, credentials, customer data, generated PSD/JPG output, caches, or temporary render files.
 - Preserve unrelated user changes and untracked files.

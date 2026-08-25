@@ -10,6 +10,10 @@
 *.ccx
 *.uxp
 *.log
+uxp-validation-*.zip
+
+# External operation-reference Demo; retained locally but not part of V1 source.
+buyershow_v14_dev/
 
 # Local credentials and machine-specific settings.
 .env
@@ -23,3 +27,6 @@ secrets/
 Thumbs.db
 .idea/
 .vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/

@@ -1,0 +1,68 @@
+{
+  "schema": "render-plan/v1",
+  "job_id": "uxp-g03-single-frame-001",
+  "template_group_id": "sample-first-group",
+  "source_batch_id": "sample-first-group-local",
+  "validation": {
+    "mode": "single_frame_copy",
+    "scope": "G-详情-03 layer path 2 only"
+  },
+  "input_policy": {
+    "source_files_read_only": true,
+    "template_copies_only": true,
+    "allow_generated_imagery": false
+  },
+  "output": {
+    "jpg": {
+      "enabled": true,
+      "quality": 12,
+      "color_profile": "sRGB IEC61966-2.1",
+      "conversion_intent": "relative_colorimetric",
+      "black_point_compensation": true,
+      "dither": true,
+      "embed_color_profile": true,
+      "overwrite": false
+    },
+    "editable_psd": {
+      "enabled": true,
+      "overwrite": false
+    }
+  },
+  "pages": [
+    {
+      "page_id": "G-详情-03",
+      "template_copy": "fixture/template/G-详情-03-validation-copy.psd",
+      "template_sha256": "b94e7458a33f645e322f30efde675ccb268be5a72ca2ff4b7618f241eed14a35",
+      "expected_canvas": [790, 1252],
+      "generation": { "mode": "once_per_variant", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-03.frame-2",
+          "target": {
+            "layer_path": "2",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": false,
+            "audit_name": "back_main",
+            "registered_frame": [0, 0, 790, 1252],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": {
+            "relative_path": "fixture/source/7Y9A3760.jpg",
+            "sha256": "04720404a97fbe6dfd6eb138946c129545f37020f81346d98aa0616668c0b0db"
+          },
+          "fit": "cover",
+          "crop": {
+            "anchor": "center",
+            "focal_point": [0.5, 0.5],
+            "overflow_policy": "clip_to_registered_frame"
+          },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "back_product"
+        }
+      ]
+    }
+  ]
+}

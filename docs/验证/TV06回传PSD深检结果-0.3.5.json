@@ -1,0 +1,53 @@
+{
+  "schema": "uxp-tv06-return-deep-verification/v1",
+  "passed": true,
+  "baseline_sha256": "69BF44A64E47CB8D6817FA8589888163B14AB08A19A0BCFCEE02352C3392F5EF",
+  "output_psd_sha256": "193CABA71A7603F0D313D149E8966EE071C8D62BB405D21371E1D502063DEE6E",
+  "evidence_sha256": "FD9CF79750B1EC1B5FC407A282ECA93B292BC38D2BC281DB6EFB9720ED4045E3",
+  "document": {
+    "width": 790,
+    "height": 1115,
+    "depth": 8,
+    "color_mode": 3,
+    "layer_count_recursive": 46,
+    "type_layer_count": 15
+  },
+  "targets": [
+    {
+      "path": [3],
+      "layer_id": 541,
+      "name": "care_label",
+      "source_name": "7Y9A3762.jpg",
+      "payload_sha256": "B7161B1A39447258C39464706CCED111B0736189CFC20C608CB1FAE5353B3DE4",
+      "editable_smart_object": true
+    },
+    {
+      "path": [7],
+      "layer_id": 540,
+      "name": "collar",
+      "source_name": "7Y9A3751.jpg",
+      "payload_sha256": "F2862B0162AA2FB6BF969C88E9DF9F0EC4839E5565B0A45CCF4AF8B3721E0DF3",
+      "editable_smart_object": true
+    },
+    {
+      "path": [11],
+      "layer_id": 539,
+      "name": " sleeve",
+      "source_name": "7Y9A3755.jpg",
+      "payload_sha256": "868E85930C3996E2565490A89E80154CC6EF26EDABF58044E635B475779079CA",
+      "editable_smart_object": true
+    },
+    {
+      "path": [15],
+      "layer_id": 538,
+      "name": " front",
+      "source_name": "7Y9A3750.jpg",
+      "payload_sha256": "C04DDDD4C7802277D9996F347BA6FD4285987147941EED5A69638E0443696D57",
+      "editable_smart_object": true
+    }
+  ],
+  "unchanged_non_target_layers": 42,
+  "decoded_pixel_layers_compared": 37,
+  "document_reopened_by_parser": true,
+  "manual_photoshop_reopen_screenshot_required": true
+}

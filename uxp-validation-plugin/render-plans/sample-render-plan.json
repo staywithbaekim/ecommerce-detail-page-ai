@@ -13,7 +13,11 @@
     "jpg": {
       "enabled": true,
       "quality": 94,
-      "color_profile": "sRGB",
+      "color_profile": "sRGB IEC61966-2.1",
+      "conversion_intent": "relative_colorimetric",
+      "black_point_compensation": true,
+      "dither": true,
+      "embed_color_profile": true,
       "overwrite": false
     },
     "editable_psd": {
@@ -32,11 +36,15 @@
           "frame_id": "G-详情-03.frame-2",
           "target": {
             "layer_path": "2",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "audit_name": "back_main",
+            "registered_frame": [0, 0, 790, 1252],
             "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
           },
           "source": {
-            "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3750.jpg",
-            "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57"
+            "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3760.jpg",
+            "sha256": "04720404a97fbe6dfd6eb138946c129545f37020f81346d98aa0616668c0b0db"
           },
           "fit": "cover",
           "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
@@ -53,8 +61,8 @@
       "frames": [
         {
           "frame_id": "G-详情-05.frame-3",
-          "target": { "layer_path": "3", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
-          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3751.jpg", "sha256": "f2862b0162aa2fb6bf969c88e9df9f0ec4839e5565b0a45ccf4af8b3721e0df3" },
+          "target": { "layer_path": "3", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "audit_name": "care_label", "registered_frame": [406, 698, 766, 985], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3762.jpg", "sha256": "b7161b1a39447258c39464706cced111b0736189cfc20c608cb1fae5353b3de4" },
           "fit": "cover",
           "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
           "transform": { "scale": 1.0, "offset_px": [0, 0] },
@@ -62,8 +70,8 @@
         },
         {
           "frame_id": "G-详情-05.frame-7",
-          "target": { "layer_path": "7", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
-          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3752.jpg", "sha256": "99f7bebd5a6d7cab862e82fd084494fb1ac99c5f4108cc3c0ce8258fe2e08477" },
+          "target": { "layer_path": "7", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "audit_name": "collar", "registered_frame": [23, 693, 387, 980], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3751.jpg", "sha256": "f2862b0162aa2fb6bf969c88e9df9f0ec4839e5565b0a45ccf4af8b3721e0df3" },
           "fit": "cover",
           "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
           "transform": { "scale": 1.0, "offset_px": [0, 0] },
@@ -71,7 +79,7 @@
         },
         {
           "frame_id": "G-详情-05.frame-11",
-          "target": { "layer_path": "11", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "target": { "layer_path": "11", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "audit_name": "\tsleeve", "registered_frame": [443, 276, 765, 510], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
           "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3755.jpg", "sha256": "868e85930c3996e2565490a89e80154cc6ef26edabf58044e635b475779079ca" },
           "fit": "cover",
           "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
@@ -80,8 +88,8 @@
         },
         {
           "frame_id": "G-详情-05.frame-15",
-          "target": { "layer_path": "15", "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
-          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3756.jpg", "sha256": "4b219fd1915c2ec045744223b5e31dec3679154d94ff65b4e28a20fd278d11eb" },
+          "target": { "layer_path": "15", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "audit_name": "\tfront", "registered_frame": [23, 188, 422, 672], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"] },
+          "source": { "relative_path": "需求样本/第一组/款式原图/A馨妈6015-58/7Y9A3750.jpg", "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57" },
           "fit": "cover",
           "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
           "transform": { "scale": 1.0, "offset_px": [0, 0] },

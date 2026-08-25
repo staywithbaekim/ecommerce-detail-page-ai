@@ -1,0 +1,326 @@
+{
+  "schema": "render-plan/v1",
+  "job_id": "uxp-a6015-whole-product-001",
+  "template_group_id": "sample-first-group",
+  "source_batch_id": "sample-first-group-local",
+  "validation": {
+    "mode": "whole_product_copy",
+    "scope": "A馨妈6015-58 six calibrated non-size pages and eleven registered frames"
+  },
+  "input_policy": {
+    "source_files_read_only": true,
+    "template_copies_only": true,
+    "allow_generated_imagery": false
+  },
+  "output": {
+    "jpg": {
+      "enabled": true,
+      "quality": 12,
+      "color_profile": "sRGB IEC61966-2.1",
+      "conversion_intent": "relative_colorimetric",
+      "black_point_compensation": true,
+      "dither": true,
+      "embed_color_profile": true,
+      "overwrite": false
+    },
+    "editable_psd": {
+      "enabled": false,
+      "overwrite": false
+    }
+  },
+  "pages": [
+    {
+      "page_id": "G-详情-01",
+      "template_copy": "fixture/template/G-详情-01-validation-copy.psd",
+      "template_sha256": "164e4af1cf934f6a6d1543d912b792bbdef7caf6dd42520b157900d060eb62f4",
+      "expected_canvas": [790, 1327],
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-01.frame-3",
+          "target": {
+            "layer_path": "3",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": false,
+            "audit_name": "front_main",
+            "registered_frame": [0, 0, 790, 1327],
+            "window": {
+              "layer_path": "1",
+              "layer_path_order": "psd_bottom_to_top",
+              "expected_kind": "pixel",
+              "expected_visible": true,
+              "expected_clipping": false
+            },
+            "superseded_layers": [
+              { "layer_path": "2", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": false }
+            ],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": {
+            "relative_path": "fixture/source/7Y9A3750.jpg",
+            "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57"
+          },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "front_product"
+        }
+      ]
+    },
+    {
+      "page_id": "G-详情-03",
+      "template_copy": "fixture/template/G-详情-03-validation-copy.psd",
+      "template_sha256": "b94e7458a33f645e322f30efde675ccb268be5a72ca2ff4b7618f241eed14a35",
+      "expected_canvas": [790, 1252],
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-03.frame-2",
+          "target": {
+            "layer_path": "2",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": false,
+            "audit_name": "back_main",
+            "registered_frame": [0, 0, 790, 1252],
+            "superseded_layers": [],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": {
+            "relative_path": "fixture/source/7Y9A3760.jpg",
+            "sha256": "04720404a97fbe6dfd6eb138946c129545f37020f81346d98aa0616668c0b0db"
+          },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "back_product"
+        }
+      ]
+    },
+    {
+      "page_id": "G-详情-04-面料",
+      "template_copy": "fixture/template/G-详情-04-面料-validation-copy.psd",
+      "template_sha256": "789d4dfc56c5a8a64662ea96ac24ff5612fe612c7c29b57fe681b5c7cc7addcb",
+      "expected_canvas": [790, 1182],
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-04.frame-4",
+          "target": {
+            "layer_path": "4",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": true,
+            "audit_name": "\tfabric_detail",
+            "registered_frame": [0, 192, 790, 1165],
+            "window": {
+              "layer_path": "1",
+              "layer_path_order": "psd_bottom_to_top",
+              "expected_kind": "pixel",
+              "expected_visible": true,
+              "expected_clipping": false
+            },
+            "superseded_layers": [
+              { "layer_path": "3", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": {
+            "relative_path": "fixture/source/7Y9A3758.jpg",
+            "sha256": "ebc7eafa71cdfd97bb03de773cd0548d5d720da4460bf2a0c1db19736d89d91d"
+          },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "fabric_detail"
+        }
+      ]
+    },
+    {
+      "page_id": "G-详情-05-细节",
+      "template_copy": "fixture/template/G-详情-05-细节-validation-copy.psd",
+      "template_sha256": "69bf44a64e47cb8d6817fa8589888163b14ab08a19a0bcfcee02352c3392f5ef",
+      "expected_canvas": [790, 1115],
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "G-详情-05.frame-3",
+          "target": {
+            "layer_path": "3",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": true,
+            "audit_name": "care_label",
+            "registered_frame": [406, 698, 766, 985],
+            "window": { "layer_path": "1", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "2", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3762.jpg", "sha256": "b7161b1a39447258c39464706cced111b0736189cfc20c608cb1fae5353b3de4" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "care_label_detail"
+        },
+        {
+          "frame_id": "G-详情-05.frame-7",
+          "target": {
+            "layer_path": "7",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": true,
+            "audit_name": "collar",
+            "registered_frame": [23, 693, 387, 980],
+            "window": { "layer_path": "5", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "6", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3751.jpg", "sha256": "f2862b0162aa2fb6bf969c88e9df9f0ec4839e5565b0a45ccf4af8b3721e0df3" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "collar_detail"
+        },
+        {
+          "frame_id": "G-详情-05.frame-11",
+          "target": {
+            "layer_path": "11",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": true,
+            "audit_name": "\tsleeve",
+            "registered_frame": [443, 276, 765, 510],
+            "window": { "layer_path": "9", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "10", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3755.jpg", "sha256": "868e85930c3996e2565490a89e80154cc6ef26edabf58044e635b475779079ca" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "sleeve_detail"
+        },
+        {
+          "frame_id": "G-详情-05.frame-15",
+          "target": {
+            "layer_path": "15",
+            "layer_path_order": "psd_bottom_to_top",
+            "expected_kind": "smartObject",
+            "expected_visible": true,
+            "expected_clipping": true,
+            "audit_name": "\tfront",
+            "registered_frame": [23, 188, 422, 672],
+            "window": { "layer_path": "13", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "14", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ],
+            "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3750.jpg", "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57" },
+          "fit": "cover",
+          "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5],
+          "transform": { "scale": 1.0, "offset_px": [0, 0] },
+          "role": "front_product"
+        }
+      ]
+    },
+    {
+      "page_id": "H-模特图-01",
+      "template_copy": "fixture/template/H-模特图-01-validation-copy.psd",
+      "template_sha256": "764c95e05f2229fd7ee4715411270c870446e3bdd7ebcbb0b602814ea536d5e7",
+      "expected_canvas": [790, 2425],
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "H-模特图-01.frame-4",
+          "target": {
+            "layer_path": "4", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true,
+            "audit_name": "20250727_174936", "registered_frame": [15, 1258, 780, 2282],
+            "window": { "layer_path": "1", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "2", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true },
+              { "layer_path": "3", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3760.jpg", "sha256": "04720404a97fbe6dfd6eb138946c129545f37020f81346d98aa0616668c0b0db" },
+          "fit": "cover", "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5], "transform": { "scale": 1.0, "offset_px": [0, 0] }, "role": "back_product"
+        },
+        {
+          "frame_id": "H-模特图-01.frame-9",
+          "target": {
+            "layer_path": "9", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true,
+            "audit_name": "20250727_175352", "registered_frame": [0, 101, 790, 1214],
+            "window": { "layer_path": "6", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "7", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true },
+              { "layer_path": "8", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3750.jpg", "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57" },
+          "fit": "cover", "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5], "transform": { "scale": 1.0, "offset_px": [0, 0] }, "role": "front_product"
+        }
+      ]
+    },
+    {
+      "page_id": "H-模特图-02",
+      "template_copy": "fixture/template/H-模特图-02-validation-copy.psd",
+      "template_sha256": "ca5e7a9aa2fcff67b431c1e39a79790d212f38f65e5823ebbfe7745792833599",
+      "expected_canvas": [790, 2546],
+      "generation": { "mode": "once_per_product", "variant_id": "default" },
+      "frames": [
+        {
+          "frame_id": "H-模特图-02.frame-4",
+          "target": {
+            "layer_path": "4", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true,
+            "audit_name": "back", "registered_frame": [0, 1339, 790, 2519],
+            "window": { "layer_path": "1", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "2", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true },
+              { "layer_path": "3", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3760.jpg", "sha256": "04720404a97fbe6dfd6eb138946c129545f37020f81346d98aa0616668c0b0db" },
+          "fit": "cover", "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5], "transform": { "scale": 1.0, "offset_px": [0, 0] }, "role": "back_product"
+        },
+        {
+          "frame_id": "H-模特图-02.frame-9",
+          "target": {
+            "layer_path": "9", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true,
+            "audit_name": "front", "registered_frame": [24, 32, 772, 1315],
+            "window": { "layer_path": "6", "layer_path_order": "psd_bottom_to_top", "expected_kind": "pixel", "expected_visible": true, "expected_clipping": false },
+            "superseded_layers": [
+              { "layer_path": "7", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true },
+              { "layer_path": "8", "layer_path_order": "psd_bottom_to_top", "expected_kind": "smartObject", "expected_visible": true, "expected_clipping": true }
+            ], "binding_evidence": ["layer_path", "clipping_structure", "visible_area"]
+          },
+          "source": { "relative_path": "fixture/source/7Y9A3750.jpg", "sha256": "c04dddd4c7802277d9996f347ba6fd4285987147941eed5a69638e0443696d57" },
+          "fit": "cover", "crop": { "anchor": "center", "focal_point": [0.5, 0.5], "overflow_policy": "clip_to_registered_frame" },
+          "target_point": [0.5, 0.5], "transform": { "scale": 1.0, "offset_px": [0, 0] }, "role": "front_product"
+        }
+      ]
+    }
+  ]
+}

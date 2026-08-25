@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "local.ecommerce.uxp-validation",
   "name": "UXP Validation Probe",
-  "version": "0.1.0",
+  "version": "0.4.7",
   "main": "index.html",
   "host": [
     {
@@ -34,9 +34,7 @@
   "requiredPermissions": {
     "localFileSystem": "fullAccess",
     "network": {
-      "domains": [
-        "http://127.0.0.1:17842"
-      ]
+      "domains": "all"
     }
   }
 }
