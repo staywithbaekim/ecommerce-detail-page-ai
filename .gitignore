@@ -3,6 +3,8 @@
 **/*.psd
 **/*.psb
 # Generated inspection, render, cache, and packaging outputs.
+**/bin/
+**/obj/
 **/output/
 **/.cache/
 **/cache/

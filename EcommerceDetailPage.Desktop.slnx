@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Desktop.App/Desktop.App.csproj" />
+    <Project Path="src/Desktop.Application/Desktop.Application.csproj" />
+    <Project Path="src/Desktop.Contracts/Desktop.Contracts.csproj" />
+    <Project Path="src/Desktop.Domain/Desktop.Domain.csproj" />
+    <Project Path="src/Desktop.Infrastructure/Desktop.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Desktop.App.UiTests/Desktop.App.UiTests.csproj" />
+    <Project Path="tests/Desktop.Application.Tests/Desktop.Application.Tests.csproj" />
+    <Project Path="tests/Desktop.Architecture.Tests/Desktop.Architecture.Tests.csproj" />
+    <Project Path="tests/Desktop.Contracts.Tests/Desktop.Contracts.Tests.csproj" />
+    <Project Path="tests/Desktop.Domain.Tests/Desktop.Domain.Tests.csproj" />
+    <Project Path="tests/Desktop.Infrastructure.Tests/Desktop.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
