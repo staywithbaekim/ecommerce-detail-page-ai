@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | 任务编号 | `TPL-01` |
-| 状态 | 实施中；`TPL-S0` 已通过，当前进入 `TPL-S1` |
+| 状态 | 实施中；`TPL-S0` 至 `TPL-S2` 已通过，当前进入 `TPL-S3` |
 | 建立日期 | 2026-08-27 |
 | 目标阶段 | 阶段 1：模板组管理、校准、增量修订和批次快照纵向实现 |
 | 产品基线 | PRD 1.5 |
@@ -421,7 +421,7 @@ SQLite 迁移至少增加 `template_groups`、`template_revisions`、`template_p
 - 同一 PSD 技术阻断连续出现两次、资源占用异常或批准方案无法满足结构证据时，停止 workaround 链并提交复现证据。
 - 任何源文件 hash 变化立即停止测试，隔离应用自有副本并复核写入路径；不得删除或“修复”用户源文件。
 - 发现需要改变 renderer-neutral RenderPlan、模板修订语义、模板包兼容或部署形态时，先形成 ADR，不在实现中静默改变。
-- 本任务书已由产品负责人于 2026-08-27 批准。当前在独立 Codex worktree 中从 TPL-S2 继续；`TPL-01` 验证记录、验收矩阵、当前状态和 reviewed diff 完成前不得交接 `AI-01`。
+- 本任务书已由产品负责人于 2026-08-27 批准。当前在独立 Codex worktree 中从 TPL-S3 继续；`TPL-01` 验证记录、验收矩阵、当前状态和 reviewed diff 完成前不得交接 `AI-01`。
 
 ## 19. 实施记录
 
@@ -442,3 +442,11 @@ SQLite 迁移至少增加 `template_groups`、`template_revisions`、`template_p
 - `ITemplateRepository` 与 `IBatchSnapshotRepository` 复用现有 `SqliteDesktopStore` singleton/唯一 `SqliteWriteQueue`；提交指针、修订图、草稿和快照重启恢复通过，已提交修订及同 batch 快照冲突被拒绝。
 - 聚焦测试为 Domain 26、Contracts 15、Infrastructure 21、Architecture 5；格式检查通过，完整 solution 构建 0 警告/0 错误、73 项测试通过。S1 不包含源 PSD 导入、WPF、文件 marker、五加一或模板包，不冒充这些行为完成。
 - 下一具体动作是 TPL-S2：把 S0 adapter 接入应用自有内部副本导入，完成 hash、重复确认和失败无半对象验证。
+
+### 2026-08-27：TPL-S2 源 PSD 只读导入与重复检测通过
+
+- 已实现只读 fingerprint、应用自有 staging、复制前/中/后长度与 SHA-256 核对，并在复制完成后进行内容 hash 判重；源绝对路径不进入 SQLite、manifest、日志或 RenderPlan。
+- 重复 PSD 进入明确确认状态，不自动删除用户源文件；保留现有副本或取消只清理本次应用自有 staging，继续则经过 S0 inspection 保存为独立资源。写命令按 `command_id` 幂等，同命令不同资源稳定冲突。
+- SQLite v3 新增 `template_resources`、`template_import_commands` 并继续复用唯一 store/writer；重启可恢复资源和命令。inspection/hash 不一致、重复查询、无效选择、SQLite 事务失败均不留下资源或内部 PSD 半对象；`.part` 清理失败返回 `TPL_IMPORT_CLEANUP_REQUIRED`。
+- 聚焦测试为 Application 12/12、Infrastructure 31/31；格式检查通过，完整 solution 构建 0 警告/0 错误、92 项测试通过。测试证明源 hash 不变、重复源均保留、成功重启恢复和 inspection/SQLite 失败回滚；临时字节 PSD + fake inspection 不冒充 S0 的真实结构证据。
+- 下一具体动作是 TPL-S3：按冻结 Figma 和交互规格实现 T-01/T-02/T-03 WPF 真实数据纵向链路，并在代表页面完成后打开实际应用进行产品视觉走查。

@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-截至 2026-08-27，`TPL-S0`、`TPL-S1` 已通过，`TPL-01` 仍在实施中，下一阶段为 `TPL-S2`。本文会随 S2-S7 持续追加；当前不得把 PSD 技术门、领域/持久化合同、Figma 上下文、历史 Photoshop 探针或测试数量写成模板纵向功能完成。
+截至 2026-08-27，`TPL-S0`、`TPL-S1`、`TPL-S2` 已通过，`TPL-01` 仍在实施中，下一阶段为 `TPL-S3`。本文会随 S3-S7 持续追加；当前不得把 PSD 技术门、领域/持久化合同、源 PSD 导入、Figma 上下文、历史 Photoshop 探针或测试数量写成模板纵向功能完成。
 
 ## 起点与范围
 
@@ -28,6 +28,14 @@
 - 冻结 `template-revision/v1` JSON Schema 和正例；未知主版本、绝对/逃逸路径、缺少结构签名、非组合容量和 Photoshop 私有字段负例均拒绝。
 - SQLite 从既有 checksum `desktop-v1-schema-001` 单调迁移到 v2；启动验证所有已应用 checksum，迁移在同一事务中执行。预置不兼容 v2 结构的故障注入证明失败后版本仍为 1、旧数据可读、v2 表未半创建。
 - `ITemplateRepository`、`IBatchSnapshotRepository` 都映射到已有 `SqliteDesktopStore` singleton，继续使用唯一 `SqliteWriteQueue`；模板修订、绑定、草稿和快照重启恢复通过。
+
+## TPL-S2：已通过
+
+- 新增只读源 PSD fingerprint、应用自有 staging 副本和复制前/中/后长度与 SHA-256 核对。目标路径只能由 `IPathPolicy` 解析为应用自有相对路径；源绝对路径只存在于当次 Application 请求，不进入 SQLite、manifest、日志或 RenderPlan。
+- 流程固定为“只读 fingerprint → 复制到 staging → 内容 hash 判重 → 明确选择”。重复时不删除用户源 PSD，也不自动写成第二个资源；保留现有副本或取消时只删除本次应用自有 staging，继续则经过 S0 inspection 后保存独立资源。
+- `command_id` 提供写入幂等；同命令不同资源返回 `TPL_IMPORT_COMMAND_CONFLICT`。SQLite v3 新增 `template_resources` 与 `template_import_commands`，继续复用唯一 `SqliteDesktopStore`/`SqliteWriteQueue`，重启后可按命令和 hash 恢复。
+- inspection 失败、inspection hash/长度不一致、重复查询失败、SQLite 外键/提交失败和无效重复选择均清理内部副本且不留下数据库半对象。临时 `.part` 清理失败不会覆盖原错误，而返回 `TPL_IMPORT_CLEANUP_REQUIRED`。
+- 真实文件端口测试比较源 SHA-256、内部副本 SHA-256 和清理结果；应用/文件/SQLite 串联测试证明成功重启恢复、inspection 失败零资源、重复源文件均保留、数据库事务失败回滚。测试使用临时 4-byte `.psd` 字节文件和 fake inspection，不冒充真实 PSD 结构验证；真实结构读取仍由已通过 S0 的隔离 worker 证据承担。
 
 实际命令：
 
@@ -58,15 +66,16 @@ dotnet test EcommerceDetailPage.Desktop.slnx -c Debug --no-build --no-restore
 | .NET client 聚焦测试 | 6/6 通过 |
 | TPL-S0 solution build | 0 警告、0 错误 |
 | TPL-S1 聚焦测试 | Domain 26/26；Contracts 15/15；Infrastructure 21/21；Architecture 5/5 |
+| TPL-S2 聚焦测试 | Application 12/12；Infrastructure 31/31；源 hash、重复确认、重启恢复、inspection/SQLite 失败清理均通过 |
 | 当前 solution build | 0 警告、0 错误 |
-| solution test | 73/73 通过：26 + 3 + 15 + 21 + 5 + 3 |
+| solution test | 92/92 通过：26 + 12 + 15 + 31 + 5 + 3 |
 
 ## 未完成项
 
-- TPL-S2 至 TPL-S7 的源 PSD 导入、T-01 至 T-04 WPF、校准、文件/数据库原子修订、五加一、模板包和最终交接。
+- TPL-S3 至 TPL-S7 的 T-01 至 T-04 WPF、校准、文件/数据库原子修订、五加一、模板包和最终交接。
 - 五页加第六页、旧批次快照隔离、重启恢复、全部提交点故障回滚和真实应用人工走查。
 - T-05 Photoshop 准确预览和真实 AI 学习不属于本任务实现范围，且不得用 mock 冒充通过。
 
 ## 下一动作
 
-进入 TPL-S2，在应用自有 staging 中实现源 PSD 的只读选择、内部副本、hash、S0 inspection、重复检测/明确确认和失败恢复；证明源 hash 前后不变、重复 PSD 不被自动删除且失败无半导入对象。
+进入 TPL-S3，重新按 `figma-design-to-code` 技能读取冻结 T-01/T-02/T-03 设计上下文，以真实 repository 投影实现模板库、模板详情和新建/增量/重复确认 WPF 纵向链路；完成代表页面后打开实际应用供产品负责人逐项视觉走查。

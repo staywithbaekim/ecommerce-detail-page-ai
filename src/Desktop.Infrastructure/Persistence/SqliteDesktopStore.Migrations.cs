@@ -148,6 +148,32 @@ public sealed partial class SqliteDesktopStore
                 ON template_revisions(group_id, revision_no);
             CREATE INDEX IF NOT EXISTS IX_template_pages_revision_order
                 ON template_pages(revision_id, order_index);
+            """),
+        new(3, "desktop-v3-template-import-schema-001", """
+            CREATE TABLE IF NOT EXISTS template_resources (
+                resource_id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                draft_id TEXT NOT NULL,
+                internal_relative_path TEXT NOT NULL UNIQUE,
+                length INTEGER NOT NULL CHECK(length > 0),
+                sha256 TEXT NOT NULL,
+                structure_signature TEXT NOT NULL,
+                inspection_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES template_groups(group_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS template_import_commands (
+                command_id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                FOREIGN KEY(resource_id) REFERENCES template_resources(resource_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_template_resources_sha256
+                ON template_resources(sha256);
+            CREATE INDEX IF NOT EXISTS IX_template_resources_draft
+                ON template_resources(group_id, draft_id);
             """)
     ];
 

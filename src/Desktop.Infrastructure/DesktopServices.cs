@@ -40,11 +40,15 @@ public static class DesktopServices
         services.AddSingleton<IAppInstanceStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<ITemplateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IBatchSnapshotRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplateResourceRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<TaskCoordinator>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<TemplatePageImportService>();
 
         services.AddSingleton<IPathPolicy>(_ => new LocalAppPathPolicy(options.RootDirectory));
         services.AddSingleton<IFileStore, AtomicFileStore>();
         services.AddSingleton<IManifestStore, JsonManifestStore>();
+        services.AddSingleton<ITemplateSourceFilePort, TemplateSourceFilePort>();
         services.AddSingleton(PsdInspectionWorkerOptions.ForInstalledApp());
         services.AddSingleton<IPsdInspectionPort, PsdInspectionWorkerClient>();
         services.AddSingleton<IRedactedLogger>(provider => new RedactingFileLogger(
