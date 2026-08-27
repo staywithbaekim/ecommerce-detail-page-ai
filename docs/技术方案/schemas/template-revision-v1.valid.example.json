@@ -1,0 +1,63 @@
+{
+  "schema_version": "template-revision/v1",
+  "revision": {
+    "revision_id": "revision_0001",
+    "group_id": "group_0001",
+    "revision_no": 1,
+    "rule_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "pages": [
+    {
+      "page_id": "page_0001",
+      "order": 0,
+      "name": "Detail 01",
+      "content_type": "normal_composition",
+      "generation_mode": "once_per_product",
+      "variant_capacity": null,
+      "enabled": true,
+      "template_resource_id": "resource_0001",
+      "template_file_id": "file_template_0001",
+      "frame_bindings": [
+        {
+          "frame_id": "frame_0001",
+          "layer_path": [2],
+          "layer_path_order": "psd_bottom_to_top",
+          "expected_layer": {
+            "layer_id": 257,
+            "kind": "smartObject",
+            "name_before": "product_frame",
+            "visible": true,
+            "clipping": false,
+            "user_mask": false,
+            "vector_mask": false,
+            "opacity": 255,
+            "blend_mode": "normal",
+            "structure_signature": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+          },
+          "superseded_layers": [],
+          "selection_requirement": {
+            "description": "Choose one source whose subject fits this registered frame.",
+            "criteria": [
+              { "key": "subject_count", "value": "one" }
+            ]
+          },
+          "layout_intent": {
+            "intent": "subject_complete",
+            "scale": 1.0,
+            "offset": { "x": 0, "y": 0 },
+            "safe_bounds": { "left": 0, "top": 0, "right": 790, "bottom": 1252 }
+          }
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "file_id": "file_template_0001",
+      "relative_path": "pages/page_0001/template.psd",
+      "length": 1048576,
+      "sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    }
+  ],
+  "created_at": "2026-08-27T12:00:00Z"
+}

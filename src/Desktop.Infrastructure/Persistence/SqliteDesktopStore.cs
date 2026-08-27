@@ -6,13 +6,12 @@ using Microsoft.Data.Sqlite;
 
 namespace Desktop.Infrastructure.Persistence;
 
-public sealed class SqliteDesktopStore :
+public sealed partial class SqliteDesktopStore :
     ITaskEventStore,
     ICheckpointStore,
     IAppInstanceStore,
     IAsyncDisposable
 {
-    private const int SchemaVersion = 1;
     private readonly string _connectionString;
     private readonly SqliteWriteQueue _writer;
 
@@ -217,88 +216,6 @@ public sealed class SqliteDesktopStore :
         await using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task ApplyMigrationsAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await using var transaction = (SqliteTransaction)await connection
-            .BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL,
-                checksum TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS app_instance (
-                instance_id TEXT PRIMARY KEY,
-                started_at TEXT NOT NULL,
-                exited_at TEXT NULL,
-                safe_exit INTEGER NOT NULL CHECK(safe_exit IN (0, 1))
-            );
-
-            CREATE TABLE IF NOT EXISTS tasks (
-                task_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                output_count INTEGER NOT NULL,
-                issue_count INTEGER NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS task_events (
-                event_id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                sequence_no INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                occurred_at TEXT NOT NULL,
-                page_id TEXT NULL,
-                payload_digest TEXT NOT NULL,
-                UNIQUE(task_id, sequence_no),
-                FOREIGN KEY(task_id) REFERENCES tasks(task_id) DEFERRABLE INITIALLY DEFERRED
-            );
-
-            CREATE TABLE IF NOT EXISTS checkpoints (
-                task_id TEXT NOT NULL,
-                style_id TEXT NOT NULL,
-                page_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                attempt INTEGER NOT NULL,
-                plan_digest TEXT NOT NULL,
-                bridge_execution_id TEXT NULL,
-                output_commit_state TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(task_id, style_id, page_id),
-                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS manifests (
-                manifest_id TEXT PRIMARY KEY,
-                relative_path TEXT NOT NULL,
-                length INTEGER NOT NULL,
-                sha256 TEXT NOT NULL,
-                state TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            """;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-        await using var versionCommand = connection.CreateCommand();
-        versionCommand.Transaction = transaction;
-        versionCommand.CommandText = """
-            INSERT OR IGNORE INTO schema_migrations(version, applied_at, checksum)
-            VALUES($version, $applied_at, $checksum);
-            """;
-        versionCommand.Parameters.AddWithValue("$version", SchemaVersion);
-        versionCommand.Parameters.AddWithValue("$applied_at", DateTimeOffset.UtcNow.ToString("O"));
-        versionCommand.Parameters.AddWithValue("$checksum", "desktop-v1-schema-001");
-        await versionCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<bool> EventExistsAsync(

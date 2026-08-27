@@ -17,6 +17,9 @@
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\bridge-v1.schema.json">
       <Link>Schemas\bridge-v1.schema.json</Link>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-revision-v1.schema.json">
+      <Link>Schemas\template-revision-v1.schema.json</Link>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

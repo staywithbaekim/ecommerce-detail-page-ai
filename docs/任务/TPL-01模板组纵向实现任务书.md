@@ -421,7 +421,7 @@ SQLite 迁移至少增加 `template_groups`、`template_revisions`、`template_p
 - 同一 PSD 技术阻断连续出现两次、资源占用异常或批准方案无法满足结构证据时，停止 workaround 链并提交复现证据。
 - 任何源文件 hash 变化立即停止测试，隔离应用自有副本并复核写入路径；不得删除或“修复”用户源文件。
 - 发现需要改变 renderer-neutral RenderPlan、模板修订语义、模板包兼容或部署形态时，先形成 ADR，不在实现中静默改变。
-- 本任务书已由产品负责人于 2026-08-27 批准。下一步在独立 Codex worktree 任务中开始 TPL-S0；`TPL-01` 验证记录、验收矩阵、当前状态和 reviewed diff 完成前不得交接 `AI-01`。
+- 本任务书已由产品负责人于 2026-08-27 批准。当前在独立 Codex worktree 中从 TPL-S2 继续；`TPL-01` 验证记录、验收矩阵、当前状态和 reviewed diff 完成前不得交接 `AI-01`。
 
 ## 19. 实施记录
 
@@ -433,3 +433,12 @@ SQLite 迁移至少增加 `template_groups`、`template_revisions`、`template_p
 - 8 个批准 PSD 副本全部读取成功，G03/G05 结构与批准证据一致；损坏/协议/JSON 负例、client 路径/缺失/畸形响应/超时/响应超限均稳定阻断。用户源 PSD、源图和人工结果 hash 不变。
 - 打包 worker 不依赖客户机 Python；本地 cover/缩放/偏移预览与 Photoshop 人工参考的几何门通过。正式决策见 `ADR-017`，完整证据见 `docs/验证/TPL-S0-PSD只读检查技术门记录.md` 和 `docs/验证/TPL-01模板组纵向实现验证记录.md`。
 - NuGet restore/漏洞索引经人工批准联网成功；solution 构建 0 警告/0 错误，50 项测试通过。下一具体动作是进入 TPL-S1 的领域模型、SQLite/manifest 和 repository，不把 S0 证据冒充为模板业务完成。
+
+### 2026-08-27：TPL-S1 领域、迁移和仓储通过
+
+- 已实现模板组、不可变修订、稳定页面、显式图片框、校准草稿/样本/预览和批次快照领域对象；容量、结构证据、状态转换、相对 manifest、当前指针和分析后快照冻结守卫通过。
+- 已冻结 `template-revision/v1` Schema 和正例；未知版本、绝对/逃逸路径、结构证据缺失、非法容量和 Photoshop 私有字段负例均被合同验证器拒绝。
+- SQLite 保留 v1 checksum，新增严格单调的 v2 迁移并验证全部已应用 checksum；迁移失败故障注入证明旧版本、旧数据和旧表保持可读，不留下半迁移表。
+- `ITemplateRepository` 与 `IBatchSnapshotRepository` 复用现有 `SqliteDesktopStore` singleton/唯一 `SqliteWriteQueue`；提交指针、修订图、草稿和快照重启恢复通过，已提交修订及同 batch 快照冲突被拒绝。
+- 聚焦测试为 Domain 26、Contracts 15、Infrastructure 21、Architecture 5；格式检查通过，完整 solution 构建 0 警告/0 错误、73 项测试通过。S1 不包含源 PSD 导入、WPF、文件 marker、五加一或模板包，不冒充这些行为完成。
+- 下一具体动作是 TPL-S2：把 S0 adapter 接入应用自有内部副本导入，完成 hash、重复确认和失败无半对象验证。

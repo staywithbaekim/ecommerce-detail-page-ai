@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-截至 2026-08-27，`TPL-S0` 已通过，`TPL-01` 仍在实施中，下一阶段为 `TPL-S1`。本文会随 S1-S7 持续追加；当前不得把 PSD 技术门、Figma 上下文、历史 Photoshop 探针或测试数量写成模板纵向功能完成。
+截至 2026-08-27，`TPL-S0`、`TPL-S1` 已通过，`TPL-01` 仍在实施中，下一阶段为 `TPL-S2`。本文会随 S2-S7 持续追加；当前不得把 PSD 技术门、领域/持久化合同、Figma 上下文、历史 Photoshop 探针或测试数量写成模板纵向功能完成。
 
 ## 起点与范围
 
@@ -19,6 +19,28 @@
 - 打包 worker 与 .NET client 真实端到端通过；路径、缺失文件、畸形响应、超时和响应超限均稳定返回错误码。
 - 四框默认 cover 与 Photoshop 人工参考差异低且几何一致；缩放/偏移探针无白边，换算误差不超过 `0.5 px`。详细证据见 `docs/验证/TPL-S0-PSD只读检查技术门记录.md` 和 `ADR-017`。
 
+## TPL-S1：已通过
+
+- 新增品类中立的 `TemplateGroup`、不可变 `TemplateRevision`、稳定 `TemplatePage`、显式 `FrameBinding`、`CalibrationDraft`、`CalibrationSample`、`TemplatePreviewState` 和 `BatchTemplateSnapshot`。Domain 未引用 WPF、SQLite、PSD 库、HTTP、Photoshop 或外层项目。
+- 页面守卫拒绝非组合模式的 `variant_capacity`，组合模式要求正整数；PSD 层路径固定 `psd_bottom_to_top`，注册框必须携带稳定 layer ID、可见性、剪贴、蒙版、透明度、混合模式和结构签名。
+- 修订状态机按任务书主流程和失败终点推进；提交需要相对 manifest 引用、规则 digest 和一致提交证据，`Committed` 后拒绝任何转换或草稿覆盖。增量修订继承原 `page_id`、资源 ID 和绑定，只给新增页分配新 ID。
+- 批次快照创建时冻结修订、已选页面顺序、生成规则、模板资源和 frame ID；分析开始后切换返回 `TPL_BATCH_SNAPSHOT_FROZEN`。SQLite repository 对相同 batch 的冲突快照也稳定拒绝。
+- 冻结 `template-revision/v1` JSON Schema 和正例；未知主版本、绝对/逃逸路径、缺少结构签名、非组合容量和 Photoshop 私有字段负例均拒绝。
+- SQLite 从既有 checksum `desktop-v1-schema-001` 单调迁移到 v2；启动验证所有已应用 checksum，迁移在同一事务中执行。预置不兼容 v2 结构的故障注入证明失败后版本仍为 1、旧数据可读、v2 表未半创建。
+- `ITemplateRepository`、`IBatchSnapshotRepository` 都映射到已有 `SqliteDesktopStore` singleton，继续使用唯一 `SqliteWriteQueue`；模板修订、绑定、草稿和快照重启恢复通过。
+
+实际命令：
+
+```powershell
+dotnet test tests/Desktop.Domain.Tests/Desktop.Domain.Tests.csproj -c Debug --no-restore
+dotnet test tests/Desktop.Contracts.Tests/Desktop.Contracts.Tests.csproj -c Debug --no-restore
+dotnet test tests/Desktop.Infrastructure.Tests/Desktop.Infrastructure.Tests.csproj -c Debug --no-restore
+dotnet test tests/Desktop.Architecture.Tests/Desktop.Architecture.Tests.csproj -c Debug --no-restore
+dotnet format EcommerceDetailPage.Desktop.slnx --no-restore --verify-no-changes --verbosity minimal
+dotnet build EcommerceDetailPage.Desktop.slnx -c Debug --no-restore --no-incremental
+dotnet test EcommerceDetailPage.Desktop.slnx -c Debug --no-build --no-restore
+```
+
 ## 源文件与仓库安全
 
 - 8 个源 PSD、4 张源照片和 1 张人工参考在复制前后 SHA-256 均不变；解析、预览、打包和损坏注入仅发生在 `tmp/tpl-s0-validation`。
@@ -34,15 +56,17 @@
 | 打包 worker | 102 文件；58,631,966 bytes；EXE SHA-256 `112D4119...C99A` |
 | 真实 PSD | 8/8 成功，源/副本 hash 不变；损坏/协议/JSON 负例稳定阻断 |
 | .NET client 聚焦测试 | 6/6 通过 |
-| solution build | 0 警告、0 错误 |
-| solution test | 50/50 通过：16 + 3 + 8 + 15 + 5 + 3 |
+| TPL-S0 solution build | 0 警告、0 错误 |
+| TPL-S1 聚焦测试 | Domain 26/26；Contracts 15/15；Infrastructure 21/21；Architecture 5/5 |
+| 当前 solution build | 0 警告、0 错误 |
+| solution test | 73/73 通过：26 + 3 + 15 + 21 + 5 + 3 |
 
 ## 未完成项
 
-- TPL-S1 至 TPL-S7 的领域模型、持久化、导入、T-01 至 T-04 WPF、校准、原子修订、批次快照、模板包和最终交接。
+- TPL-S2 至 TPL-S7 的源 PSD 导入、T-01 至 T-04 WPF、校准、文件/数据库原子修订、五加一、模板包和最终交接。
 - 五页加第六页、旧批次快照隔离、重启恢复、全部提交点故障回滚和真实应用人工走查。
 - T-05 Photoshop 准确预览和真实 AI 学习不属于本任务实现范围，且不得用 mock 冒充通过。
 
 ## 下一动作
 
-进入 TPL-S1，建立模板/修订/页面/绑定/草稿/快照领域模型、单调 SQLite 迁移、manifest 和 repository；先用聚焦测试证明稳定 ID、修订不可变、快照冻结和迁移失败保留旧数据，再扩大回归。
+进入 TPL-S2，在应用自有 staging 中实现源 PSD 的只读选择、内部副本、hash、S0 inspection、重复检测/明确确认和失败恢复；证明源 hash 前后不变、重复 PSD 不被自动删除且失败无半导入对象。

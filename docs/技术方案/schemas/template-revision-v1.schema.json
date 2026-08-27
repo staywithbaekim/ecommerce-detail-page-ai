@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ecommerce-detail.invalid/schemas/template-revision-v1.schema.json",
+  "title": "Template revision manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "revision", "pages", "files", "created_at"],
+  "properties": {
+    "schema_version": { "const": "template-revision/v1" },
+    "revision": { "$ref": "#/$defs/revision" },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/page" }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "structureSignature": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision_id", "group_id", "revision_no", "rule_digest"],
+      "properties": {
+        "revision_id": { "$ref": "#/$defs/id" },
+        "group_id": { "$ref": "#/$defs/id" },
+        "revision_no": { "type": "integer", "minimum": 1 },
+        "rule_digest": { "$ref": "#/$defs/structureSignature" }
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "value": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "selectionRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "criteria"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "criteria": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/criterion" }
+        }
+      }
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "top", "right", "bottom"],
+      "properties": {
+        "left": { "type": "number", "minimum": 0 },
+        "top": { "type": "number", "minimum": 0 },
+        "right": { "type": "number", "exclusiveMinimum": 0 },
+        "bottom": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "layoutIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "scale", "offset", "safe_bounds"],
+      "properties": {
+        "intent": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 20 },
+        "offset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        },
+        "safe_bounds": { "$ref": "#/$defs/rect" }
+      }
+    },
+    "layerPath": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "type": "integer", "minimum": 1 }
+    },
+    "expectedLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer_id", "kind", "name_before", "visible", "clipping", "user_mask",
+        "vector_mask", "opacity", "blend_mode", "structure_signature"
+      ],
+      "properties": {
+        "layer_id": { "type": "integer", "minimum": 1 },
+        "kind": { "const": "smartObject" },
+        "name_before": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "visible": { "const": true },
+        "clipping": { "type": "boolean" },
+        "user_mask": { "type": "boolean" },
+        "vector_mask": { "type": "boolean" },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "blend_mode": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "structure_signature": { "$ref": "#/$defs/structureSignature" }
+      }
+    },
+    "supersededLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer_path", "layer_path_order", "expected_kind", "expected_visible", "expected_clipping"],
+      "properties": {
+        "layer_path": { "$ref": "#/$defs/layerPath" },
+        "layer_path_order": { "const": "psd_bottom_to_top" },
+        "expected_kind": { "const": "smartObject" },
+        "expected_visible": { "const": true },
+        "expected_clipping": { "type": "boolean" },
+        "expected_layer_id": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "frameBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_id", "layer_path", "layer_path_order", "expected_layer", "superseded_layers",
+        "selection_requirement", "layout_intent"
+      ],
+      "properties": {
+        "frame_id": { "$ref": "#/$defs/id" },
+        "layer_path": { "$ref": "#/$defs/layerPath" },
+        "layer_path_order": { "const": "psd_bottom_to_top" },
+        "expected_layer": { "$ref": "#/$defs/expectedLayer" },
+        "superseded_layers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/supersededLayer" }
+        },
+        "selection_requirement": { "$ref": "#/$defs/selectionRequirement" },
+        "layout_intent": { "$ref": "#/$defs/layoutIntent" }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_id", "order", "name", "content_type", "generation_mode", "variant_capacity",
+        "enabled", "template_resource_id", "template_file_id", "frame_bindings"
+      ],
+      "properties": {
+        "page_id": { "$ref": "#/$defs/id" },
+        "order": { "type": "integer", "minimum": 0 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "content_type": { "enum": ["normal_composition", "dynamic_size_table"] },
+        "generation_mode": {
+          "enum": ["once_per_product", "once_per_variant", "variant_capacity_combination"]
+        },
+        "variant_capacity": { "type": ["integer", "null"], "minimum": 1 },
+        "enabled": { "type": "boolean" },
+        "template_resource_id": { "$ref": "#/$defs/id" },
+        "template_file_id": { "$ref": "#/$defs/id" },
+        "frame_bindings": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/frameBinding" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "generation_mode": { "const": "variant_capacity_combination" } },
+            "required": ["generation_mode"]
+          },
+          "then": { "properties": { "variant_capacity": { "type": "integer", "minimum": 1 } } },
+          "else": { "properties": { "variant_capacity": { "type": "null" } } }
+        }
+      ]
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_id", "relative_path", "length", "sha256"],
+      "properties": {
+        "file_id": { "$ref": "#/$defs/id" },
+        "relative_path": { "$ref": "#/$defs/relativePath" },
+        "length": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

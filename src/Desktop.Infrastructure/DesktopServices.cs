@@ -5,6 +5,7 @@ using Desktop.Application.Files;
 using Desktop.Application.Psd;
 using Desktop.Application.Rendering;
 using Desktop.Application.Tasks;
+using Desktop.Application.Templates;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Tasks;
 using Desktop.Infrastructure.Ai;
@@ -37,6 +38,8 @@ public static class DesktopServices
         services.AddSingleton<ITaskEventStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<ICheckpointStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IAppInstanceStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<IBatchSnapshotRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<TaskCoordinator>();
 
         services.AddSingleton<IPathPolicy>(_ => new LocalAppPathPolicy(options.RootDirectory));

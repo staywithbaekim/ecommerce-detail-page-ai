@@ -98,6 +98,61 @@ public sealed class JsonSchemaContractValidatorTests
         Assert.DoesNotContain("not-json", error.UserAction, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AcceptsFrozenTemplateRevisionManifestExample()
+    {
+        var result = _validator.Validate(
+            ContractDocumentKind.TemplateRevisionManifest,
+            LoadValidTemplateRevisionManifest());
+
+        Assert.True(result.IsValid);
+        Assert.Empty(result.Errors);
+    }
+
+    [Theory]
+    [InlineData("unknown-version")]
+    [InlineData("absolute-path")]
+    [InlineData("path-traversal")]
+    [InlineData("missing-structure-signature")]
+    [InlineData("capacity-outside-combination")]
+    [InlineData("unknown-field")]
+    public void RejectsInvalidTemplateRevisionManifest(string mutation)
+    {
+        var root = JsonNode.Parse(LoadValidTemplateRevisionManifest())!.AsObject();
+        switch (mutation)
+        {
+            case "unknown-version":
+                root["schema_version"] = "template-revision/v2";
+                break;
+            case "absolute-path":
+                root["files"]![0]!["relative_path"] = @"C:\customer\template.psd";
+                break;
+            case "path-traversal":
+                root["files"]![0]!["relative_path"] = "../template.psd";
+                break;
+            case "missing-structure-signature":
+                root["pages"]![0]!["frame_bindings"]![0]!["expected_layer"]!
+                    .AsObject().Remove("structure_signature");
+                break;
+            case "capacity-outside-combination":
+                root["pages"]![0]!["variant_capacity"] = 4;
+                break;
+            case "unknown-field":
+                root["photoshop_command"] = "batchPlay(...)";
+                break;
+            default:
+                throw new InvalidOperationException("Unknown mutation.");
+        }
+
+        var result = _validator.Validate(ContractDocumentKind.TemplateRevisionManifest, root.ToJsonString());
+
+        Assert.False(result.IsValid);
+        Assert.Equal("CONTRACT_SCHEMA_REJECTED", Assert.Single(result.Errors).Code);
+    }
+
     private static string LoadValidRenderPlan() => File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "render-plan-v1.valid.example.json"));
+
+    private static string LoadValidTemplateRevisionManifest() => File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "template-revision-v1.valid.example.json"));
 }

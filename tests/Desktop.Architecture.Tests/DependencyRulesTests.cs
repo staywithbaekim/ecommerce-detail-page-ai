@@ -2,9 +2,11 @@ using System.Reflection;
 using Desktop.Application.Ai;
 using Desktop.Application.Rendering;
 using Desktop.Application.Tasks;
+using Desktop.Application.Templates;
 using Desktop.App;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Tasks;
+using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Ai;
 using Desktop.Infrastructure.Bridge;
 using Desktop.Infrastructure.Persistence;
@@ -19,6 +21,7 @@ public sealed class DependencyRulesTests
         var references = ReferenceNames(typeof(TaskState).Assembly);
 
         Assert.DoesNotContain(references, IsForbiddenDomainReference);
+        Assert.Same(typeof(TaskState).Assembly, typeof(TemplateGroup).Assembly);
     }
 
     [Fact]
@@ -65,6 +68,8 @@ public sealed class DependencyRulesTests
         Assert.Contains(typeof(IBridgeClient), typeof(MockBridgeClient).GetInterfaces());
         Assert.Contains(typeof(IAiAnalyzer), typeof(MockAiAnalyzer).GetInterfaces());
         Assert.Contains(typeof(IRenderPlanValidator), typeof(RenderPlanValidator).GetInterfaces());
+        Assert.Contains(typeof(ITemplateRepository), typeof(SqliteDesktopStore).GetInterfaces());
+        Assert.Contains(typeof(IBatchSnapshotRepository), typeof(SqliteDesktopStore).GetInterfaces());
     }
 
     private static HashSet<string> ReferenceNames(Assembly assembly) =>

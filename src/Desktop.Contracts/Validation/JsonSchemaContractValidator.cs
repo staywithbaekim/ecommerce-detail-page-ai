@@ -56,7 +56,8 @@ public sealed class JsonSchemaContractValidator : IJsonContractValidator
     private static Dictionary<ContractDocumentKind, JsonSchema> CreateSchemas() => new()
     {
         [ContractDocumentKind.RenderPlan] = LoadSchema("render-plan-v1.schema.json"),
-        [ContractDocumentKind.BridgeEnvelope] = LoadSchema("bridge-v1.schema.json")
+        [ContractDocumentKind.BridgeEnvelope] = LoadSchema("bridge-v1.schema.json"),
+        [ContractDocumentKind.TemplateRevisionManifest] = LoadSchema("template-revision-v1.schema.json")
     };
 
     private static ContractValidationResult Failure(string code, string userAction) =>

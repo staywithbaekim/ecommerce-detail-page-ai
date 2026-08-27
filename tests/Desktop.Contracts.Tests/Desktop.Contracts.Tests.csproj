@@ -26,6 +26,9 @@
     <None Include="..\..\docs\技术方案\schemas\render-plan-v1.valid.example.json"
           Link="Fixtures\render-plan-v1.valid.example.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\技术方案\schemas\template-revision-v1.valid.example.json"
+          Link="Fixtures\template-revision-v1.valid.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

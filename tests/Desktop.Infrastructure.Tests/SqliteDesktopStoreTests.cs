@@ -93,7 +93,80 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(1, migrationVersion);
+        Assert.Equal(2, migrationVersion);
+    }
+
+    [Fact]
+    public async Task RejectsChangedAppliedMigrationChecksum()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+
+        await using (var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE schema_migrations SET checksum = 'tampered' WHERE version = 1;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.InitializeAsync());
+        Assert.Equal("DESKTOP_MIGRATION_CHECKSUM_MISMATCH", exception.Message);
+    }
+
+    [Fact]
+    public async Task FailedTemplateMigrationRollsBackAndLeavesVersionOneReadable()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        Directory.CreateDirectory(Path.GetDirectoryName(options.DatabasePath)!);
+        await using (var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL,
+                    checksum TEXT NOT NULL
+                );
+                INSERT INTO schema_migrations(version, applied_at, checksum)
+                VALUES(1, '2026-08-27T00:00:00Z', 'desktop-v1-schema-001');
+                CREATE TABLE tasks(task_id TEXT PRIMARY KEY);
+                INSERT INTO tasks(task_id) VALUES('existing-task');
+                CREATE TABLE template_groups(group_id TEXT PRIMARY KEY);
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await Assert.ThrowsAsync<SqliteException>(() => store.InitializeAsync());
+        }
+
+        await using var reopened = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await reopened.OpenAsync();
+        await using var versionCommand = reopened.CreateCommand();
+        versionCommand.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        await using var taskCommand = reopened.CreateCommand();
+        taskCommand.CommandText = "SELECT task_id FROM tasks;";
+        await using var tableCommand = reopened.CreateCommand();
+        tableCommand.CommandText = """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'template_revisions';
+            """;
+
+        Assert.Equal(1L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal("existing-task", await taskCommand.ExecuteScalarAsync());
+        Assert.Equal(0L, (long)(await tableCommand.ExecuteScalarAsync())!);
     }
 
     private static TaskEvent Event(long sequence, TaskEventType type, string? pageId = null) =>
