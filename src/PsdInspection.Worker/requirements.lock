@@ -1,0 +1,5 @@
+attrs==26.1.0
+numpy==2.2.6
+Pillow==12.3.0
+psd-tools==1.18.0
+typing_extensions==4.16.0
