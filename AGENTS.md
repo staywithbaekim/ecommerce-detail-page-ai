@@ -9,7 +9,7 @@ Build the Windows desktop application defined by the signed PRD. Photoshop is a 
 Read these sources in order before changing behavior:
 
 1. `项目总览.md` defines the active project flow and reading entry points.
-2. `产品需求文档-电商详情页智能生产系统-PRD-1.4.md` is the signed product baseline and the only active product requirement source.
+2. `产品需求文档-电商详情页智能生产系统-PRD-1.5.md` is the signed product baseline and the only active product requirement source.
 3. Approved records under `docs/架构决策/` define technical decisions without lowering PRD goals.
 4. The active brief under `docs/任务/` defines the current bounded outcome.
 5. `docs/验收矩阵.md` defines traceable verification.
@@ -35,6 +35,14 @@ Chat conclusions are not durable until they are reflected in the appropriate rep
 - Preserve unrelated user changes and untracked files.
 
 ## Task Workflow
+
+### Execution Discipline
+
+- Treat the active task brief as the execution contract. Do not add modules, product behavior, security controls, test infrastructure, or adjacent refactors that do not map to its deliverables or completion criteria.
+- Review findings do not authorize new requirements. A finding may block only when it maps to an approved requirement, is present in or caused by the current change, reproduces under the supported assumptions, and prevents the current completion criteria.
+- Scale verification to the current change. Use focused checks while iterating; run full UI, Photoshop, installation, performance, or release matrices only when the active brief or acceptance row requires them.
+- Stop a workaround chain and report evidence when the same blocker recurs twice, resource use becomes abnormal, or the approved approach can no longer work. Do not create new governance or validation layers to keep the task moving.
+- Do not claim completion from scaffolding, mocks, documents, generated test counts, or progress messages. Completion requires the requested artifact, observed behavior, relevant verification, and a reviewed diff.
 
 Before implementation:
 
