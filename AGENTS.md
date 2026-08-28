@@ -49,6 +49,7 @@ Before implementation:
 1. Read this file, the signed PRD, `docs/当前项目状态.md`, the active task brief, and relevant ADRs.
 2. Restate the task goal, constraints, non-goals, and completion criteria in the working plan.
 3. Inspect existing files and Git state before editing.
+4. For a newly started task, verify every upstream acceptance row is passed and the concrete producer artifacts required by the task already exist on the selected Git baseline. User approval of a task brief does not replace this prerequisite check; if routing documents conflict with code or dependency evidence, stop and correct the routing before implementation.
 
 Before handoff:
 

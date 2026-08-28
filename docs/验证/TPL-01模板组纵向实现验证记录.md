@@ -113,7 +113,7 @@ dotnet test EcommerceDetailPage.Desktop.slnx -c Debug --no-build --no-restore
 
 ## 下一动作
 
-从本记录和 `docs/当前项目状态.md` 建立 `AI-01` 纵向任务书；AI 开发期间继续保持品类中立合同、真实金标门和 renderer-neutral `RenderPlan` 边界。主要页面齐全后再启动一次全局 `UI-01` 视觉收口。
+从本记录和 `docs/当前项目状态.md` 先建立 `INPUT-01` 纵向任务书，交付并验收真实 `BatchDraft`、目录扫描状态和 asset manifest；合并形成新主基线后再恢复已批准的 `AI-01`。AI 开发期间继续保持品类中立合同、真实金标门和 renderer-neutral `RenderPlan` 边界。主要页面齐全后再启动一次全局 `UI-01` 视觉收口。
 
 ## 2026-08-28：主开发基线合并复核
 
