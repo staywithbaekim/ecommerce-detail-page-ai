@@ -115,6 +115,13 @@ dotnet test EcommerceDetailPage.Desktop.slnx -c Debug --no-build --no-restore
 
 从本记录和 `docs/当前项目状态.md` 建立 `AI-01` 纵向任务书；AI 开发期间继续保持品类中立合同、真实金标门和 renderer-neutral `RenderPlan` 边界。主要页面齐全后再启动一次全局 `UI-01` 视觉收口。
 
+## 2026-08-28：主开发基线合并复核
+
+- 合并前确认主开发 worktree 位于干净的 `codex/desktop-foundation-01`，HEAD 为 `217ec0b`；`217ec0b` 是 TPL 分支 `62b9dff` 的直接祖先，因此使用 `git merge --ff-only codex/tpl-01-vertical`，未产生内容冲突或额外 merge commit。
+- 合并差异完整包含 TPL-S0 至 TPL-S7 的领域模型、SQLite/manifest、只读 PSD 导入、T-01 至 T-04 WPF、增量原子修订、旧批次快照隔离、模板包、renderer-neutral `RenderPlan` builder 和 `src/Desktop.App/Styles/DesignSystem.xaml`。
+- 主 worktree 的旧 `project.assets.json` 曾引用不存在的沙箱 NuGet 目录；将 `NUGET_PACKAGES` 明确指向当前用户包缓存并执行 11 项目强制恢复后，`dotnet build EcommerceDetailPage.Desktop.slnx --no-restore -v:minimal` 为 0 警告/0 错误，`dotnet test EcommerceDetailPage.Desktop.slnx --no-build -v:minimal` 为 123/123 通过。
+- 合并和验证后 Git 状态干净；`bin/obj` 均被忽略。提交差异未发现 PSD/JPG、数据库、缓存、日志、凭据、dump 或生成物。`AI-01` 必须从包含 `62b9dff` 及本复核记录的最新主开发基线建立，不得从 `217ec0b` 直接建立。
+
 ## 2026-08-28：TPL 页视觉追加验证
 
 - 产品负责人要求把 TPL 页视觉收口提前到当前任务执行；本轮重新读取 Figma T-01 `375:208`、T-02 `381:3`、T-03 `191:2`/`191:50`、T-04 `191:120`/`191:155`，并按 WPF 技术栈转换，未引入 Tailwind、Web 控件或外部 UI 框架。

@@ -421,7 +421,7 @@ SQLite 迁移至少增加 `template_groups`、`template_revisions`、`template_p
 - 同一 PSD 技术阻断连续出现两次、资源占用异常或批准方案无法满足结构证据时，停止 workaround 链并提交复现证据。
 - 任何源文件 hash 变化立即停止测试，隔离应用自有副本并复核写入路径；不得删除或“修复”用户源文件。
 - 发现需要改变 renderer-neutral RenderPlan、模板修订语义、模板包兼容或部署形态时，先形成 ADR，不在实现中静默改变。
-- 本任务书已由产品负责人于 2026-08-27 批准，并于 2026-08-28 在独立 Codex worktree 中完成。`TPL-01` 通过不顺带宣称完整 `UI-01`、真实 AI、动态尺码或正式 Photoshop 批量渲染通过；下一阶段可从仓库记录建立 `AI-01` 任务书。
+- 本任务书已由产品负责人于 2026-08-27 批准，并于 2026-08-28 在独立 Codex worktree 中完成；完整实现及追加视觉收口随后以 fast-forward 方式并入主开发分支 `codex/desktop-foundation-01`，合并功能基线包含 `62b9dff`。`TPL-01` 通过不顺带宣称完整 `UI-01`、真实 AI、动态尺码或正式 Photoshop 批量渲染通过；下一阶段必须从包含本记录的最新主开发基线建立 `AI-01` 任务书。
 
 ## 19. 实施记录
 
