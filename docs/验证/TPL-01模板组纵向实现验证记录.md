@@ -114,3 +114,13 @@ dotnet test EcommerceDetailPage.Desktop.slnx -c Debug --no-build --no-restore
 ## 下一动作
 
 从本记录和 `docs/当前项目状态.md` 建立 `AI-01` 纵向任务书；AI 开发期间继续保持品类中立合同、真实金标门和 renderer-neutral `RenderPlan` 边界。主要页面齐全后再启动一次全局 `UI-01` 视觉收口。
+
+## 2026-08-28：TPL 页视觉追加验证
+
+- 产品负责人要求把 TPL 页视觉收口提前到当前任务执行；本轮重新读取 Figma T-01 `375:208`、T-02 `381:3`、T-03 `191:2`/`191:50`、T-04 `191:120`/`191:155`，并按 WPF 技术栈转换，未引入 Tailwind、Web 控件或外部 UI 框架。
+- 共享实现：`src/Desktop.App/Styles/DesignSystem.xaml` 提供统一字体/字号/行高、颜色、边框、圆角、按钮、文本框、自绘 ComboBox、开关、列表项、标签、滚动条、焦点/悬停/禁用状态和应用内弹窗；`App.xaml` 只负责合并资源字典和应用级 converter。
+- 页面实现：T-01/T-02 使用 Figma 的 208px 导航、32px 工作区边距和页头节奏；T-03 宽版三栏为 `300 / 16 / 自适应 / 16 / 352`，1240px 以下响应为 `248 / 16 / 自适应 / 16 / 300`，T-04 为 `224 / 16 / 自适应 / 16 / 260`。内容类型/生成方式不再落入 Windows 默认灰色模板，长文本框不再被固定 38px 高度裁切。
+- 弹窗实现：放弃、移除、退出、删除和引用阻断使用 560px 应用内弹窗，32% 黑色遮罩、8px 圆角、阴影、危险主按钮和 Escape 后备操作一致；重复 PSD 复用同一 DialogCard。系统文件选择器及启动失败兜底不属于 TPL 业务弹窗，保留 Windows 原生交互。
+- 工程实际窗口：在 `1440×900` 真实 WPF 窗口检查模板库空状态和 T-02 导入/校准方式代表状态，中文字体、按钮、面板、禁用卡片与底部操作完整显示。2026-08-28 产品负责人随后使用默认真实数据进入 T-03/T-04，复核左右栏、下拉框、文字完整性、三栏比例、画布和图片框选中态，确认“没什么问题，基准通过”；该结论来自实际应用人工走查，不以测试 fixture 代替。
+- 已执行 `dotnet format EcommerceDetailPage.Desktop.slnx --verify-no-changes --no-restore`：通过；`dotnet build EcommerceDetailPage.Desktop.slnx --no-restore -v:minimal`：0 警告、0 错误；`dotnet test EcommerceDetailPage.Desktop.slnx --no-build -v:minimal`：123/123 通过（Domain 29、Contracts 16、Application 27、Infrastructure 41、Architecture 5、WPF UI 5）。聚焦 WPF UI 测试同时覆盖宽/窄 T-03 栏宽、T-04 窄版切换、共享 ComboBox 模板、可增长文本框和应用内危险确认弹窗。
+- 本轮不改变 `TPL-01` 已通过的功能结论，也不宣称完整 `UI-01`、真实 AI、Photoshop 准确预览或正式渲染通过。

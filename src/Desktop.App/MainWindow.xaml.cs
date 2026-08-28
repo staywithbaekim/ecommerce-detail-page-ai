@@ -429,6 +429,29 @@ public partial class MainWindow : Window
         }
     }
 
+    private void TemplateDialog_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        if (viewModel.TemplateDialogHasTertiaryAction)
+        {
+            viewModel.TertiaryTemplateDialogCommand.Execute(null);
+        }
+        else if (viewModel.TemplateDialogHasSecondaryAction)
+        {
+            viewModel.SecondaryTemplateDialogCommand.Execute(null);
+        }
+        else
+        {
+            viewModel.ConfirmTemplateDialogCommand.Execute(null);
+        }
+
+        e.Handled = true;
+    }
+
     private static string[] GetDroppedPsdPaths(IDataObject data)
     {
         if (!data.GetDataPresent(DataFormats.FileDrop)

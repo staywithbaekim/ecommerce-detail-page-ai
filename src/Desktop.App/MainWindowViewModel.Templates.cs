@@ -24,6 +24,18 @@ public sealed partial class MainWindowViewModel
     private string _templateStatusMessage = "";
     private bool _templateBusy;
     private bool _duplicateReviewVisible;
+    private TaskCompletionSource<TemplateDialogChoice>? _templateDialogCompletion;
+    private bool _templateDialogVisible;
+    private string _templateDialogTitle = "";
+    private string _templateDialogBody = "";
+    private string _templateDialogSafetyNote = "";
+    private string _templateDialogPrimaryText = "确定";
+    private string _templateDialogSecondaryText = "取消";
+    private string _templateDialogTertiaryText = "";
+    private bool _templateDialogHasSecondaryAction = true;
+    private bool _templateDialogHasTertiaryAction;
+    private bool _templateDialogIsDestructive;
+    private bool _isTemplatePageSettingsCompactLayout;
     private bool _isCalibrationNarrowLayout;
     private CalibrationNarrowPanel _calibrationNarrowPanel = CalibrationNarrowPanel.Canvas;
 
@@ -60,6 +72,12 @@ public sealed partial class MainWindowViewModel
     public ICommand KeepImportedDuplicateCommand { get; private set; } = null!;
 
     public ICommand CancelDuplicateCommand { get; private set; } = null!;
+
+    public ICommand ConfirmTemplateDialogCommand { get; private set; } = null!;
+
+    public ICommand SecondaryTemplateDialogCommand { get; private set; } = null!;
+
+    public ICommand TertiaryTemplateDialogCommand { get; private set; } = null!;
 
     public ICommand StartCalibrationCommand { get; private set; } = null!;
 
@@ -100,6 +118,74 @@ public sealed partial class MainWindowViewModel
     public bool IsTemplateCalibrationPendingVisible => _templateScreen == TemplateScreen.CalibrationPending;
 
     public bool IsTemplateCalibrationVisible => _templateScreen == TemplateScreen.Calibration;
+
+    public bool IsTemplateDialogVisible
+    {
+        get => _templateDialogVisible;
+        private set => SetTemplateField(ref _templateDialogVisible, value);
+    }
+
+    public string TemplateDialogTitle
+    {
+        get => _templateDialogTitle;
+        private set => SetTemplateField(ref _templateDialogTitle, value);
+    }
+
+    public string TemplateDialogBody
+    {
+        get => _templateDialogBody;
+        private set => SetTemplateField(ref _templateDialogBody, value);
+    }
+
+    public string TemplateDialogSafetyNote
+    {
+        get => _templateDialogSafetyNote;
+        private set => SetTemplateField(ref _templateDialogSafetyNote, value);
+    }
+
+    public string TemplateDialogPrimaryText
+    {
+        get => _templateDialogPrimaryText;
+        private set => SetTemplateField(ref _templateDialogPrimaryText, value);
+    }
+
+    public string TemplateDialogSecondaryText
+    {
+        get => _templateDialogSecondaryText;
+        private set => SetTemplateField(ref _templateDialogSecondaryText, value);
+    }
+
+    public string TemplateDialogTertiaryText
+    {
+        get => _templateDialogTertiaryText;
+        private set => SetTemplateField(ref _templateDialogTertiaryText, value);
+    }
+
+    public bool TemplateDialogHasSecondaryAction
+    {
+        get => _templateDialogHasSecondaryAction;
+        private set => SetTemplateField(ref _templateDialogHasSecondaryAction, value);
+    }
+
+    public bool TemplateDialogHasTertiaryAction
+    {
+        get => _templateDialogHasTertiaryAction;
+        private set => SetTemplateField(ref _templateDialogHasTertiaryAction, value);
+    }
+
+    public bool TemplateDialogIsDestructive
+    {
+        get => _templateDialogIsDestructive;
+        private set => SetTemplateField(ref _templateDialogIsDestructive, value);
+    }
+
+    public bool IsTemplatePageSettingsCompactLayout => _isTemplatePageSettingsCompactLayout;
+
+    public GridLength TemplatePageSettingsPageColumnWidth => new(
+        _isTemplatePageSettingsCompactLayout ? 248 : 300);
+
+    public GridLength TemplatePageSettingsInspectorColumnWidth => new(
+        _isTemplatePageSettingsCompactLayout ? 300 : 352);
 
     public bool IsCalibrationNarrowLayout => _isCalibrationNarrowLayout;
 
@@ -470,13 +556,26 @@ public sealed partial class MainWindowViewModel
     public void SetWindowWidth(double width)
     {
         var narrow = width <= 1180;
-        if (_isCalibrationNarrowLayout == narrow)
+        var compactPageSettings = width <= 1240;
+        if (_isCalibrationNarrowLayout == narrow
+            && _isTemplatePageSettingsCompactLayout == compactPageSettings)
         {
             return;
         }
 
-        _isCalibrationNarrowLayout = narrow;
-        NotifyCalibrationLayoutChanged();
+        if (_isCalibrationNarrowLayout != narrow)
+        {
+            _isCalibrationNarrowLayout = narrow;
+            NotifyCalibrationLayoutChanged();
+        }
+
+        if (_isTemplatePageSettingsCompactLayout != compactPageSettings)
+        {
+            _isTemplatePageSettingsCompactLayout = compactPageSettings;
+            OnPropertyChanged(nameof(IsTemplatePageSettingsCompactLayout));
+            OnPropertyChanged(nameof(TemplatePageSettingsPageColumnWidth));
+            OnPropertyChanged(nameof(TemplatePageSettingsInspectorColumnWidth));
+        }
     }
 
     private void InitializeTemplates(
@@ -504,6 +603,12 @@ public sealed partial class MainWindowViewModel
             () => ResolveDuplicateAsync(TemplateDuplicateDecision.ContinueAsSeparate));
         CancelDuplicateCommand = new AsyncRelayCommand(
             () => ResolveDuplicateAsync(TemplateDuplicateDecision.Cancel));
+        ConfirmTemplateDialogCommand = new RelayCommand(
+            () => CompleteTemplateDialog(TemplateDialogChoice.Primary));
+        SecondaryTemplateDialogCommand = new RelayCommand(
+            () => CompleteTemplateDialog(TemplateDialogChoice.Secondary));
+        TertiaryTemplateDialogCommand = new RelayCommand(
+            () => CompleteTemplateDialog(TemplateDialogChoice.Tertiary));
         StartCalibrationCommand = new AsyncRelayCommand(StartCalibrationAsync, () => TemplatePages.Count > 0);
         SelectCalibrationAssetCommand = new AsyncRelayCommand(SelectCalibrationAssetAsync);
         ClearCalibrationAssetCommand = new AsyncRelayCommand(ClearCalibrationAssetAsync, () => CanClearCalibrationAsset);
@@ -897,17 +1002,19 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var choice = MessageBox.Show(
-            "校准操作会自动保存为本地草稿。\n\n是：保存当前输入并返回页面设置\n否：不提交模板组，返回页面设置（草稿仍可恢复）\n取消：留在校准页",
+        var choice = await ShowTemplateDialogAsync(
             "退出校准？",
-            MessageBoxButton.YesNoCancel,
-            MessageBoxImage.Question);
-        if (choice == MessageBoxResult.Cancel)
+            "校准操作会自动保存为本地草稿。你可以保存当前输入后返回，也可以直接返回页面设置。",
+            "无论选择哪种返回方式，都不会提交模板组，也不会修改用户源 PSD 或源照片。",
+            "保存并返回",
+            "直接返回",
+            "取消").ConfigureAwait(true);
+        if (choice == TemplateDialogChoice.Tertiary)
         {
             return;
         }
 
-        if (choice == MessageBoxResult.Yes)
+        if (choice == TemplateDialogChoice.Primary)
         {
             await CommitCalibrationGeometryAsync().ConfigureAwait(true);
             foreach (var page in TemplatePages.Where(page => page.IsAffected))
@@ -944,12 +1051,14 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var confirmation = MessageBox.Show(
-            $"确定移除页面“{page.Name}”吗？\n\n只会移除当前模板草稿中的页面，不会删除用户源 PSD。",
+        var confirmation = await ShowTemplateDialogAsync(
             "移除模板页面？",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Warning);
-        if (confirmation != MessageBoxResult.OK)
+            $"将从当前模板草稿中移除“{page.Name}”。保存模板组后，这一页不会再参与后续批次。",
+            "只移除应用内部副本，不会删除用户源 PSD。",
+            "移除页面",
+            "取消",
+            isDestructive: true).ConfigureAwait(true);
+        if (confirmation != TemplateDialogChoice.Primary)
         {
             return;
         }
@@ -993,12 +1102,14 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var confirmation = MessageBox.Show(
-            "会删除当前模板草稿及软件内部保存的模板副本。\n\n不会删除用户源 PSD、源照片或其他模板组。",
+        var confirmation = await ShowTemplateDialogAsync(
             "放弃当前模板组？",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Warning);
-        if (confirmation != MessageBoxResult.OK)
+            "将删除当前模板草稿，以及软件内部为这个草稿保存的 PSD 副本和校准输入。此操作无法在应用内撤销。",
+            "不会删除用户源 PSD、源照片、正式输出或其他模板组。",
+            "放弃模板组",
+            "取消",
+            isDestructive: true).ConfigureAwait(true);
+        if (confirmation != TemplateDialogChoice.Primary)
         {
             return;
         }
@@ -1280,12 +1391,14 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var confirmation = MessageBox.Show(
-            "会删除软件内部保存的模板副本和校准规则。\n\n不会删除最初导入的 PSD、已生成结果和其他模板组。",
+        var confirmation = await ShowTemplateDialogAsync(
             "删除模板组？",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Warning);
-        if (confirmation != MessageBoxResult.OK)
+            $"将删除“{_templateDetails.Name}”在软件内部保存的 PSD 副本、页面规则和校准结果。此操作无法在应用内撤销。",
+            "不会删除最初导入的 PSD、已生成结果或其他模板组。",
+            "删除模板组",
+            "取消",
+            isDestructive: true).ConfigureAwait(true);
+        if (confirmation != TemplateDialogChoice.Primary)
         {
             return;
         }
@@ -1296,6 +1409,12 @@ public sealed partial class MainWindowViewModel
         if (blockers.Count > 0)
         {
             TemplateStatusMessage = "存在未完成引用任务，不能删除：" + string.Join("、", blockers);
+            await ShowTemplateDialogAsync(
+                "模板组正在使用，无法删除",
+                "以下未完成任务仍引用此模板组：\n" + string.Join("\n", blockers.Select(blocker => $"• {blocker}")),
+                "请先完成或取消这些任务。用户源文件和模板副本均未改变。",
+                "知道了",
+                secondaryText: null).ConfigureAwait(true);
             return;
         }
 
@@ -1303,6 +1422,56 @@ public sealed partial class MainWindowViewModel
         TemplateStatusMessage = "模板组已删除；用户源 PSD 和正式输出未受影响。";
         SetTemplateScreen(TemplateScreen.Library);
         await LoadTemplateLibraryAsync().ConfigureAwait(true);
+    }
+
+    private Task<TemplateDialogChoice> ShowTemplateDialogAsync(
+        string title,
+        string body,
+        string safetyNote,
+        string primaryText,
+        string? secondaryText,
+        string? tertiaryText = null,
+        bool isDestructive = false)
+    {
+        if (_templateDialogCompletion is not null)
+        {
+            throw new InvalidOperationException("A template dialog is already open.");
+        }
+
+        TemplateDialogTitle = title;
+        TemplateDialogBody = body;
+        TemplateDialogSafetyNote = safetyNote;
+        TemplateDialogPrimaryText = primaryText;
+        TemplateDialogSecondaryText = secondaryText ?? "";
+        TemplateDialogTertiaryText = tertiaryText ?? "";
+        TemplateDialogHasSecondaryAction = !string.IsNullOrWhiteSpace(secondaryText);
+        TemplateDialogHasTertiaryAction = !string.IsNullOrWhiteSpace(tertiaryText);
+        TemplateDialogIsDestructive = isDestructive;
+        IsTemplateDialogVisible = true;
+
+        _templateDialogCompletion = new TaskCompletionSource<TemplateDialogChoice>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        return _templateDialogCompletion.Task;
+    }
+
+    private void CompleteTemplateDialog(TemplateDialogChoice choice)
+    {
+        var completion = _templateDialogCompletion;
+        if (completion is null)
+        {
+            return;
+        }
+
+        _templateDialogCompletion = null;
+        IsTemplateDialogVisible = false;
+        completion.TrySetResult(choice);
+    }
+
+    private enum TemplateDialogChoice
+    {
+        Primary,
+        Secondary,
+        Tertiary
     }
 
     private void UpdateCalibrationInputs(TemplateCalibrationDraftView draft)

@@ -109,91 +109,107 @@
                     CommandParameter="{Binding}"
                     FocusVisualStyle="{StaticResource VisibleFocusStyle}"
                     AutomationProperties.Name="{Binding Name}">
-                <Border Height="82"
-                        Padding="18,14"
+                <Border Height="76"
+                        Padding="12"
                         Background="{StaticResource SurfaceBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
                         CornerRadius="6">
                     <Grid>
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="52" />
+                            <ColumnDefinition Width="12" />
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="150" />
-                            <ColumnDefinition Width="100" />
-                            <ColumnDefinition Width="24" />
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="72" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock FontSize="14"
-                                       FontWeight="SemiBold"
+                        <Border Width="52"
+                                Height="52"
+                                Background="{StaticResource SurfaceStrongBrush}"
+                                CornerRadius="6">
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Segoe Fluent Icons"
+                                       FontSize="20"
+                                       Text="&#xE8A5;" />
+                        </Border>
+                        <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource FieldLabelTextStyle}"
                                        Text="{Binding Name}"
                                        TextTrimming="CharacterEllipsis" />
-                            <TextBlock Margin="0,4,0,0"
+                            <TextBlock Margin="0,2,0,0"
+                                       Style="{StaticResource SmallBodyTextStyle}"
                                        Foreground="{StaticResource TextMutedBrush}"
                                        Text="{Binding Meta}" />
                         </StackPanel>
-                        <TextBlock Grid.Column="1"
+                        <TextBlock Grid.Column="3"
                                    VerticalAlignment="Center"
+                                   Style="{StaticResource SmallBodyTextStyle}"
                                    Foreground="{StaticResource TextMutedBrush}"
                                    Text="{Binding UpdatedText}" />
-                        <StackPanel Grid.Column="2"
-                                    HorizontalAlignment="Left"
-                                    VerticalAlignment="Center"
-                                    Orientation="Horizontal">
+                        <StackPanel Grid.Column="4"
+                                     HorizontalAlignment="Left"
+                                     VerticalAlignment="Center"
+                                     Orientation="Horizontal">
                             <Ellipse Width="8"
                                      Height="8"
                                      Margin="0,0,8,0"
                                      Fill="{StaticResource StatusDraftBrush}" />
                             <TextBlock Text="{Binding Status}" />
                         </StackPanel>
-                        <TextBlock Grid.Column="3"
+                        <TextBlock Grid.Column="5"
                                    HorizontalAlignment="Right"
                                    VerticalAlignment="Center"
-                                   FontFamily="Segoe Fluent Icons"
-                                   FontSize="14"
-                                   Text="&#xE76C;" />
+                                   FontSize="12"
+                                   FontWeight="Medium"
+                                   Text="查看" />
                     </Grid>
                 </Border>
             </Button>
         </DataTemplate>
 
         <DataTemplate x:Key="ImportedPsdTemplate">
-            <Border Height="58"
-                    Padding="14,8"
+            <Border Height="68"
+                    Margin="0,0,0,12"
+                    Padding="16"
+                    Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="0,0,0,1">
+                    BorderThickness="1"
+                    CornerRadius="6">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="24" />
+                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="12" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="110" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0"
-                               VerticalAlignment="Center"
-                               FontFamily="Segoe Fluent Icons"
-                               FontSize="16"
-                               Foreground="{StaticResource TextMutedBrush}"
-                               Text="&#xE7C3;" />
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock FontWeight="Medium"
+                    <Ellipse Width="8"
+                             Height="8"
+                             VerticalAlignment="Center"
+                             Fill="{StaticResource StatusCompletedBrush}" />
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                        <TextBlock Style="{StaticResource FieldLabelTextStyle}"
                                    Text="{Binding FileName}"
                                    TextTrimming="CharacterEllipsis" />
                         <TextBlock Margin="0,2,0,0"
-                                   FontSize="12"
+                                   Style="{StaticResource CaptionTextStyle}"
                                    Foreground="{StaticResource TextMutedBrush}"
                                    Text="{Binding InspectionSummary}" />
                     </StackPanel>
-                    <TextBlock Grid.Column="2"
+                    <TextBlock Grid.Column="3"
                                HorizontalAlignment="Right"
                                VerticalAlignment="Center"
-                               Foreground="#237A45"
+                               FontSize="12"
+                               FontWeight="Medium"
                                Text="{Binding Status}" />
                 </Grid>
             </Border>
         </DataTemplate>
 
         <DataTemplate x:Key="TemplateDetailPageTemplate">
-            <Border Height="64"
-                    Padding="14,8"
+            <Border Height="68"
+                    Padding="16"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="0,0,0,1">
                 <Grid>
@@ -544,21 +560,19 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
-                                    <TextBlock FontSize="24"
-                                               FontWeight="Bold"
-                                               LineHeight="32"
-                                               Text="模板"
+                                    <TextBlock Style="{StaticResource PageTitleTextStyle}"
+                                               Text="模板库"
                                                AutomationProperties.AutomationId="TemplateLibraryTitle" />
                                     <TextBlock Margin="0,4,0,0"
-                                               FontSize="14"
+                                               Style="{StaticResource BodyTextStyle}"
                                                Foreground="{StaticResource TextMutedBrush}"
-                                               Text="管理模板组、页面和校准状态" />
+                                               Text="查找、维护和迁移已校准模板组" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                                     <Button Margin="0,11,8,11"
                                             Style="{StaticResource SecondaryButtonStyle}"
                                             Command="{Binding ImportTemplatePackageCommand}"
-                                            Content="导入模板包"
+                                            Content="导入已校准模板"
                                             AutomationProperties.AutomationId="ImportTemplatePackageButton" />
                                     <Button Margin="0,11,0,11"
                                             Style="{StaticResource PrimaryButtonStyle}"
@@ -578,24 +592,18 @@
 
                             <Grid Grid.Row="2">
                                 <StackPanel Visibility="{Binding HasTemplateGroups, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <Grid Margin="18,0,18,8">
+                                    <Grid Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="150" />
-                                            <ColumnDefinition Width="100" />
-                                            <ColumnDefinition Width="24" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock FontSize="12"
-                                                   Foreground="{StaticResource TextMutedBrush}"
-                                                   Text="模板组" />
+                                        <TextBlock Style="{StaticResource SectionTitleTextStyle}"
+                                                   Text="{Binding TemplateGroups.Count, StringFormat={}{0} 个模板组}" />
                                         <TextBlock Grid.Column="1"
-                                                   FontSize="12"
+                                                   VerticalAlignment="Center"
+                                                   Style="{StaticResource BodyTextStyle}"
                                                    Foreground="{StaticResource TextMutedBrush}"
-                                                   Text="最近更新" />
-                                        <TextBlock Grid.Column="2"
-                                                   FontSize="12"
-                                                   Foreground="{StaticResource TextMutedBrush}"
-                                                   Text="状态" />
+                                                   Text="按最近更新排序" />
                                     </Grid>
                                     <ItemsControl ItemsSource="{Binding TemplateGroups}"
                                                   ItemTemplate="{StaticResource TemplateLibraryCardTemplate}"
@@ -655,24 +663,24 @@
                                             Height="28"
                                             Margin="0,0,0,10"
                                             HorizontalAlignment="Left"
-                                            Style="{StaticResource CompactButtonStyle}"
+                                            Style="{StaticResource GhostButtonStyle}"
                                             Command="{Binding BackToTemplateLibraryCommand}"
                                             Content="← 返回"
                                             AutomationProperties.AutomationId="BackToTemplateLibraryButton" />
-                                    <TextBlock FontSize="24"
-                                               FontWeight="Bold"
+                                    <TextBlock Style="{StaticResource PageTitleTextStyle}"
                                                Text="{Binding TemplateDetailsTitle}" />
                                     <TextBlock Margin="0,5,0,0"
-                                               FontSize="13"
+                                               Style="{StaticResource SmallBodyTextStyle}"
                                                Foreground="{StaticResource TextMutedBrush}"
                                                Text="{Binding TemplateDetailsMeta}" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1"
                                             VerticalAlignment="Bottom"
                                             Orientation="Horizontal">
-                                    <Button Margin="0,0,8,0"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Content="删除"
+                                     <Button Margin="0,0,8,0"
+                                             Style="{StaticResource SecondaryButtonStyle}"
+                                             Foreground="{StaticResource DangerBrush}"
+                                             Content="删除"
                                             Command="{Binding DeleteTemplateCommand}"
                                             AutomationProperties.AutomationId="DeleteTemplateGroupButton" />
                                     <Button Margin="0,0,8,0"
@@ -699,8 +707,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock FontSize="16"
-                                                   FontWeight="SemiBold"
+                                        <TextBlock Style="{StaticResource SectionTitleTextStyle}"
                                                    Text="模板页面" />
                                         <TextBlock Grid.Column="1"
                                                    Foreground="{StaticResource TextMutedBrush}"
@@ -717,133 +724,180 @@
                         <Grid Visibility="{Binding IsTemplateImportVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
                               AutomationProperties.AutomationId="TemplatePsdImportPage">
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="20" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="16" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="84" />
+                                <RowDefinition Height="24" />
+                                <RowDefinition Height="32" />
+                                <RowDefinition Height="24" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="24" />
+                                <RowDefinition Height="64" />
                             </Grid.RowDefinitions>
-                            <Grid>
+                            <StackPanel>
+                                <Button Height="22"
+                                        MinWidth="0"
+                                        Padding="0"
+                                        HorizontalAlignment="Left"
+                                        Style="{StaticResource GhostButtonStyle}"
+                                        Command="{Binding BackToTemplateLibraryCommand}"
+                                        Content="模板组 / 返回模板库"
+                                        AutomationProperties.AutomationId="CancelTemplateImportButton" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Style="{StaticResource PageTitleTextStyle}"
+                                           Text="{Binding TemplateFlowTitle}" />
+                                <TextBlock Margin="0,2,0,0"
+                                           Style="{StaticResource BodyTextStyle}"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           Text="导入一个或多个 PSD，并确认首次校准方式" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="2" Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="1  导入模板" />
+                                <Border Width="40" Height="1" Margin="12,9" Background="{StaticResource BorderBrush}" />
+                                <TextBlock Style="{StaticResource FieldLabelTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="2  页面设置" />
+                                <Border Width="40" Height="1" Margin="12,9" Background="{StaticResource BorderBrush}" />
+                                <TextBlock Style="{StaticResource FieldLabelTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="3  校准" />
+                            </StackPanel>
+
+                            <Grid Grid.Row="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="3*" />
+                                    <ColumnDefinition Width="24" />
+                                    <ColumnDefinition Width="2*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Padding="0"
+                                        Background="{StaticResource SurfaceBrush}"
+                                        AllowDrop="True"
+                                        DragOver="PsdDropZone_DragOver"
+                                        Drop="PsdDropZone_Drop"
+                                        AutomationProperties.AutomationId="TemplatePsdDropZone"
+                                        AutomationProperties.Name="PSD 文件拖放区域">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="模板文件" />
+                                        <TextBlock Margin="0,4,0,0"
+                                                   Style="{StaticResource BodyTextStyle}"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   Text="软件只复制 PSD 副本到模板库，不修改用户选择的源文件。" />
+                                        <Border Margin="0,12,0,0"
+                                                Padding="12"
+                                                BorderBrush="{StaticResource BorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="模板组名称" />
+                                                <TextBox Margin="0,4,0,0"
+                                                         Style="{StaticResource FieldTextBoxStyle}"
+                                                         BorderThickness="0"
+                                                         Padding="0"
+                                                         Text="{Binding TemplateGroupName, UpdateSourceTrigger=PropertyChanged}"
+                                                         IsReadOnly="{Binding IsIncrementalTemplateDraft}"
+                                                         InputMethod.IsInputMethodEnabled="True"
+                                                         AutomationProperties.AutomationId="TemplateGroupNameInput"
+                                                         AutomationProperties.Name="模板组名称" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Button Width="120"
+                                                Margin="0,12,0,0"
+                                                HorizontalAlignment="Left"
+                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                Click="ChoosePsdFiles_Click"
+                                                Content="选择 PSD"
+                                                AutomationProperties.AutomationId="ChoosePsdFilesButton" />
+                                        <ItemsControl Margin="0,12,0,0"
+                                                      ItemsSource="{Binding ImportedTemplateFiles}"
+                                                      ItemTemplate="{StaticResource ImportedPsdTemplate}"
+                                                      AutomationProperties.AutomationId="ImportedPsdList" />
+                                        <TextBlock Margin="0,2,0,0"
+                                                   Style="{StaticResource CaptionTextStyle}"
+                                                   Text="也可以把 PSD 直接拖到此区域；源文件始终只读。" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Column="2" Padding="0" Background="{StaticResource SurfaceBrush}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="校准方式" />
+                                        <TextBlock Margin="0,4,0,0"
+                                                   Style="{StaticResource BodyTextStyle}"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   Text="两种方式最终都进入同一个校准编辑器复核。" />
+                                        <Border Height="68"
+                                                Margin="0,12,0,0"
+                                                Padding="14,12"
+                                                Background="{StaticResource SurfaceStrongBrush}"
+                                                BorderBrush="{StaticResource BorderStrongBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="18" />
+                                                    <ColumnDefinition Width="10" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Ellipse Width="18" Height="18" Stroke="{StaticResource TextBrush}" StrokeThickness="1">
+                                                    <Ellipse.Fill>
+                                                        <RadialGradientBrush>
+                                                            <GradientStop Offset="0" Color="#171717" />
+                                                            <GradientStop Offset="0.42" Color="#171717" />
+                                                            <GradientStop Offset="0.45" Color="#FFFFFF" />
+                                                        </RadialGradientBrush>
+                                                    </Ellipse.Fill>
+                                                </Ellipse>
+                                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="拖拽校准" />
+                                                    <TextBlock Margin="0,2,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}"
+                                                               Text="在模板画布逐框放入正确素材，并由人工确认" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                        <Border Height="68"
+                                                Margin="0,12,0,0"
+                                                Padding="14,12"
+                                                Background="{StaticResource SurfaceBrush}"
+                                                BorderBrush="{StaticResource BorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Opacity="0.55">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="18" />
+                                                    <ColumnDefinition Width="10" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Ellipse Width="18" Height="18" Stroke="{StaticResource BorderStrongBrush}" StrokeThickness="1" />
+                                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="从人工结果学习（尚未启用）" />
+                                                    <TextBlock Margin="0,2,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}"
+                                                               Text="真实 AI 学习完成验收后才会开放" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <Grid Grid.Row="6" Background="{StaticResource SurfaceBrush}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <Button Width="84"
-                                            Height="28"
-                                            Margin="0,0,0,10"
-                                            HorizontalAlignment="Left"
-                                            Style="{StaticResource CompactButtonStyle}"
-                                            Command="{Binding BackToTemplateLibraryCommand}"
-                                            Content="← 返回"
-                                            AutomationProperties.AutomationId="CancelTemplateImportButton" />
-                                    <TextBlock FontSize="24"
-                                               FontWeight="Bold"
-                                               Text="{Binding TemplateFlowTitle}" />
-                                    <TextBlock Margin="0,5,0,0"
-                                               FontSize="13"
-                                               Foreground="{StaticResource TextMutedBrush}"
-                                               Text="{Binding TemplateFlowSubtitle}" />
-                                </StackPanel>
-                                <TextBlock Grid.Column="1"
-                                           VerticalAlignment="Bottom"
-                                           Foreground="{StaticResource TextMutedBrush}"
-                                           Text="步骤 1 / 3 · 选择 PSD" />
-                            </Grid>
-
-                            <Border Grid.Row="2" Style="{StaticResource SectionCardStyle}">
-                                <StackPanel>
-                                    <TextBlock Margin="0,0,0,7"
-                                               FontSize="12"
-                                               FontWeight="Medium"
-                                               Text="模板组名称" />
-                                    <TextBox Style="{StaticResource FieldTextBoxStyle}"
-                                             Text="{Binding TemplateGroupName, UpdateSourceTrigger=PropertyChanged}"
-                                             IsReadOnly="{Binding IsIncrementalTemplateDraft}"
-                                             InputMethod.IsInputMethodEnabled="True"
-                                             AutomationProperties.AutomationId="TemplateGroupNameInput"
-                                             AutomationProperties.Name="模板组名称" />
-
-                                    <Border Margin="0,18,0,0"
-                                            MinHeight="150"
-                                            Padding="24"
-                                            Background="{StaticResource SurfaceSubtleBrush}"
-                                            BorderBrush="#A8A8AD"
-                                            BorderThickness="1"
-                                            CornerRadius="6"
-                                            AllowDrop="True"
-                                            DragOver="PsdDropZone_DragOver"
-                                            Drop="PsdDropZone_Drop"
-                                            AutomationProperties.AutomationId="TemplatePsdDropZone"
-                                            AutomationProperties.Name="PSD 文件拖放区域">
-                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                            <TextBlock HorizontalAlignment="Center"
-                                                       FontFamily="Segoe Fluent Icons"
-                                                       FontSize="24"
-                                                       Text="&#xE8B7;" />
-                                            <TextBlock Margin="0,10,0,0"
-                                                       HorizontalAlignment="Center"
-                                                       FontSize="14"
-                                                       FontWeight="SemiBold"
-                                                       Text="将 PSD 拖到这里" />
-                                            <TextBlock Margin="0,4,0,12"
-                                                       HorizontalAlignment="Center"
-                                                       Foreground="{StaticResource TextMutedBrush}"
-                                                       Text="或通过按钮选择一个或多个文件；源文件始终只读" />
-                                            <Button Style="{StaticResource SecondaryButtonStyle}"
-                                                    Click="ChoosePsdFiles_Click"
-                                                    Content="选择 PSD 文件"
-                                                    AutomationProperties.AutomationId="ChoosePsdFilesButton" />
-                                        </StackPanel>
-                                    </Border>
-                                </StackPanel>
-                            </Border>
-
-                            <Border Grid.Row="4"
-                                    Padding="0"
-                                    Style="{StaticResource SectionCardStyle}"
-                                    Visibility="{Binding HasImportedTemplateFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid Margin="18,14,18,8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock FontWeight="SemiBold" Text="已检查的 PSD" />
-                                        <TextBlock Grid.Column="1"
-                                                   Foreground="{StaticResource TextMutedBrush}"
-                                                   Text="{Binding ImportedTemplateFiles.Count, StringFormat={}{0} 个页面}" />
-                                    </Grid>
-                                    <ItemsControl Grid.Row="1"
-                                                  ItemsSource="{Binding ImportedTemplateFiles}"
-                                                  ItemTemplate="{StaticResource ImportedPsdTemplate}"
-                                                  AutomationProperties.AutomationId="ImportedPsdList" />
-                                </Grid>
-                            </Border>
-
-                            <StackPanel Grid.Row="5"
-                                        Margin="0,20,0,0"
-                                        Orientation="Horizontal">
-                                <TextBlock Width="520"
-                                           VerticalAlignment="Center"
+                                <TextBlock VerticalAlignment="Center"
+                                           Style="{StaticResource SmallBodyTextStyle}"
                                            Foreground="{StaticResource TextMutedBrush}"
                                            Text="{Binding TemplateStatusMessage}"
                                            TextTrimming="CharacterEllipsis" />
-                                <Button Margin="0,0,8,0"
-                                        Style="{StaticResource SecondaryButtonStyle}"
-                                        Command="{Binding BackToTemplateLibraryCommand}"
-                                        Content="取消" />
-                                <Button Style="{StaticResource PrimaryButtonStyle}"
-                                        Command="{Binding ContinuePageSettingsCommand}"
-                                        IsEnabled="{Binding CanContinuePageSettings}"
-                                        Content="继续设置页面"
-                                        AutomationProperties.AutomationId="ContinuePageSettingsButton" />
-                            </StackPanel>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
+                                    <Button Margin="0,0,12,0"
+                                            Style="{StaticResource GhostButtonStyle}"
+                                            Command="{Binding BackToTemplateLibraryCommand}"
+                                            Content="取消" />
+                                    <Button Style="{StaticResource PrimaryButtonStyle}"
+                                            Command="{Binding ContinuePageSettingsCommand}"
+                                            IsEnabled="{Binding CanContinuePageSettings}"
+                                            Content="继续页面设置"
+                                            AutomationProperties.AutomationId="ContinuePageSettingsButton" />
+                                </StackPanel>
+                            </Grid>
                         </Grid>
 
                         <!-- T-03: page settings, order and incremental read-only scope. -->
@@ -855,53 +909,88 @@
                                 <RowDefinition Height="*" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <TextBlock FontSize="24"
-                                               FontWeight="Bold"
-                                               Text="页面设置" />
-                                    <TextBlock Margin="0,5,0,0"
-                                               FontSize="13"
+                            <Grid Height="96">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="56" />
+                                    <RowDefinition Height="40" />
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource PageTitleTextStyle}" Text="页面设置" />
+                                        <TextBlock Margin="0,2,0,0"
+                                                   Style="{StaticResource SmallBodyTextStyle}"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   Text="{Binding TemplateSettingsSubtitle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                                        <Ellipse Width="8" Height="8" Margin="0,7,8,0" VerticalAlignment="Top" Fill="{StaticResource StatusCompletedBrush}" />
+                                        <TextBlock VerticalAlignment="Top"
+                                                   Style="{StaticResource SmallBodyTextStyle}"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   Text="草稿已自动保存" />
+                                        <Button Height="28"
+                                                Margin="18,0,0,0"
+                                                Style="{StaticResource GhostButtonStyle}"
+                                                Command="{Binding AbandonTemplateDraftCommand}"
+                                                Content="放弃模板组"
+                                                AutomationProperties.AutomationId="AbandonTemplateDraftButton" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Grid.Row="1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Border Width="24" Height="24" CornerRadius="12" Background="{StaticResource SurfaceStrongBrush}">
+                                            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource CaptionTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="1" />
+                                        </Border>
+                                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="导入模板" />
+                                        <Border Width="40" Height="1" Margin="10,0" Background="{StaticResource BorderBrush}" />
+                                        <Border Width="24" Height="24" CornerRadius="12" Background="{StaticResource PrimaryBrush}">
+                                            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource CaptionTextStyle}" Foreground="White" Text="2" />
+                                        </Border>
+                                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Text="页面设置" />
+                                        <Border Width="40" Height="1" Margin="10,0" Background="{StaticResource BorderBrush}" />
+                                        <Border Width="24" Height="24" CornerRadius="12" Background="{StaticResource SurfaceStrongBrush}">
+                                            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource CaptionTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="3" />
+                                        </Border>
+                                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="校准" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2"
+                                               VerticalAlignment="Center"
+                                               Style="{StaticResource FieldLabelTextStyle}"
                                                Foreground="{StaticResource TextMutedBrush}"
-                                               Text="{Binding TemplateSettingsSubtitle}" />
-                                </StackPanel>
-                                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                     <Button Margin="0,0,12,0"
-                                             Style="{StaticResource SecondaryButtonStyle}"
-                                             Command="{Binding AbandonTemplateDraftCommand}"
-                                             Content="放弃当前模板组"
-                                             AutomationProperties.AutomationId="AbandonTemplateDraftButton" />
-                                     <TextBlock VerticalAlignment="Center"
-                                                Foreground="{StaticResource TextMutedBrush}"
-                                                Text="步骤 2 / 3 · 页面规则" />
-                                 </StackPanel>
-                             </Grid>
+                                               Text="{Binding TemplateSettingsScope}" />
+                                </Grid>
+                            </Grid>
 
                             <Grid Grid.Row="2">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="240" />
-                                    <ColumnDefinition Width="12" />
-                                    <ColumnDefinition Width="300" />
-                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="{Binding TemplatePageSettingsPageColumnWidth}" />
+                                    <ColumnDefinition Width="16" />
                                     <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="{Binding TemplatePageSettingsInspectorColumnWidth}" />
                                 </Grid.ColumnDefinitions>
                                 <Border Grid.Column="0"
                                         Padding="0"
                                         Style="{StaticResource SectionCardStyle}">
                                     <Grid>
                                         <Grid.RowDefinitions>
-                                            <RowDefinition Height="54" />
+                                            <RowDefinition Height="64" />
                                             <RowDefinition Height="*" />
                                             <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
-                                        <StackPanel Margin="16,12,16,8">
-                                            <TextBlock FontWeight="SemiBold" Text="模板页面" />
+                                        <StackPanel Margin="16,10,16,8">
+                                            <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="模板页面" />
                                             <TextBlock Margin="0,3,0,0"
-                                                       FontSize="11"
+                                                       Style="{StaticResource CaptionTextStyle}"
                                                        Foreground="{StaticResource TextMutedBrush}"
                                                        Text="拖放或按钮调整输出顺序" />
                                         </StackPanel>
@@ -921,16 +1010,28 @@
                                                  AutomationProperties.AutomationId="TemplatePageOrderList">
                                             <ListBox.ItemContainerStyle>
                                                 <Style TargetType="ListBoxItem">
-                                                    <Setter Property="MinHeight" Value="62" />
+                                                    <Setter Property="MinHeight" Value="56" />
                                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                                    <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
-                                                    <Setter Property="BorderThickness" Value="0,0,0,1" />
+                                                    <Setter Property="Margin" Value="14,3" />
+                                                    <Setter Property="BorderThickness" Value="0" />
                                                     <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
-                                                    <Style.Triggers>
-                                                        <Trigger Property="IsSelected" Value="True">
-                                                            <Setter Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
-                                                        </Trigger>
-                                                    </Style.Triggers>
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="ListBoxItem">
+                                                                <Border x:Name="ItemChrome" Background="Transparent" CornerRadius="8">
+                                                                    <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsSelected" Value="True">
+                                                                        <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
                                                 </Style>
                                             </ListBox.ItemContainerStyle>
                                         </ListBox>
@@ -951,8 +1052,7 @@
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock FontSize="16"
-                                                           FontWeight="SemiBold"
+                                                <TextBlock Style="{StaticResource PanelTitleTextStyle}"
                                                            Text="页面预览" />
                                                 <TextBlock Margin="0,4,0,0"
                                                            Foreground="{StaticResource TextMutedBrush}"
@@ -963,8 +1063,8 @@
                                                        Foreground="{StaticResource TextMutedBrush}"
                                                        Text="{Binding SelectedTemplatePage.CanvasSummary}" />
                                         </Grid>
-                                        <Border Height="420"
-                                                Background="#F4F4F5"
+                                        <Border Height="494"
+                                                Background="{StaticResource CanvasStageBrush}"
                                                 BorderBrush="{StaticResource BorderBrush}"
                                                 BorderThickness="1"
                                                 CornerRadius="8"
@@ -1014,9 +1114,8 @@
                                                             <ColumnDefinition Width="Auto" />
                                                         </Grid.ColumnDefinitions>
                                                         <StackPanel>
-                                                            <TextBlock FontSize="16"
-                                                                       FontWeight="SemiBold"
-                                                                       Text="页面属性" />
+                                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}"
+                                                               Text="页面属性" />
                                                             <TextBlock Margin="0,4,0,0"
                                                                        FontSize="12"
                                                                        Foreground="{StaticResource TextMutedBrush}"
@@ -1030,9 +1129,8 @@
                                                         </Border>
                                                     </Grid>
 
-                                                    <TextBlock Margin="0,0,0,7"
-                                                               FontSize="12"
-                                                               FontWeight="Medium"
+                                                    <TextBlock Margin="0,0,0,6"
+                                                               Style="{StaticResource FieldLabelTextStyle}"
                                                                Text="页面名称" />
                                                     <TextBox Style="{StaticResource FieldTextBoxStyle}"
                                                              Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
@@ -1040,26 +1138,33 @@
                                                              InputMethod.IsInputMethodEnabled="True"
                                                              AutomationProperties.AutomationId="TemplatePageNameInput"
                                                              AutomationProperties.Name="页面名称" />
+                                                    <TextBlock Margin="0,4,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}"
+                                                               Text="用于输出命名，页码随排序更新" />
 
-                                                    <TextBlock Margin="0,18,0,7"
-                                                               FontSize="12"
-                                                               FontWeight="Medium"
+                                                    <TextBlock Margin="0,10,0,6"
+                                                               Style="{StaticResource FieldLabelTextStyle}"
                                                                Text="内容类型" />
                                                     <ComboBox Style="{StaticResource FieldComboBoxStyle}"
                                                               ItemsSource="{x:Static local:TemplatePageRowViewModel.ContentTypeOptions}"
                                                               SelectedItem="{Binding ContentTypeText, Mode=TwoWay}"
                                                               IsEnabled="{Binding IsAffected}"
                                                               AutomationProperties.AutomationId="TemplatePageContentTypeSelect" />
+                                                    <TextBlock Margin="0,4,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}"
+                                                               Text="也可设为动态尺码表页" />
 
-                                                    <TextBlock Margin="0,18,0,7"
-                                                               FontSize="12"
-                                                               FontWeight="Medium"
+                                                    <TextBlock Margin="0,10,0,6"
+                                                               Style="{StaticResource FieldLabelTextStyle}"
                                                                Text="生成方式" />
                                                     <ComboBox Style="{StaticResource FieldComboBoxStyle}"
                                                               ItemsSource="{x:Static local:TemplatePageRowViewModel.GenerationModeOptions}"
                                                               SelectedItem="{Binding GenerationModeText, Mode=TwoWay}"
                                                               IsEnabled="{Binding IsAffected}"
                                                               AutomationProperties.AutomationId="TemplatePageGenerationModeSelect" />
+                                                    <TextBlock Margin="0,4,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}"
+                                                               Text="只有每款生成一次或按变体数量组合" />
 
                                                     <StackPanel Margin="0,18,0,0"
                                                                 Visibility="{Binding IsVariantCapacityVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
@@ -1077,14 +1182,26 @@
                                                                    Text="必须填写大于 0 的数字" />
                                                     </StackPanel>
 
-                                                    <CheckBox Margin="0,20,0,0"
-                                                              Content="启用此页面"
-                                                              IsChecked="{Binding Enabled, Mode=TwoWay}"
-                                                              IsEnabled="{Binding IsAffected}"
-                                                              FocusVisualStyle="{StaticResource VisibleFocusStyle}"
-                                                              AutomationProperties.AutomationId="TemplatePageEnabledCheckBox" />
+                                                    <Border Height="50"
+                                                            Margin="0,10,0,0"
+                                                            Padding="12,6"
+                                                            Background="{StaticResource SurfaceSubtleBrush}"
+                                                            CornerRadius="6">
+                                                        <Grid>
+                                                            <StackPanel VerticalAlignment="Center">
+                                                                <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="在模板组中启用" />
+                                                                <TextBlock Style="{StaticResource CaptionTextStyle}" Text="可在新建批次中选择" />
+                                                            </StackPanel>
+                                                            <CheckBox HorizontalAlignment="Right"
+                                                                      VerticalAlignment="Center"
+                                                                      Style="{StaticResource ToggleSwitchStyle}"
+                                                                      IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                                                      IsEnabled="{Binding IsAffected}"
+                                                                      AutomationProperties.AutomationId="TemplatePageEnabledCheckBox" />
+                                                        </Grid>
+                                                    </Border>
 
-                                                    <Border Margin="0,20,0,0"
+                                                    <Border Margin="0,10,0,0"
                                                             Padding="12"
                                                             Background="{StaticResource InfoSurfaceBrush}"
                                                             CornerRadius="6">
@@ -1169,31 +1286,31 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
-                                    <TextBlock FontSize="24"
-                                               FontWeight="Bold"
+                                    <TextBlock Style="{StaticResource PageTitleTextStyle}"
                                                Text="{Binding CalibrationHeaderTitle}" />
                                     <TextBlock Margin="0,5,0,0"
+                                               Style="{StaticResource CaptionTextStyle}"
                                                Foreground="{StaticResource TextMutedBrush}"
                                                Text="导入模板  /  页面设置  /  校准" />
                                  </StackPanel>
                                  <StackPanel Grid.Column="1" Orientation="Horizontal">
                                      <Button Margin="0,0,8,0"
-                                             Style="{StaticResource SecondaryButtonStyle}"
+                                             Style="{StaticResource GhostButtonStyle}"
                                              Command="{Binding ExitCalibrationCommand}"
                                              Content="返回页面设置"
                                              AutomationProperties.AutomationId="ExitCalibrationButton" />
                                      <Button Margin="0,0,8,0"
-                                             Style="{StaticResource SecondaryButtonStyle}"
+                                             Style="{StaticResource GhostButtonStyle}"
                                              Command="{Binding ReturnToTemplateImportCommand}"
                                              Content="继续添加 PSD"
                                              AutomationProperties.AutomationId="AddPsdFromCalibrationButton" />
                                      <Button Margin="0,0,8,0"
-                                             Style="{StaticResource SecondaryButtonStyle}"
+                                             Style="{StaticResource GhostButtonStyle}"
                                             Command="{Binding UndoCalibrationCommand}"
                                             IsEnabled="{Binding CalibrationDraft.CanUndo}"
                                             Content="撤销"
                                             AutomationProperties.AutomationId="UndoCalibrationButton" />
-                                    <Button Style="{StaticResource SecondaryButtonStyle}"
+                                    <Button Style="{StaticResource GhostButtonStyle}"
                                             Command="{Binding RedoCalibrationCommand}"
                                             IsEnabled="{Binding CalibrationDraft.CanRedo}"
                                             Content="重做"
@@ -1425,7 +1542,7 @@
                                         Background="{StaticResource SurfaceBrush}"
                                         BorderBrush="{StaticResource BorderBrush}"
                                         BorderThickness="1"
-                                        CornerRadius="6"
+                                        CornerRadius="8"
                                         AllowDrop="True"
                                         Focusable="True"
                                         IsEnabled="{Binding CanEditCalibration}"
@@ -1443,8 +1560,8 @@
                                         <Border Margin="16"
                                                 HorizontalAlignment="Stretch"
                                                 VerticalAlignment="Stretch"
-                                                Background="{StaticResource CanvasBrush}"
-                                                BorderBrush="#C8C8CC"
+                                                Background="{StaticResource CanvasStageBrush}"
+                                                BorderBrush="{StaticResource BorderStrongBrush}"
                                                 BorderThickness="1"
                                                 ClipToBounds="True"
                                                 RenderTransformOrigin="0.5,0.5">
@@ -1805,21 +1922,95 @@
         </Grid>
 
         <Grid Grid.Row="0"
+              Panel.ZIndex="30"
+              Background="{StaticResource ModalOverlayBrush}"
+              Visibility="{Binding IsTemplateDialogVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              PreviewKeyDown="TemplateDialog_PreviewKeyDown"
+              AutomationProperties.AutomationId="TemplateConfirmationDialog"
+              AutomationProperties.Name="{Binding TemplateDialogTitle}"
+              AutomationProperties.LiveSetting="Assertive">
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource DialogCardStyle}">
+                <StackPanel>
+                    <TextBlock FontSize="18"
+                               FontWeight="SemiBold"
+                               LineHeight="24"
+                               Text="{Binding TemplateDialogTitle}" />
+                    <TextBlock Margin="0,12,0,0"
+                               Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding TemplateDialogBody}"
+                               TextWrapping="Wrap" />
+                    <Border Margin="0,18,0,0"
+                            Padding="14,12"
+                            Background="{StaticResource SurfaceSubtleBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Ellipse Width="8"
+                                     Height="8"
+                                     VerticalAlignment="Top"
+                                     Margin="0,6,0,0"
+                                     Fill="{StaticResource StatusAnalyzingBrush}" />
+                            <TextBlock Grid.Column="2"
+                                       Style="{StaticResource SmallBodyTextStyle}"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Text="{Binding TemplateDialogSafetyNote}"
+                                       TextWrapping="Wrap" />
+                        </Grid>
+                    </Border>
+                    <StackPanel Margin="0,22,0,0"
+                                HorizontalAlignment="Right"
+                                Orientation="Horizontal">
+                        <Button Margin="0,0,8,0"
+                                Style="{StaticResource GhostButtonStyle}"
+                                Command="{Binding TertiaryTemplateDialogCommand}"
+                                Content="{Binding TemplateDialogTertiaryText}"
+                                Visibility="{Binding TemplateDialogHasTertiaryAction, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="TemplateDialogTertiaryButton" />
+                        <Button Margin="0,0,8,0"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding SecondaryTemplateDialogCommand}"
+                                Content="{Binding TemplateDialogSecondaryText}"
+                                Visibility="{Binding TemplateDialogHasSecondaryAction, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="TemplateDialogSecondaryButton" />
+                        <Button IsDefault="True"
+                                Command="{Binding ConfirmTemplateDialogCommand}"
+                                Content="{Binding TemplateDialogPrimaryText}"
+                                AutomationProperties.AutomationId="TemplateDialogPrimaryButton">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButtonStyle}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding TemplateDialogIsDestructive}" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource DangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="0"
               Panel.ZIndex="20"
-              Background="#66000000"
+              Background="{StaticResource ModalOverlayBrush}"
               Visibility="{Binding IsDuplicateReviewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
               KeyboardNavigation.TabNavigation="Cycle"
               AutomationProperties.AutomationId="DuplicatePsdReviewDialog"
               AutomationProperties.Name="重复 PSD 确认"
               AutomationProperties.LiveSetting="Assertive">
-            <Border Width="500"
-                    Padding="24"
-                    HorizontalAlignment="Center"
+            <Border HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8">
+                    Style="{StaticResource DialogCardStyle}">
                 <StackPanel>
                     <TextBlock FontSize="18"
                                FontWeight="SemiBold"

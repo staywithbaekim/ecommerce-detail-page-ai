@@ -52,6 +52,20 @@ public sealed class WpfShellTests
                 window.Show();
                 FlushLayout(window);
 
+                var comboStyle = Assert.IsType<Style>(application.FindResource("FieldComboBoxStyle"));
+                Assert.Contains(
+                    comboStyle.Setters.OfType<Setter>(),
+                    setter => setter.Property == Control.TemplateProperty && setter.Value is ControlTemplate);
+
+                var textBoxStyle = Assert.IsType<Style>(application.FindResource("FieldTextBoxStyle"));
+                Assert.Contains(
+                    textBoxStyle.Setters.OfType<Setter>(),
+                    setter => setter.Property == FrameworkElement.MinHeightProperty
+                        && Equals(setter.Value, 36d));
+                Assert.DoesNotContain(
+                    textBoxStyle.Setters.OfType<Setter>(),
+                    setter => setter.Property == FrameworkElement.HeightProperty);
+
                 VerifySize(window, 1440, 900);
                 VerifySize(window, 1100, 760);
 
@@ -121,6 +135,36 @@ public sealed class WpfShellTests
                 FlushLayout(window);
                 Assert.Equal("frame_257", viewModel.CalibrationFrameIdInput);
                 Assert.Equal("frame_257", frameList.SelectedValue);
+
+                var showDialog = typeof(MainWindowViewModel).GetMethod(
+                    "ShowTemplateDialogAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("Template dialog entry point not found.");
+                var dialogTask = Assert.IsAssignableFrom<Task>(showDialog.Invoke(
+                    viewModel,
+                    [
+                        "放弃当前模板组？",
+                        "将删除软件内部草稿。",
+                        "用户源 PSD 保持只读。",
+                        "放弃模板组",
+                        "取消",
+                        null,
+                        true
+                    ]));
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsTemplateDialogVisible);
+                var overlay = FindByAutomationId<Grid>(window, "TemplateConfirmationDialog");
+                Assert.Equal(Visibility.Visible, overlay.Visibility);
+                var primary = FindByAutomationId<Button>(window, "TemplateDialogPrimaryButton");
+                Assert.Equal("放弃模板组", primary.Content);
+                Assert.Equal(application.FindResource("DangerBrush"), primary.Background);
+
+                viewModel.SecondaryTemplateDialogCommand.Execute(null);
+                FlushLayout(window);
+                Assert.True(dialogTask.IsCompleted);
+                Assert.False(viewModel.IsTemplateDialogVisible);
+                Assert.Equal(Visibility.Collapsed, overlay.Visibility);
             }
             finally
             {
@@ -186,6 +230,9 @@ public sealed class WpfShellTests
         var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
 
         viewModel.SetWindowWidth(1100);
+        Assert.True(viewModel.IsTemplatePageSettingsCompactLayout);
+        Assert.Equal(248, viewModel.TemplatePageSettingsPageColumnWidth.Value);
+        Assert.Equal(300, viewModel.TemplatePageSettingsInspectorColumnWidth.Value);
         Assert.True(viewModel.IsCalibrationNarrowLayout);
         Assert.False(viewModel.IsCalibrationPagePanelVisible);
         Assert.True(viewModel.IsCalibrationCanvasPanelVisible);
@@ -196,6 +243,9 @@ public sealed class WpfShellTests
         Assert.True(viewModel.IsCalibrationInspectorPanelVisible);
 
         viewModel.SetWindowWidth(1440);
+        Assert.False(viewModel.IsTemplatePageSettingsCompactLayout);
+        Assert.Equal(300, viewModel.TemplatePageSettingsPageColumnWidth.Value);
+        Assert.Equal(352, viewModel.TemplatePageSettingsInspectorColumnWidth.Value);
         Assert.False(viewModel.IsCalibrationNarrowLayout);
         Assert.True(viewModel.IsCalibrationPagePanelVisible);
         Assert.True(viewModel.IsCalibrationCanvasPanelVisible);
