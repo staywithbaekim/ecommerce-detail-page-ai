@@ -179,15 +179,20 @@ public sealed class TemplatePageImportService(
                 cancellationToken).ConfigureAwait(false);
         }
 
+        var previewRelativePath = GetPreviewRelativePath(ownedCopy.InternalRelativePath);
         var inspection = await inspectionPort.InspectAsync(
-            new PsdInspectionRequest(request.CommandId, ownedCopy.InternalRelativePath),
+            new PsdInspectionRequest(
+                request.CommandId,
+                ownedCopy.InternalRelativePath,
+                previewRelativePath),
             cancellationToken).ConfigureAwait(false);
         if (!inspection.IsSuccess)
         {
             return await FailAndCleanAsync(
                 ownedCopy.InternalRelativePath,
                 Map(inspection.Error!),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                deletePreview: true).ConfigureAwait(false);
         }
 
         if (!string.Equals(inspection.Inspection!.FileSha256, ownedCopy.Sha256, StringComparison.OrdinalIgnoreCase)
@@ -199,7 +204,8 @@ public sealed class TemplatePageImportService(
                     "TPL_SOURCE_CHANGED_DURING_COPY",
                     retryable: true,
                     "Wait until the PSD is stable, then retry the import."),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                deletePreview: true).ConfigureAwait(false);
         }
 
         var resource = new ImportedTemplateResource(
@@ -226,7 +232,8 @@ public sealed class TemplatePageImportService(
                     "TPL_REVISION_COMMIT_FAILED",
                     retryable: true,
                     "The previous template revision remains active. Retry the import."),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                deletePreview: true).ConfigureAwait(false);
         }
     }
 
@@ -255,10 +262,12 @@ public sealed class TemplatePageImportService(
         string internalRelativePath,
         TemplateImportError error,
         CancellationToken cancellationToken,
-        IReadOnlyList<ImportedTemplateResource>? duplicates = null)
+        IReadOnlyList<ImportedTemplateResource>? duplicates = null,
+        bool deletePreview = false)
     {
-        var cleaned = await sourceFiles.DeleteOwnedCopyAsync(internalRelativePath, cancellationToken)
-            .ConfigureAwait(false);
+        var cleaned = deletePreview
+            ? await DeleteOwnedImportArtifactsAsync(internalRelativePath, cancellationToken).ConfigureAwait(false)
+            : await sourceFiles.DeleteOwnedCopyAsync(internalRelativePath, cancellationToken).ConfigureAwait(false);
         return cleaned
             ? Failure(error, duplicates)
             : Failure(Error(
@@ -266,6 +275,28 @@ public sealed class TemplatePageImportService(
                 retryable: true,
                 "Restart the application to recover the incomplete internal staging copy."),
                 duplicates);
+    }
+
+    private async Task<bool> DeleteOwnedImportArtifactsAsync(
+        string internalRelativePath,
+        CancellationToken cancellationToken)
+    {
+        var sourceDeleted = await sourceFiles.DeleteOwnedCopyAsync(internalRelativePath, cancellationToken)
+            .ConfigureAwait(false);
+        await sourceFiles.DeleteOwnedCopyAsync(
+            GetPreviewRelativePath(internalRelativePath),
+            cancellationToken).ConfigureAwait(false);
+        return sourceDeleted;
+    }
+
+    public static string GetPreviewRelativePath(string internalRelativePath)
+    {
+        var separator = internalRelativePath.LastIndexOf('/');
+        if (separator <= 0)
+        {
+            throw new InvalidOperationException("TPL_PSD_PATH_NOT_OWNED");
+        }
+        return internalRelativePath[..(separator + 1)] + "preview.png";
     }
 
     private static void Validate(TemplatePageImportRequest request)

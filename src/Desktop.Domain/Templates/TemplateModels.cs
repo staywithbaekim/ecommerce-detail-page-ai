@@ -169,6 +169,23 @@ public sealed record TemplatePage
         VariantCapacity,
         Enabled,
         TemplateResourceId);
+
+    public TemplatePage Reconfigure(
+        int order,
+        string name,
+        TemplatePageContentType contentType,
+        TemplateGenerationMode generationMode,
+        int? variantCapacity,
+        bool enabled) => Create(
+            PageId,
+            RevisionId,
+            order,
+            name,
+            contentType,
+            generationMode,
+            variantCapacity,
+            enabled,
+            TemplateResourceId);
 }
 
 public sealed record FrameBinding
@@ -233,6 +250,17 @@ public sealed record FrameBinding
             selectionRequirement,
             layoutIntent);
     }
+
+    public FrameBinding Reconfigure(
+        SelectionRequirement? selectionRequirement = null,
+        LayoutIntent? layoutIntent = null) => Create(
+            FrameId,
+            PageId,
+            LayerPath,
+            ExpectedLayer,
+            SupersededLayers,
+            selectionRequirement ?? SelectionRequirement,
+            layoutIntent ?? LayoutIntent);
 }
 
 public sealed record TemplateRevision
@@ -393,6 +421,242 @@ public sealed record TemplateRevision
             CreatedAt,
             Pages,
             FrameBindings);
+    }
+
+    public TemplateRevision AddPage(TemplatePage page)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        EnsureDraftEditable();
+        if (!string.Equals(page.RevisionId, RevisionId, StringComparison.Ordinal)
+            || Pages.Any(existing => string.Equals(existing.PageId, page.PageId, StringComparison.Ordinal)))
+        {
+            throw new TemplateRuleViolationException("TPL_REVISION_PAGE_SET_INVALID");
+        }
+
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            Pages.Add(page),
+            FrameBindings);
+    }
+
+    public TemplateRevision RemovePage(string pageId)
+    {
+        EnsureDraftEditable();
+        var index = -1;
+        for (var candidate = 0; candidate < Pages.Length; candidate++)
+        {
+            if (string.Equals(Pages[candidate].PageId, pageId, StringComparison.Ordinal))
+            {
+                index = candidate;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        }
+
+        var remainingPages = Pages
+            .Where(page => !string.Equals(page.PageId, pageId, StringComparison.Ordinal))
+            .OrderBy(page => page.Order)
+            .Select((page, order) => page.Reconfigure(
+                order,
+                page.Name,
+                page.ContentType,
+                page.GenerationMode,
+                page.VariantCapacity,
+                page.Enabled));
+        var remainingBindings = FrameBindings.Where(binding =>
+            !string.Equals(binding.PageId, pageId, StringComparison.Ordinal));
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            remainingPages,
+            remainingBindings);
+    }
+
+    public TemplateRevision ConfigurePage(
+        string pageId,
+        string name,
+        TemplatePageContentType contentType,
+        TemplateGenerationMode generationMode,
+        int? variantCapacity,
+        bool enabled)
+    {
+        EnsureDraftEditable();
+        var index = -1;
+        for (var candidate = 0; candidate < Pages.Length; candidate++)
+        {
+            if (string.Equals(Pages[candidate].PageId, pageId, StringComparison.Ordinal))
+            {
+                index = candidate;
+                break;
+            }
+        }
+        if (index < 0)
+        {
+            throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        }
+
+        var configured = Pages[index].Reconfigure(
+            Pages[index].Order,
+            name,
+            contentType,
+            generationMode,
+            variantCapacity,
+            enabled);
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            Pages.SetItem(index, configured),
+            FrameBindings);
+    }
+
+    public TemplateRevision ReorderPages(IEnumerable<string> orderedPageIds)
+    {
+        ArgumentNullException.ThrowIfNull(orderedPageIds);
+        EnsureDraftEditable();
+        var order = orderedPageIds.ToImmutableArray();
+        if (order.Length != Pages.Length
+            || order.Distinct(StringComparer.Ordinal).Count() != Pages.Length
+            || order.Any(pageId => Pages.All(page => !string.Equals(
+                page.PageId,
+                pageId,
+                StringComparison.Ordinal))))
+        {
+            throw new TemplateRuleViolationException("TPL_REVISION_PAGE_SET_INVALID");
+        }
+
+        var byId = Pages.ToDictionary(page => page.PageId, StringComparer.Ordinal);
+        var reordered = order.Select((pageId, index) => byId[pageId].Reconfigure(
+            index,
+            byId[pageId].Name,
+            byId[pageId].ContentType,
+            byId[pageId].GenerationMode,
+            byId[pageId].VariantCapacity,
+            byId[pageId].Enabled));
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            reordered,
+            FrameBindings);
+    }
+
+    public TemplateRevision AddFrameBinding(FrameBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        EnsureDraftEditable();
+        if (!Pages.Any(page => string.Equals(page.PageId, binding.PageId, StringComparison.Ordinal))
+            || FrameBindings.Any(existing => string.Equals(existing.FrameId, binding.FrameId, StringComparison.Ordinal)))
+        {
+            throw new TemplateRuleViolationException("TPL_REVISION_BINDING_SET_INVALID");
+        }
+
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            Pages,
+            FrameBindings.Add(binding));
+    }
+
+    public TemplateRevision UpdateFrameBinding(
+        string frameId,
+        SelectionRequirement? selectionRequirement = null,
+        LayoutIntent? layoutIntent = null)
+    {
+        ArgumentNullException.ThrowIfNull(frameId);
+        EnsureDraftEditable();
+        var index = -1;
+        for (var candidate = 0; candidate < FrameBindings.Length; candidate++)
+        {
+            if (string.Equals(FrameBindings[candidate].FrameId, frameId, StringComparison.Ordinal))
+            {
+                index = candidate;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            throw new TemplateRuleViolationException("TPL_FRAME_NOT_FOUND");
+        }
+
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            Pages,
+            FrameBindings.SetItem(index, FrameBindings[index].Reconfigure(selectionRequirement, layoutIntent)));
+    }
+
+    public TemplateRevision RemoveFrameBinding(string frameId)
+    {
+        ArgumentNullException.ThrowIfNull(frameId);
+        EnsureDraftEditable();
+        var index = -1;
+        for (var candidate = 0; candidate < FrameBindings.Length; candidate++)
+        {
+            if (string.Equals(FrameBindings[candidate].FrameId, frameId, StringComparison.Ordinal))
+            {
+                index = candidate;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            throw new TemplateRuleViolationException("TPL_FRAME_NOT_FOUND");
+        }
+
+        return CreateValidated(
+            RevisionId,
+            GroupId,
+            RevisionNo,
+            State,
+            ManifestRef,
+            RuleDigest,
+            CreatedAt,
+            Pages,
+            FrameBindings.RemoveAt(index));
+    }
+
+    private void EnsureDraftEditable()
+    {
+        if (State == TemplateRevisionState.Committed || IsFailureState(State))
+        {
+            throw new TemplateRuleViolationException("TPL_REVISION_IMMUTABLE");
+        }
     }
 
     private static TemplateRevision CreateValidated(

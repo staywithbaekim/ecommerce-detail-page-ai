@@ -3,7 +3,7 @@ using Desktop.Application.Files;
 
 namespace Desktop.Infrastructure.Files;
 
-public sealed class JsonManifestStore(IFileStore fileStore) : IManifestStore
+public sealed class JsonManifestStore(IFileStore fileStore) : IManifestStore, IRevisionCommitMarkerStore
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -26,5 +26,53 @@ public sealed class JsonManifestStore(IFileStore fileStore) : IManifestStore
         return bytes is null
             ? null
             : JsonSerializer.Deserialize<AppManifest>(bytes, SerializerOptions);
+    }
+
+    public Task WriteReadyMarkerAsync(
+        string revisionDirectory,
+        RevisionCommitMarker marker,
+        CancellationToken cancellationToken) => WriteMarkerAsync(
+            revisionDirectory,
+            "ready.marker",
+            marker with { State = "ready" },
+            cancellationToken);
+
+    public Task WriteCommittedMarkerAsync(
+        string revisionDirectory,
+        RevisionCommitMarker marker,
+        CancellationToken cancellationToken) => WriteMarkerAsync(
+            revisionDirectory,
+            "committed.marker",
+            marker with { State = "committed" },
+            cancellationToken);
+
+    public async Task<RevisionCommitMarker?> ReadMarkerAsync(
+        string revisionDirectory,
+        string markerName,
+        CancellationToken cancellationToken)
+    {
+        var normalized = markerName is "ready.marker" or "committed.marker"
+            ? markerName
+            : throw new ArgumentException("Unsupported marker name.", nameof(markerName));
+        var bytes = await fileStore.ReadAsync(
+            revisionDirectory.TrimEnd('/') + "/" + normalized,
+            cancellationToken).ConfigureAwait(false);
+        return bytes is null
+            ? null
+            : JsonSerializer.Deserialize<RevisionCommitMarker>(bytes, SerializerOptions);
+    }
+
+    private Task WriteMarkerAsync(
+        string revisionDirectory,
+        string markerName,
+        RevisionCommitMarker marker,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(marker);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(marker, SerializerOptions);
+        return fileStore.WriteAtomicallyAsync(
+            revisionDirectory.TrimEnd('/') + "/" + markerName,
+            bytes,
+            cancellationToken);
     }
 }

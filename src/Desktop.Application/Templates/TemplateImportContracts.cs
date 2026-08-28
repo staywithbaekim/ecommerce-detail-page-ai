@@ -103,6 +103,10 @@ public interface ITemplateSourceFilePort
 
 public interface ITemplateResourceRepository
 {
+    Task<ImportedTemplateResource?> GetByResourceIdAsync(
+        string resourceId,
+        CancellationToken cancellationToken);
+
     Task<ImportedTemplateResource?> GetByCommandIdAsync(
         string commandId,
         CancellationToken cancellationToken);

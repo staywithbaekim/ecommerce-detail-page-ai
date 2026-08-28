@@ -1,0 +1,110 @@
+{
+  "protocol": "template-package/v1",
+  "groupName": "示例模板组",
+  "revisionNo": 1,
+  "revisionId": "revision_example",
+  "ruleDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "entries": [
+    {
+      "logicalId": "resource_example",
+      "relativePath": "resources/resource_example.psd",
+      "length": 8,
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ],
+  "pages": [
+    {
+      "pageId": "page_example",
+      "order": 0,
+      "name": "主图页",
+      "contentType": "NormalComposition",
+      "generationMode": "OncePerProduct",
+      "variantCapacity": null,
+      "enabled": true,
+      "resourceLogicalId": "resource_example",
+      "inspection": {
+        "fileSha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "sizeBytes": 8,
+        "canvas": {
+          "width": 790,
+          "height": 1252,
+          "depth": 8,
+          "colorMode": "RGB"
+        },
+        "layerCount": 1,
+        "smartObjectCount": 1,
+        "maskCount": 0,
+        "vectorMaskCount": 0,
+        "clippingCount": 0,
+        "structureSignature": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "timing": {
+          "openMilliseconds": 1,
+          "inspectMilliseconds": 1,
+          "totalMilliseconds": 2
+        },
+        "processPeakWorkingSetBytes": 1024,
+        "preview": null,
+        "layers": [
+          {
+            "path": [2],
+            "layerId": 257,
+            "name": "registered_frame",
+            "kind": "smartObject",
+            "isGroup": false,
+            "visible": true,
+            "effectiveVisible": true,
+            "clipping": false,
+            "opacity": 255,
+            "fillOpacity": 255,
+            "blendMode": "normal",
+            "bounds": {
+              "left": 0,
+              "top": 0,
+              "right": 790,
+              "bottom": 1252
+            },
+            "hasMask": false,
+            "hasVectorMask": false,
+            "clippingBase": null,
+            "smartObject": {
+              "uniqueId": "smart_object_example",
+              "filename": "embedded.psb",
+              "kind": "embedded",
+              "fileType": "psb",
+              "detectedFileType": "psb",
+              "fileSize": 8,
+              "isPsd": false,
+              "transformBox": []
+            }
+          }
+        ]
+      },
+      "bindings": [
+        {
+          "frameId": "frame_example",
+          "pageId": "page_example",
+          "layerPath": [2],
+          "layerId": 257,
+          "layerName": "registered_frame",
+          "visible": true,
+          "clipping": false,
+          "userMask": false,
+          "vectorMask": false,
+          "opacity": 255,
+          "blendMode": "normal",
+          "structureSignature": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+          "selectionDescription": "Choose one user-selected asset.",
+          "selectionCriteria": [{ "key": "asset_id", "value": "asset_front" }],
+          "intent": "subject_complete",
+          "scale": 1,
+          "offsetX": 0,
+          "offsetY": 0,
+          "safeLeft": 0,
+          "safeTop": 0,
+          "safeRight": 790,
+          "safeBottom": 1252
+        }
+      ]
+    }
+  ]
+}

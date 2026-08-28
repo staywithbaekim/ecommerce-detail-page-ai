@@ -174,6 +174,16 @@ public sealed partial class SqliteDesktopStore
                 ON template_resources(sha256);
             CREATE INDEX IF NOT EXISTS IX_template_resources_draft
                 ON template_resources(group_id, draft_id);
+            """),
+        new(4, "desktop-v4-calibration-state-schema-001", """
+            CREATE TABLE IF NOT EXISTS calibration_draft_states (
+                draft_id TEXT NOT NULL,
+                page_id TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(draft_id, page_id),
+                FOREIGN KEY(draft_id) REFERENCES calibration_drafts(draft_id) ON DELETE CASCADE
+            );
             """)
     ];
 

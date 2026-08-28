@@ -4,6 +4,76 @@ namespace Desktop.Domain.Tests;
 
 public sealed class TemplateDomainTests
 {
+    [Fact]
+    public void SixPageIncrementKeepsFivePageSnapshotIsolated()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var basePages = Enumerable.Range(0, 5)
+            .Select(index => TemplatePage.Create(
+                $"page_{index + 1}",
+                "revision_01",
+                index,
+                $"页面 {index + 1}",
+                TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct,
+                null,
+                enabled: true,
+                $"resource_{index + 1}"))
+            .ToArray();
+        var baseRevision = TemplateRevision.Restore(
+            "revision_01",
+            "group_01",
+            1,
+            TemplateRevisionState.Committed,
+            "templates/groups/group_01/revisions/revision_01/revision-manifest.json",
+            "sha256:" + new string('a', 64),
+            now,
+            basePages,
+            []);
+        var increment = TemplateRevision.CreateIncrement(
+            "revision_02",
+            baseRevision,
+            2,
+            now,
+            [TemplatePage.Create(
+                "page_6",
+                "revision_02",
+                5,
+                "页面 6",
+                TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct,
+                null,
+                enabled: true,
+                "resource_6")]);
+        var snapshot = BatchTemplateSnapshot.Create(
+            "snapshot_old",
+            "batch_old",
+            baseRevision,
+            basePages.Select(page => page.PageId),
+            now);
+        var incrementCommitted = increment
+            .AdvanceTo(TemplateRevisionState.ImportingCopy, new RevisionTransitionEvidence(SourceReadable: true))
+            .AdvanceTo(TemplateRevisionState.StructureInspecting, new RevisionTransitionEvidence(CopyMatchesSource: true))
+            .AdvanceTo(TemplateRevisionState.FrameBinding, new RevisionTransitionEvidence(StructureReadable: true))
+            .AdvanceTo(TemplateRevisionState.Calibrating, new RevisionTransitionEvidence(RegisteredFramesHaveEvidence: true))
+            .AdvanceTo(TemplateRevisionState.AwaitingReview, new RevisionTransitionEvidence(CalibrationComplete: true))
+            .AdvanceTo(TemplateRevisionState.Committing, new RevisionTransitionEvidence(ConfigurationValid: true))
+            .Commit(
+                "templates/groups/group_01/revisions/revision_02/revision-manifest.json",
+                "sha256:" + new string('b', 64),
+                new RevisionTransitionEvidence(CommitArtifactsConsistent: true));
+        var newSnapshot = BatchTemplateSnapshot.Create(
+            "snapshot_new",
+            "batch_new",
+            incrementCommitted,
+            increment.Pages.Select(page => page.PageId),
+            now);
+
+        Assert.Equal(5, snapshot.Pages.Length);
+        Assert.Equal(6, newSnapshot.Pages.Length);
+        Assert.DoesNotContain("page_6", snapshot.Pages.Select(page => page.PageId));
+        Assert.Contains("page_6", newSnapshot.Pages.Select(page => page.PageId));
+    }
     private const string RuleDigest =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -54,6 +124,46 @@ public sealed class TemplateDomainTests
         Assert.Equal("frame_01", Assert.Single(increment.FrameBindings).FrameId);
         Assert.Equal(committed.FrameBindings[0].ExpectedLayer.StructureSignature.Value,
             increment.FrameBindings[0].ExpectedLayer.StructureSignature.Value);
+    }
+
+    [Fact]
+    public void RemovingDraftPageReordersRemainingPagesAndDropsItsBindings()
+    {
+        var first = Page("page_01", "revision_01", 0);
+        var second = Page("page_02", "revision_01", 1);
+        var draft = TemplateRevision.CreateDraft(
+            "revision_01",
+            "group_01",
+            1,
+            DateTimeOffset.UtcNow,
+            [first, second],
+            [Binding("frame_02", second.PageId)]);
+
+        var updated = draft.RemovePage(second.PageId);
+
+        var remaining = Assert.Single(updated.Pages);
+        Assert.Equal(first.PageId, remaining.PageId);
+        Assert.Equal(0, remaining.Order);
+        Assert.Empty(updated.FrameBindings);
+    }
+
+    [Fact]
+    public void RemovingDraftFrameBindingKeepsPageAndOtherBindingsUnchanged()
+    {
+        var page = Page("page_01", "revision_01", 0);
+        var draft = TemplateRevision.CreateDraft(
+            "revision_01",
+            "group_01",
+            1,
+            DateTimeOffset.UtcNow,
+            [page],
+            [Binding("frame_01", page.PageId), Binding("frame_02", page.PageId)]);
+
+        var updated = draft.RemoveFrameBinding("frame_01");
+
+        Assert.Equal(page.PageId, Assert.Single(updated.Pages).PageId);
+        Assert.Equal("frame_02", Assert.Single(updated.FrameBindings).FrameId);
+        Assert.Equal(2, draft.FrameBindings.Length);
     }
 
     [Fact]

@@ -150,9 +150,43 @@ public sealed class JsonSchemaContractValidatorTests
         Assert.Equal("CONTRACT_SCHEMA_REJECTED", Assert.Single(result.Errors).Code);
     }
 
+    [Fact]
+    public void TemplatePackageSchemaAcceptsV1AndRejectsTraversalOrUnknownVersion()
+    {
+        var valid = LoadValidTemplatePackageManifest();
+        Assert.True(_validator.Validate(ContractDocumentKind.TemplatePackageManifest, valid).IsValid);
+
+        var traversal = JsonNode.Parse(valid)!.AsObject();
+        traversal["entries"]![0]!["relativePath"] = "../customer.psd";
+        Assert.False(_validator.Validate(
+            ContractDocumentKind.TemplatePackageManifest,
+            traversal.ToJsonString()).IsValid);
+
+        var version = JsonNode.Parse(valid)!.AsObject();
+        version["protocol"] = "template-package/v2";
+        Assert.False(_validator.Validate(
+            ContractDocumentKind.TemplatePackageManifest,
+            version.ToJsonString()).IsValid);
+
+        var missingStructureEvidence = JsonNode.Parse(valid)!.AsObject();
+        missingStructureEvidence["pages"]![0]!["inspection"] = new JsonObject();
+        Assert.False(_validator.Validate(
+            ContractDocumentKind.TemplatePackageManifest,
+            missingStructureEvidence.ToJsonString()).IsValid);
+
+        var adapterLeak = JsonNode.Parse(valid)!.AsObject();
+        adapterLeak["pages"]![0]!["inspection"]!["photoshopCommand"] = "batchPlay(...)";
+        Assert.False(_validator.Validate(
+            ContractDocumentKind.TemplatePackageManifest,
+            adapterLeak.ToJsonString()).IsValid);
+    }
+
     private static string LoadValidRenderPlan() => File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "render-plan-v1.valid.example.json"));
 
     private static string LoadValidTemplateRevisionManifest() => File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "template-revision-v1.valid.example.json"));
+
+    private static string LoadValidTemplatePackageManifest() => File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "template-package-v1.valid.example.json"));
 }

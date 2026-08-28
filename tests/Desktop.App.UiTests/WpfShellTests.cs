@@ -1,9 +1,11 @@
 using System.Runtime.ExceptionServices;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Desktop.Application.Templates;
 using Xunit.Abstractions;
 
 namespace Desktop.App.UiTests;
@@ -108,6 +110,17 @@ public sealed class WpfShellTests
                     Assert.Equal(expectedScale, dpi.DpiScaleX, precision: 2);
                     Assert.Equal(expectedScale, dpi.DpiScaleY, precision: 2);
                 }
+
+                var frameList = FindByAutomationId<ListBox>(window, "CalibrationFrameList");
+                ApplyCalibrationDraft(viewModel, CreateCalibrationDraft("revision_before"));
+                FlushLayout(window);
+                Assert.Equal("frame_257", viewModel.CalibrationFrameIdInput);
+                Assert.Equal("frame_257", frameList.SelectedValue);
+
+                ApplyCalibrationDraft(viewModel, CreateCalibrationDraft("revision_after"));
+                FlushLayout(window);
+                Assert.Equal("frame_257", viewModel.CalibrationFrameIdInput);
+                Assert.Equal("frame_257", frameList.SelectedValue);
             }
             finally
             {
@@ -165,6 +178,107 @@ public sealed class WpfShellTests
 
         await using var successor = new SingleInstanceCoordinator(applicationId);
         Assert.True(await successor.TryAcquireAsync());
+    }
+
+    [Fact]
+    public void CalibrationLayoutUsesPanelSwitcherAtNarrowWidthAndThreePanelsAtWideWidth()
+    {
+        var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+
+        viewModel.SetWindowWidth(1100);
+        Assert.True(viewModel.IsCalibrationNarrowLayout);
+        Assert.False(viewModel.IsCalibrationPagePanelVisible);
+        Assert.True(viewModel.IsCalibrationCanvasPanelVisible);
+        Assert.False(viewModel.IsCalibrationInspectorPanelVisible);
+
+        viewModel.ShowCalibrationInspectorCommand.Execute(null);
+        Assert.False(viewModel.IsCalibrationCanvasPanelVisible);
+        Assert.True(viewModel.IsCalibrationInspectorPanelVisible);
+
+        viewModel.SetWindowWidth(1440);
+        Assert.False(viewModel.IsCalibrationNarrowLayout);
+        Assert.True(viewModel.IsCalibrationPagePanelVisible);
+        Assert.True(viewModel.IsCalibrationCanvasPanelVisible);
+        Assert.True(viewModel.IsCalibrationInspectorPanelVisible);
+        viewModel.Dispose();
+    }
+
+    [Fact]
+    public void ImportedPsdImmediatelyRequeriesContinueCommand()
+    {
+        var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+        var canExecuteChanged = 0;
+        viewModel.ContinuePageSettingsCommand.CanExecuteChanged += (_, _) => canExecuteChanged++;
+
+        Assert.False(viewModel.ContinuePageSettingsCommand.CanExecute(null));
+
+        viewModel.ImportedTemplateFiles.Add(new ImportedPsdRowViewModel(
+            "resource_ui_test",
+            "template.psd",
+            "790 × 1252 · 8 位 RGB",
+            "可用"));
+
+        Assert.True(viewModel.ContinuePageSettingsCommand.CanExecute(null));
+        Assert.True(canExecuteChanged > 0);
+        viewModel.Dispose();
+    }
+
+    private static TemplateCalibrationDraftView CreateCalibrationDraft(string revisionId) => new(
+        revisionId,
+        "page_1",
+        790,
+        1252,
+        TemplatePreviewSourceReference: null,
+        IsReadOnly: false,
+        Frames:
+        [
+            new TemplateFrameProjection(
+                "frame_257",
+                "page_1",
+                [0, 1],
+                257,
+                "back_main",
+                new string('a', 64),
+                10,
+                20,
+                300,
+                400,
+                HasMask: false,
+                HasVectorMask: false,
+                IsVisible: true,
+                IsClipping: false,
+                Opacity: 255,
+                BlendMode: "norm",
+                IsPreviewSupported: true,
+                IsRegistered: true)
+        ],
+        Assets: [],
+        SelectedAssetId: null,
+        SelectedFrameId: "frame_257",
+        SelectedScale: 1,
+        SelectedOffsetX: 0,
+        SelectedOffsetY: 0,
+        SelectionRequirement: "只使用用户素材",
+        StatusMessage: "已保存",
+        CanUndo: true,
+        CanRedo: false,
+        IsBlocked: false);
+
+    private static void ApplyCalibrationDraft(
+        MainWindowViewModel viewModel,
+        TemplateCalibrationDraftView draft)
+    {
+        var draftProperty = typeof(MainWindowViewModel).GetProperty(
+            nameof(MainWindowViewModel.CalibrationDraft),
+            BindingFlags.Instance | BindingFlags.Public)
+            ?? throw new InvalidOperationException("CalibrationDraft property not found.");
+        draftProperty.SetValue(viewModel, draft);
+
+        var updateMethod = typeof(MainWindowViewModel).GetMethod(
+            "UpdateCalibrationInputs",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("UpdateCalibrationInputs method not found.");
+        updateMethod.Invoke(viewModel, [draft]);
     }
 
     private static void VerifySize(Window window, double width, double height)

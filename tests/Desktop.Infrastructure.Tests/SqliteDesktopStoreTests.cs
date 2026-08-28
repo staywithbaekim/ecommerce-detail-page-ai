@@ -93,7 +93,7 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(3, migrationVersion);
+        Assert.Equal(4, migrationVersion);
     }
 
     [Fact]

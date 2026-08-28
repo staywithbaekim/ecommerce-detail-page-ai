@@ -10,6 +10,37 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class TemplatePageImportIntegrationTests
 {
     [Fact]
+    public async Task ImportRequestsApplicationOwnedCompositePreviewWithoutChangingSource()
+    {
+        using var appRoot = new TestDirectory();
+        using var sourceRoot = new TestDirectory();
+        var sourcePath = await WriteSourceAsync(sourceRoot.Path, "source.psd");
+        var sourceHashBefore = await HashAsync(sourcePath);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(appRoot.Path));
+        await store.InitializeAsync();
+        await SaveGroupAsync(store);
+        var inspection = SuccessInspection(sourceHashBefore);
+        var preview = new PreviewWritingInspectionPort(
+            appRoot.Path,
+            inspection with
+            {
+                Inspection = inspection.Inspection! with
+                {
+                    Preview = new PsdPreviewInspection(10, 10, "RGBA", new string('b', 64), 8)
+                }
+            });
+        var service = CreateService(appRoot.Path, store, preview);
+
+        var result = await service.ImportAsync(Request("command_preview", "resource_preview", sourcePath));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(sourceHashBefore, await HashAsync(sourcePath));
+        Assert.NotNull(preview.LastRequest?.PreviewRelativePath);
+        Assert.True(File.Exists(ToOwnedPath(appRoot.Path, preview.LastRequest!.PreviewRelativePath!)));
+        Assert.DoesNotContain(sourcePath, preview.LastRequest.PreviewRelativePath!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ImportPreservesSourceAndRecoversResourceAfterRestart()
     {
         using var appRoot = new TestDirectory();
@@ -124,9 +155,17 @@ public sealed class TemplatePageImportIntegrationTests
     private static TemplatePageImportService CreateService(
         string appRoot,
         ITemplateResourceRepository repository,
-        PsdInspectionResult inspection) => new(
+        PsdInspectionResult inspection) => CreateService(
+            appRoot,
+            repository,
+            new FakeInspectionPort(inspection));
+
+    private static TemplatePageImportService CreateService(
+        string appRoot,
+        ITemplateResourceRepository repository,
+        IPsdInspectionPort inspection) => new(
             new TemplateSourceFilePort(new LocalAppPathPolicy(appRoot)),
-            new FakeInspectionPort(inspection),
+            inspection,
             repository,
             new FixedTimeProvider(new DateTimeOffset(2026, 8, 27, 12, 0, 0, TimeSpan.Zero)));
 
@@ -180,6 +219,33 @@ public sealed class TemplatePageImportIntegrationTests
         public Task<PsdInspectionResult> InspectAsync(
             PsdInspectionRequest request,
             CancellationToken cancellationToken) => Task.FromResult(result);
+    }
+
+    private sealed class PreviewWritingInspectionPort(
+        string appRoot,
+        PsdInspectionResult result) : IPsdInspectionPort
+    {
+        public PsdInspectionRequest? LastRequest { get; private set; }
+
+        public async Task<PsdInspectionResult> InspectAsync(
+            PsdInspectionRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            if (request.PreviewRelativePath is null)
+            {
+                return PsdInspectionResult.Failure(new PsdInspectionError(
+                    "TPL_PSD_REQUEST_INVALID",
+                    "Preview path required.",
+                    "Retry.",
+                    false));
+            }
+
+            var path = ToOwnedPath(appRoot, request.PreviewRelativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllBytesAsync(path, [137, 80, 78, 71, 1, 2, 3, 4], cancellationToken);
+            return result;
+        }
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

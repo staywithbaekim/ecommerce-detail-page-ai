@@ -14,6 +14,8 @@ public interface IFileStore
     Task<byte[]?> ReadAsync(string relativePath, CancellationToken cancellationToken);
 
     Task<string?> ComputeSha256Async(string relativePath, CancellationToken cancellationToken);
+
+    Task<bool> DeleteAsync(string relativePath, CancellationToken cancellationToken);
 }
 
 public sealed record ManifestEntry(
@@ -34,4 +36,29 @@ public interface IManifestStore
     Task SaveAsync(string relativePath, AppManifest manifest, CancellationToken cancellationToken);
 
     Task<AppManifest?> LoadAsync(string relativePath, CancellationToken cancellationToken);
+}
+
+public sealed record RevisionCommitMarker(
+    string RevisionId,
+    string ManifestPath,
+    string ManifestSha256,
+    string State,
+    DateTimeOffset WrittenAt);
+
+public interface IRevisionCommitMarkerStore
+{
+    Task WriteReadyMarkerAsync(
+        string revisionDirectory,
+        RevisionCommitMarker marker,
+        CancellationToken cancellationToken);
+
+    Task WriteCommittedMarkerAsync(
+        string revisionDirectory,
+        RevisionCommitMarker marker,
+        CancellationToken cancellationToken);
+
+    Task<RevisionCommitMarker?> ReadMarkerAsync(
+        string revisionDirectory,
+        string markerName,
+        CancellationToken cancellationToken);
 }

@@ -1,14 +1,24 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Desktop.Application.Templates;
 
 namespace Desktop.App;
 
-public sealed class MainWindowViewModel : INotifyPropertyChanged
+public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
     private NavigationItemViewModel _selectedNavigationItem;
 
     public MainWindowViewModel(AppLaunchOptions launchOptions)
+        : this(launchOptions, templateWorkspace: null)
+    {
+    }
+
+    public MainWindowViewModel(
+        AppLaunchOptions launchOptions,
+        ITemplateWorkspaceService? templateWorkspace,
+        ITemplateCalibrationService? templateCalibration = null,
+        ITemplatePackageService? templatePackages = null)
     {
         NavigationItems =
         [
@@ -31,6 +41,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             new("童装夏季批次", "童装夏季模板 · 48 款", "童装夏季模板", "已暂停，可继续", "Paused", "昨天 18:42", "继续"),
             new("外置盘批次", "外置盘模板 · 25 款", "外置盘模板", "等待恢复", "Recoverable", "昨天 16:08", "查看")
         ];
+        InitializeTemplates(templateWorkspace, templateCalibration, templatePackages);
     }
 
     public ObservableCollection<NavigationItemViewModel> NavigationItems { get; }
@@ -56,7 +67,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(HasPrimaryAction));
             OnPropertyChanged(nameof(PageRows));
             OnPropertyChanged(nameof(IsWorkbenchVisible));
+            OnPropertyChanged(nameof(IsTemplateSectionVisible));
             OnPropertyChanged(nameof(IsPlaceholderVisible));
+            OnNavigationChanged();
         }
     }
 
@@ -108,11 +121,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public bool IsWorkbenchVisible => SelectedNavigationItem.Key == "workbench";
 
-    public bool IsPlaceholderVisible => !IsWorkbenchVisible;
+    public bool IsTemplateSectionVisible => SelectedNavigationItem.Key == "templates";
+
+    public bool IsPlaceholderVisible => !IsWorkbenchVisible && !IsTemplateSectionVisible;
 
     public bool IsFixtureVisible { get; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public void Dispose()
+    {
+        _templateDraftWrite.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));

@@ -14,6 +14,7 @@ using Desktop.Infrastructure.Diagnostics;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Persistence;
 using Desktop.Infrastructure.Psd;
+using Desktop.Infrastructure.Templates;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Desktop.Infrastructure;
@@ -33,6 +34,7 @@ public static class DesktopServices
         services.AddSingleton<JsonSchemaContractValidator>();
         services.AddSingleton<IJsonContractValidator>(provider => provider.GetRequiredService<JsonSchemaContractValidator>());
         services.AddSingleton<IRenderPlanValidator, RenderPlanValidator>();
+        services.AddSingleton<ITemplateRenderPlanBuilder, TemplateRenderPlanBuilder>();
 
         services.AddSingleton<SqliteDesktopStore>();
         services.AddSingleton<ITaskEventStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
@@ -44,6 +46,14 @@ public static class DesktopServices
         services.AddSingleton<TaskCoordinator>();
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<TemplatePageImportService>();
+        services.AddSingleton<ITemplateWorkspaceService, TemplateWorkspaceService>();
+        services.AddSingleton<ICalibrationAssetSourcePort, ReadOnlyCalibrationAssetSourcePort>();
+        services.AddSingleton<ITemplateCalibrationService, TemplateCalibrationService>();
+        services.AddSingleton<ICalibrationStateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplatePreviewRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplatePackagePort, ZipTemplatePackagePort>();
+        services.AddSingleton<ITemplatePackageService, TemplatePackageService>();
+        services.AddSingleton<ITemplateOwnedStorage, TemplateOwnedStorage>();
 
         services.AddSingleton<IPathPolicy>(_ => new LocalAppPathPolicy(options.RootDirectory));
         services.AddSingleton<IFileStore, AtomicFileStore>();

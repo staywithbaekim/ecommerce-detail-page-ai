@@ -66,7 +66,7 @@ public sealed class TemplatePageImportServiceTests
 
         Assert.Equal(TemplatePageImportStatus.Failed, result.Status);
         Assert.Equal("TPL_PSD_UNSUPPORTED_STRUCTURE", result.Error!.Code);
-        Assert.Equal(1, files.DeleteCount);
+        Assert.Equal(2, files.DeleteCount);
         Assert.Equal(0, repository.SaveCount);
     }
 
@@ -83,7 +83,7 @@ public sealed class TemplatePageImportServiceTests
         var result = await service.ImportAsync(Request("command_01", "resource_new"));
 
         Assert.Equal("TPL_SOURCE_CHANGED_DURING_COPY", result.Error!.Code);
-        Assert.Equal(1, files.DeleteCount);
+        Assert.Equal(2, files.DeleteCount);
         Assert.Equal(0, repository.SaveCount);
     }
 
@@ -289,6 +289,14 @@ public sealed class TemplatePageImportServiceTests
         public int RecordSelectionCount { get; private set; }
 
         public bool FailDuplicateLookup { get; init; }
+
+        public Task<ImportedTemplateResource?> GetByResourceIdAsync(
+            string resourceId,
+            CancellationToken cancellationToken) => Task.FromResult(
+                _resources.SingleOrDefault(resource => string.Equals(
+                    resource.ResourceId,
+                    resourceId,
+                    StringComparison.Ordinal)));
 
         public Task<ImportedTemplateResource?> GetByCommandIdAsync(
             string commandId,

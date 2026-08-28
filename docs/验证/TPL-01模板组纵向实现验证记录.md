@@ -2,13 +2,13 @@
 
 ## 当前结论
 
-截至 2026-08-27，`TPL-S0`、`TPL-S1`、`TPL-S2` 已通过，`TPL-01` 仍在实施中，下一阶段为 `TPL-S3`。本文会随 S3-S7 持续追加；当前不得把 PSD 技术门、领域/持久化合同、源 PSD 导入、Figma 上下文、历史 Photoshop 探针或测试数量写成模板纵向功能完成。
+截至 2026-08-28，`TPL-S0` 至 `TPL-S7` 已完成，`TPL-01` 通过。产品负责人已在实际应用中确认流程没有问题，并接受当前版本作为阶段性视觉基线；五加一增量修订、旧批次快照隔离、新批次六页、失败回滚、重启恢复、模板包和源文件安全均有真实纵向或自动化证据。本文不把 PSD 技术门、Figma 上下文、历史 Photoshop 探针或测试数量单独写成模板功能完成证据，也不顺带宣称完整 `UI-01`、真实 AI 或 Photoshop 准确预览通过。
 
 ## 起点与范围
 
 - 起点：`217ec0b docs: approve TPL-01 implementation brief`；阶段 0 工程骨架未重做。
 - 开始前工作区干净；已按任务书顺序读取 PRD 1.5、当前状态、任务书、验收矩阵、ADR-010/011/012/014、交互规格和 T-01 至 T-05 高保真交付记录。
-- 已按 `figma-design-to-code` 技能读取冻结 TPL 代表节点；S3/S4 实际 WPF 页面仍须以冻结设计实现并进行真实窗口人工走查。
+- 已按 `figma-design-to-code` 技能读取冻结 TPL 代表节点；实现以 PRD 1.5/交互规格为业务输入，以 Figma 为视觉和空间输入，实际 WPF 页面仍须由用户在真实窗口完成最终人工走查。
 - 用户源 PSD、源照片、人工结果和尺码图只读；实验只使用工作区 `tmp` 中的明确副本。
 
 ## TPL-S0：已通过
@@ -36,6 +36,38 @@
 - `command_id` 提供写入幂等；同命令不同资源返回 `TPL_IMPORT_COMMAND_CONFLICT`。SQLite v3 新增 `template_resources` 与 `template_import_commands`，继续复用唯一 `SqliteDesktopStore`/`SqliteWriteQueue`，重启后可按命令和 hash 恢复。
 - inspection 失败、inspection hash/长度不一致、重复查询失败、SQLite 外键/提交失败和无效重复选择均清理内部副本且不留下数据库半对象。临时 `.part` 清理失败不会覆盖原错误，而返回 `TPL_IMPORT_CLEANUP_REQUIRED`。
 - 真实文件端口测试比较源 SHA-256、内部副本 SHA-256 和清理结果；应用/文件/SQLite 串联测试证明成功重启恢复、inspection 失败零资源、重复源文件均保留、数据库事务失败回滚。测试使用临时 4-byte `.psd` 字节文件和 fake inspection，不冒充真实 PSD 结构验证；真实结构读取仍由已通过 S0 的隔离 worker 证据承担。
+
+## TPL-S3：已通过
+
+- 模板库、空状态、详情、删除确认、另存/导入/导出入口、新建和增量模板组均使用真实 repository 投影；新增 PSD 后可从页面设置或校准页继续添加，新增页可移除，增量原页面保持只读。
+- T-03 页面设置支持页面命名、排序、内容类型、生成方式和组合容量校验；页面设置现为“页面列表 / 应用副本 PSD 预览 / 页面属性”三栏，列表在窄内容区禁用横向滚动。
+- 重复 PSD 继续通过明确用户选择处理，不自动删除用户源文件；界面不把 Figma 旧版“新建批次 / 模板组 / 历史批次”文案当作业务要求，导航按最新 PRD/交互规格保留“工作台 / 模板 / 任务 / 设置”。
+
+## TPL-S4：已通过
+
+- T-04 三栏校准编辑器支持候选框显式注册、单框单图绑定、拖拽/方向键移动、缩放和偏移、规则文字、撤销/重做、草稿持久化、退出保存/不保存/取消及返回页面设置。
+- 右侧按 Figma 信息层级呈现“素材 / 规则”，当前图片框显示 PSD 原始图层名或用户可读兜底，不显示 `frame_*` 内部 ID；历史英文选图要求在投影层转换为中文默认文案。
+- 画布选中态补充低强调焦点边框和四角控制点，底部状态条显示可行动状态。高级调整仍为可选，不把本地预览冒充 Photoshop 准确预览。
+- 左右栏外观已按 Figma T-04 `191:120` 的精确尺寸与 token 复核：左 224px、右 260px、间距 16px、面板 1px `#E5E5E7`/8px 圆角、整行浅灰选中态、72×32 标签态和 6px 控件圆角；校准页关闭外层纵向滚动，左右栏使用内部滚动，真实窗口页头和三栏在 1440×900 同屏可见。
+- 真实应用已执行“从已登记素材拖入当前框 → `Delete` → 清除当前绑定”往返检查：绑定数由 0 变 1 再回 0，登记素材仍在列表，源文件未删除；服务测试同时覆盖清除后撤销恢复素材与选择状态。右侧另有可见“移除素材”入口，按钮状态随绑定变化重新查询。
+
+## TPL-S5：已通过
+
+- 五页模板添加第六页的增量修订、原页面稳定 ID/资源/绑定/规则保持、失败时旧修订和 marker 保留、旧批次快照隔离、新批次读取六页均由 service/repository 集成测试覆盖。
+- SQLite 迁移、manifest、ready/committed marker、当前指针切换和批次快照均沿用单 writer 与原子提交边界；分析开始后拒绝切换快照。
+
+## TPL-S6：已通过
+
+- `template-package/v1` Schema、正例、版本拒绝、路径/敏感字段拒绝、ZIP 条目校验、跨空白数据根导入、PSD hash/规则一致性和删除引用守卫均已有合同/集成证据。
+- 模板包只包含当前有效修订及应用自有 PSD 副本和规则，不包含 Key、任务历史、代表款源照片、人工结果、绝对路径、数据库、缓存或日志。
+- reviewed diff 补严 `inspection` 合同：Schema 现在完整约束 canvas、计数、结构签名、timing、layers、bounds、clipping base 和 smart object；运行时同时核对条目长度/hash、层路径/ID/属性、绑定签名、页面归属和 `asset_id` 规则。空 inspection、adapter 私有字段和结构不一致稳定拒绝。
+
+## TPL-S7：已通过
+
+- 产品负责人在实际 WPF 应用中完成模板流程和校准界面检查，确认流程没有问题，并明确接受当前版本作为阶段性视觉基线继续完成 `TPL-01`。
+- 当前 T-04 已满足本纵向任务继续开发所需的三栏布局、画布可用性、双向框选择、素材移除、撤销/重做、退出/返回和中文可行动状态；纯外观的跨页面统一精修转入 `docs/任务/UI-01全局视觉收口清单.md`，不作为 TPL 功能验收的无限打磨项。
+- reviewed diff 覆盖 Presentation、Application、Domain、Contracts、Infrastructure、Schema/ADR 和测试；修正一处旧阶段占位提示，并补严模板包结构证据合同。未发现 AI/产品规则进入 Photoshop adapter、renderer-neutral `RenderPlan` 泄漏 adapter 命令或把全部智能对象自动登记为图片框。
+- 最终完整构建、123 项 solution 回归、格式检查、diff 检查、临时输出清理、源文件安全和未跟踪文件审查均通过。
 
 实际命令：
 
@@ -67,15 +99,18 @@ dotnet test EcommerceDetailPage.Desktop.slnx -c Debug --no-build --no-restore
 | TPL-S0 solution build | 0 警告、0 错误 |
 | TPL-S1 聚焦测试 | Domain 26/26；Contracts 15/15；Infrastructure 21/21；Architecture 5/5 |
 | TPL-S2 聚焦测试 | Application 12/12；Infrastructure 31/31；源 hash、重复确认、重启恢复、inspection/SQLite 失败清理均通过 |
-| 当前 solution build | 0 警告、0 错误 |
-| solution test | 92/92 通过：26 + 12 + 15 + 31 + 5 + 3 |
+| WPF 应用编译 | `dotnet build src/Desktop.App/Desktop.App.csproj --no-restore -p:OutDir=<临时应用目录>`：0 警告、0 错误；旧人工走查进程锁定工作区输出，未强制结束用户进程 |
+| 当前 solution test | 123/123 通过：Domain 29 + Contracts 16 + Application 27 + Infrastructure 41 + Architecture 5 + WPF UI 5 |
+| Figma/WPF 对照修正 | T-03 三栏、T-04 素材/规则层级、用户可读图片框名、四角控制点、底部状态条、中文选图要求兜底和 8px 卡片圆角已落地；产品负责人接受当前版本为阶段性视觉基线 |
+| T-04 左右栏与素材移除复核 | 精确设计参数已映射到 WPF；实际窗口三栏同屏，外层不滚动；拖入素材后 `Delete` 仅清除绑定并回到 0，登记素材/源文件保留；产品负责人阶段性视觉确认通过 |
+| 模板包结构证据 | 完整 inspection Schema 与运行时交叉核对通过；空 inspection、adapter 私有字段、PSD hash/长度或层绑定不一致均拒绝 |
 
-## 未完成项
+## 后续项（不阻塞 TPL-01）
 
-- TPL-S3 至 TPL-S7 的 T-01 至 T-04 WPF、校准、文件/数据库原子修订、五加一、模板包和最终交接。
-- 五页加第六页、旧批次快照隔离、重启恢复、全部提交点故障回滚和真实应用人工走查。
 - T-05 Photoshop 准确预览和真实 AI 学习不属于本任务实现范围，且不得用 mock 冒充通过。
+- 完整 `UI-01` 仍待主要页面齐全后按 `docs/任务/UI-01全局视觉收口清单.md` 集中验收；当前产品确认只是 TPL 页的阶段性视觉基线。
+- `DATA-01` 的完整模板库跨卷迁移、正式 Photoshop 批量渲染、安装和性能仍由各自任务关闭。
 
 ## 下一动作
 
-进入 TPL-S3，重新按 `figma-design-to-code` 技能读取冻结 T-01/T-02/T-03 设计上下文，以真实 repository 投影实现模板库、模板详情和新建/增量/重复确认 WPF 纵向链路；完成代表页面后打开实际应用供产品负责人逐项视觉走查。
+从本记录和 `docs/当前项目状态.md` 建立 `AI-01` 纵向任务书；AI 开发期间继续保持品类中立合同、真实金标门和 renderer-neutral `RenderPlan` 边界。主要页面齐全后再启动一次全局 `UI-01` 视觉收口。

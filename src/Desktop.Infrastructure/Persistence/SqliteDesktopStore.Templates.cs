@@ -7,9 +7,55 @@ using Microsoft.Data.Sqlite;
 
 namespace Desktop.Infrastructure.Persistence;
 
-public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnapshotRepository
+public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnapshotRepository, ICalibrationStateRepository, ITemplatePreviewRepository
 {
     private static readonly JsonSerializerOptions TemplateJsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string[] DeleteTemplateGroupSql =
+    [
+        """
+        DELETE FROM batch_template_snapshots
+        WHERE revision_id IN (
+            SELECT revision_id FROM template_revisions WHERE group_id = $group_id);
+        """,
+        """
+        DELETE FROM calibration_drafts
+        WHERE base_revision_id IN (
+            SELECT revision_id FROM template_revisions WHERE group_id = $group_id);
+        """,
+        """
+        DELETE FROM template_import_commands
+        WHERE resource_id IN (
+            SELECT resource_id FROM template_resources WHERE group_id = $group_id);
+        """,
+        "DELETE FROM template_resources WHERE group_id = $group_id;",
+        "DELETE FROM template_revisions WHERE group_id = $group_id;",
+        "DELETE FROM template_groups WHERE group_id = $group_id;"
+    ];
+
+    public async Task<IReadOnlyList<TemplateGroup>> ListGroupsAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT group_id, name, current_revision_id, status, created_at, updated_at
+            FROM template_groups
+            ORDER BY updated_at DESC, group_id;
+            """;
+        var groups = new List<TemplateGroup>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            groups.Add(TemplateGroup.Restore(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                Enum.Parse<TemplateGroupStatus>(reader.GetString(3), ignoreCase: false),
+                ParseTimestamp(reader.GetString(4)),
+                ParseTimestamp(reader.GetString(5))));
+        }
+
+        return groups;
+    }
 
     public Task SaveGroupAsync(TemplateGroup group, CancellationToken cancellationToken)
     {
@@ -61,6 +107,66 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
             Enum.Parse<TemplateGroupStatus>(reader.GetString(2), ignoreCase: false),
             ParseTimestamp(reader.GetString(3)),
             ParseTimestamp(reader.GetString(4)));
+    }
+
+    public async Task<IReadOnlyList<string>> GetBlockingBatchIdsAsync(
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        TemplateValueRules.Identifier(groupId, "TPL_GROUP_ID_INVALID");
+        await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT snapshot.batch_id
+            FROM batch_template_snapshots snapshot
+            JOIN template_revisions revision ON revision.revision_id = snapshot.revision_id
+            LEFT JOIN tasks task ON task.task_id = snapshot.batch_id
+            WHERE revision.group_id = $group_id
+              AND (task.task_id IS NULL OR task.status NOT IN (
+                   'Failed', 'Cancelled', 'Completed', 'CompletedWithIssues'))
+            ORDER BY snapshot.batch_id;
+            """;
+        command.Parameters.AddWithValue("$group_id", groupId);
+        var batchIds = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            batchIds.Add(reader.GetString(0));
+        }
+        return batchIds;
+    }
+
+    public Task DeleteGroupAsync(string groupId, CancellationToken cancellationToken)
+    {
+        TemplateValueRules.Identifier(groupId, "TPL_GROUP_ID_INVALID");
+        return _writer.ExecuteAsync(
+            async (connection, token) =>
+            {
+                await using var transaction = (SqliteTransaction)await connection
+                    .BeginTransactionAsync(token).ConfigureAwait(false);
+                var blockers = await GetBlockingBatchIdsAsync(
+                    connection,
+                    transaction,
+                    groupId,
+                    token).ConfigureAwait(false);
+                if (blockers.Count > 0)
+                {
+                    throw new TemplateRuleViolationException("TPL_DELETE_BLOCKED_BY_ACTIVE_TASK");
+                }
+
+                foreach (var sql in DeleteTemplateGroupSql)
+                {
+                    await using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = sql;
+                    command.Parameters.AddWithValue("$group_id", groupId);
+                    await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken);
     }
 
     public Task SaveDraftRevisionAsync(
@@ -144,6 +250,31 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
             createdAt,
             pages,
             bindings);
+    }
+
+    public async Task<TemplateRevision?> GetLatestRevisionForGroupAsync(
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        TemplateValueRules.Identifier(groupId, "TPL_GROUP_ID_INVALID");
+        string? revisionId;
+        await using (var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false))
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT revision_id
+                FROM template_revisions
+                WHERE group_id = $group_id
+                ORDER BY revision_no DESC
+                LIMIT 1;
+                """;
+            command.Parameters.AddWithValue("$group_id", groupId);
+            revisionId = (string?)await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return revisionId is null
+            ? null
+            : await GetRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
     }
 
     public Task CommitRevisionAsync(
@@ -337,6 +468,130 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
             lastEventSequence);
     }
 
+    public Task SaveCalibrationStateAsync(
+        CalibrationStateSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var json = JsonSerializer.Serialize(snapshot, TemplateJsonOptions);
+        return _writer.ExecuteAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO calibration_draft_states(draft_id, page_id, state_json, updated_at)
+                    VALUES($draft_id, $page_id, $state_json, $updated_at)
+                    ON CONFLICT(draft_id, page_id) DO UPDATE SET
+                        state_json = excluded.state_json,
+                        updated_at = excluded.updated_at;
+                    """;
+                command.Parameters.AddWithValue("$draft_id", snapshot.DraftId);
+                command.Parameters.AddWithValue("$page_id", snapshot.PageId);
+                command.Parameters.AddWithValue("$state_json", json);
+                command.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken);
+    }
+
+    public async Task<CalibrationStateSnapshot?> GetCalibrationStateAsync(
+        string draftId,
+        string pageId,
+        CancellationToken cancellationToken)
+    {
+        TemplateValueRules.Identifier(draftId, "TPL_DRAFT_ID_INVALID");
+        TemplateValueRules.Identifier(pageId, "TPL_PAGE_ID_INVALID");
+        await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT state_json
+            FROM calibration_draft_states
+            WHERE draft_id = $draft_id AND page_id = $page_id;
+            """;
+        command.Parameters.AddWithValue("$draft_id", draftId);
+        command.Parameters.AddWithValue("$page_id", pageId);
+        var json = (string?)await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return json is null
+            ? null
+            : JsonSerializer.Deserialize<CalibrationStateSnapshot>(json, TemplateJsonOptions)
+                ?? throw new InvalidDataException("TPL_CALIBRATION_STATE_INVALID");
+    }
+
+    public Task SavePreviewStateAsync(
+        TemplatePreviewState preview,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        return _writer.ExecuteAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO template_preview_states(
+                        revision_id, page_id, status, evidence_ref, evidence_kind, created_at)
+                    VALUES(
+                        $revision_id, $page_id, $status, $evidence_ref, $evidence_kind, $created_at)
+                    ON CONFLICT(revision_id, page_id) DO UPDATE SET
+                        status = excluded.status,
+                        evidence_ref = excluded.evidence_ref,
+                        evidence_kind = excluded.evidence_kind,
+                        created_at = excluded.created_at;
+                    """;
+                command.Parameters.AddWithValue("$revision_id", preview.RevisionId);
+                command.Parameters.AddWithValue("$page_id", preview.PageId);
+                command.Parameters.AddWithValue("$status", preview.Status.ToString());
+                command.Parameters.AddWithValue("$evidence_ref", (object?)preview.EvidenceReference ?? DBNull.Value);
+                command.Parameters.AddWithValue("$evidence_kind", preview.EvidenceKind is null
+                    ? DBNull.Value
+                    : preview.EvidenceKind.Value.ToString());
+                command.Parameters.AddWithValue("$created_at", preview.CreatedAt.ToString("O"));
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken);
+    }
+
+    public async Task<TemplatePreviewState?> GetPreviewStateAsync(
+        string revisionId,
+        string pageId,
+        CancellationToken cancellationToken)
+    {
+        TemplateValueRules.Identifier(revisionId, "TPL_REVISION_ID_INVALID");
+        TemplateValueRules.Identifier(pageId, "TPL_PAGE_ID_INVALID");
+        await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status, evidence_ref, evidence_kind, created_at
+            FROM template_preview_states
+            WHERE revision_id = $revision_id AND page_id = $page_id;
+            """;
+        command.Parameters.AddWithValue("$revision_id", revisionId);
+        command.Parameters.AddWithValue("$page_id", pageId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        var createdAt = ParseTimestamp(reader.GetString(3));
+        if (Enum.Parse<TemplatePreviewStatus>(reader.GetString(0), false)
+            == TemplatePreviewStatus.NotPreviewed)
+        {
+            return TemplatePreviewState.NotPreviewed(revisionId, pageId, createdAt);
+        }
+
+        if (reader.IsDBNull(1) || reader.IsDBNull(2))
+        {
+            throw new InvalidDataException("TPL_PREVIEW_STATE_INVALID");
+        }
+
+        return TemplatePreviewState.NotPreviewed(revisionId, pageId, createdAt).RecordSuccess(
+            reader.GetString(1),
+            Enum.Parse<TemplatePreviewEvidenceKind>(reader.GetString(2), false),
+            createdAt);
+    }
+
     public Task SaveAsync(BatchTemplateSnapshot snapshot, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -400,6 +655,43 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
             ParseTimestamp(reader.GetString(4)));
     }
 
+    public Task ReplaceDraftAsync(
+        BatchTemplateSnapshot snapshot,
+        string expectedSnapshotId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        TemplateValueRules.Identifier(expectedSnapshotId, "TPL_SNAPSHOT_ID_INVALID");
+        var pagesJson = SerializeSnapshotPages(snapshot.Pages);
+        return _writer.ExecuteAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE batch_template_snapshots
+                    SET snapshot_id = $snapshot_id,
+                        revision_id = $revision_id,
+                        pages_json = $pages_json,
+                        rules_digest = $rules_digest,
+                        created_at = $created_at
+                    WHERE batch_id = $batch_id AND snapshot_id = $expected_snapshot_id;
+                    """;
+                command.Parameters.AddWithValue("$snapshot_id", snapshot.SnapshotId);
+                command.Parameters.AddWithValue("$revision_id", snapshot.RevisionId);
+                command.Parameters.AddWithValue("$pages_json", pagesJson);
+                command.Parameters.AddWithValue("$rules_digest", snapshot.RulesDigest);
+                command.Parameters.AddWithValue("$created_at", snapshot.CreatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$batch_id", snapshot.BatchId);
+                command.Parameters.AddWithValue("$expected_snapshot_id", expectedSnapshotId);
+                if (await command.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1)
+                {
+                    throw new TemplateRuleViolationException("TPL_BATCH_SNAPSHOT_FROZEN");
+                }
+                return true;
+            },
+            cancellationToken);
+    }
+
     private static void AddGroupParameters(SqliteCommand command, TemplateGroup group)
     {
         command.Parameters.AddWithValue("$group_id", group.GroupId);
@@ -424,6 +716,34 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
         {
             throw new TemplateRuleViolationException("TPL_GROUP_NOT_FOUND");
         }
+    }
+
+    private static async Task<IReadOnlyList<string>> GetBlockingBatchIdsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT snapshot.batch_id
+            FROM batch_template_snapshots snapshot
+            JOIN template_revisions revision ON revision.revision_id = snapshot.revision_id
+            LEFT JOIN tasks task ON task.task_id = snapshot.batch_id
+            WHERE revision.group_id = $group_id
+              AND (task.task_id IS NULL OR task.status NOT IN (
+                   'Failed', 'Cancelled', 'Completed', 'CompletedWithIssues'))
+            ORDER BY snapshot.batch_id;
+            """;
+        command.Parameters.AddWithValue("$group_id", groupId);
+        var batchIds = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            batchIds.Add(reader.GetString(0));
+        }
+        return batchIds;
     }
 
     private static async Task<string?> GetCurrentRevisionIdAsync(

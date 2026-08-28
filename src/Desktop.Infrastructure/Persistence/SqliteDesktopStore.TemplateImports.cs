@@ -7,6 +7,28 @@ namespace Desktop.Infrastructure.Persistence;
 
 public sealed partial class SqliteDesktopStore : ITemplateResourceRepository
 {
+    public async Task<ImportedTemplateResource?> GetByResourceIdAsync(
+        string resourceId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(resourceId);
+        try
+        {
+            await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return await ReadResourceAsync(
+                connection,
+                transaction: null,
+                "r.resource_id = $value",
+                resourceId,
+                joinCommands: false,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception)
+        {
+            throw new IOException("TPL_TEMPLATE_RESOURCE_READ_FAILED", exception);
+        }
+    }
+
     public async Task<ImportedTemplateResource?> GetByCommandIdAsync(
         string commandId,
         CancellationToken cancellationToken)

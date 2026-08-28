@@ -65,6 +65,19 @@ public sealed class AtomicFileStore(IPathPolicy pathPolicy) : IFileStore
             : null;
     }
 
+    public Task<bool> DeleteAsync(string relativePath, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var path = pathPolicy.ResolveOwnedPath(relativePath);
+        if (!File.Exists(path))
+        {
+            return Task.FromResult(false);
+        }
+
+        File.Delete(path);
+        return Task.FromResult(true);
+    }
+
     private static async Task<string> ComputeFileSha256Async(
         string path,
         CancellationToken cancellationToken)
