@@ -181,6 +181,55 @@ public sealed class JsonSchemaContractValidatorTests
             adapterLeak.ToJsonString()).IsValid);
     }
 
+    [Fact]
+    public void AssetManifestSchemaAcceptsUnicodeRelativeSources()
+    {
+        var result = _validator.Validate(ContractDocumentKind.AssetManifest, LoadValidAssetManifest());
+
+        Assert.True(result.IsValid);
+        Assert.Empty(result.Errors);
+    }
+
+    [Theory]
+    [InlineData("unknown-version")]
+    [InlineData("absolute-path")]
+    [InlineData("path-traversal")]
+    [InlineData("missing-hash")]
+    [InlineData("missing-dimensions")]
+    [InlineData("unknown-field")]
+    public void AssetManifestSchemaRejectsUnsafeOrIncompleteSources(string mutation)
+    {
+        var root = JsonNode.Parse(LoadValidAssetManifest())!.AsObject();
+        switch (mutation)
+        {
+            case "unknown-version":
+                root["schema_version"] = "asset-manifest/v2";
+                break;
+            case "absolute-path":
+                root["assets"]![0]!["source_relative_path"] = @"C:\customer\source.jpg";
+                break;
+            case "path-traversal":
+                root["assets"]![0]!["source_relative_path"] = "../source.jpg";
+                break;
+            case "missing-hash":
+                root["assets"]![0]!.AsObject().Remove("sha256");
+                break;
+            case "missing-dimensions":
+                root["assets"]![0]!.AsObject().Remove("pixel_width");
+                break;
+            case "unknown-field":
+                root["source_root"] = @"C:\customer";
+                break;
+            default:
+                throw new InvalidOperationException("Unknown mutation.");
+        }
+
+        var result = _validator.Validate(ContractDocumentKind.AssetManifest, root.ToJsonString());
+
+        Assert.False(result.IsValid);
+        Assert.Equal("CONTRACT_SCHEMA_REJECTED", Assert.Single(result.Errors).Code);
+    }
+
     private static string LoadValidRenderPlan() => File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "render-plan-v1.valid.example.json"));
 
@@ -189,4 +238,7 @@ public sealed class JsonSchemaContractValidatorTests
 
     private static string LoadValidTemplatePackageManifest() => File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "template-package-v1.valid.example.json"));
+
+    private static string LoadValidAssetManifest() => File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "asset-manifest-v1.valid.example.json"));
 }

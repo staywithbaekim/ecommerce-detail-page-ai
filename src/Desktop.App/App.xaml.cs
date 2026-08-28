@@ -45,6 +45,8 @@ public partial class App : System.Windows.Application
             var services = new ServiceCollection();
             services.AddDesktopFoundation(options);
             services.AddSingleton(launchOptions);
+            services.AddSingleton<IFolderPicker, WindowsFolderPicker>();
+            services.AddSingleton<IBatchInputWorkflow, BatchInputWorkflowAdapter>();
             services.AddSingleton<MainWindowViewModel>();
             services.AddSingleton<MainWindow>();
             _services = services.BuildServiceProvider(validateScopes: true);

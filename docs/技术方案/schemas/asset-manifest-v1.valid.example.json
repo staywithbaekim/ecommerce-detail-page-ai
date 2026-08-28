@@ -1,0 +1,38 @@
+{
+  "schema_version": "asset-manifest/v1",
+  "manifest_id": "assetmanifest_01",
+  "batch_id": "batch_01",
+  "input_type": "single_style",
+  "template_snapshot": {
+    "snapshot_id": "snapshot_01",
+    "revision_id": "revision_01",
+    "rules_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "selected_page_ids": ["page_01"]
+  },
+  "styles": [
+    {
+      "style_id": "style_01",
+      "default_sku": "示例 款式 01",
+      "source_relative_directory": "",
+      "order": 0,
+      "asset_ids": ["asset_01"]
+    }
+  ],
+  "assets": [
+    {
+      "asset_id": "asset_01",
+      "style_id": "style_01",
+      "source_relative_path": "中文 素材 01.jpg",
+      "file_name": "中文 素材 01.jpg",
+      "length": 4096,
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "pixel_width": 1200,
+      "pixel_height": 1600,
+      "format": "jpeg",
+      "mime_type": "image/jpeg",
+      "readability": "readable"
+    }
+  ],
+  "inventory_digest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "created_at": "2026-08-28T01:00:00Z"
+}

@@ -5,5 +5,6 @@ public enum ContractDocumentKind
     RenderPlan = 0,
     BridgeEnvelope,
     TemplateRevisionManifest,
-    TemplatePackageManifest
+    TemplatePackageManifest,
+    AssetManifest
 }

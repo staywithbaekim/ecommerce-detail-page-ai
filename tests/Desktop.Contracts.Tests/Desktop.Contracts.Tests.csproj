@@ -32,6 +32,9 @@
     <None Include="..\..\docs\技术方案\schemas\template-package-v1.valid.example.json"
           Link="Fixtures\template-package-v1.valid.example.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\技术方案\schemas\asset-manifest-v1.valid.example.json"
+          Link="Fixtures\asset-manifest-v1.valid.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

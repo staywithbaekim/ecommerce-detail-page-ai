@@ -18,7 +18,9 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         AppLaunchOptions launchOptions,
         ITemplateWorkspaceService? templateWorkspace,
         ITemplateCalibrationService? templateCalibration = null,
-        ITemplatePackageService? templatePackages = null)
+        ITemplatePackageService? templatePackages = null,
+        IFolderPicker? folderPicker = null,
+        IBatchInputWorkflow? batchInputWorkflow = null)
     {
         NavigationItems =
         [
@@ -42,6 +44,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             new("外置盘批次", "外置盘模板 · 25 款", "外置盘模板", "等待恢复", "Recoverable", "昨天 16:08", "查看")
         ];
         InitializeTemplates(templateWorkspace, templateCalibration, templatePackages);
+        InitializeBatchInput(folderPicker, batchInputWorkflow);
     }
 
     public ObservableCollection<NavigationItemViewModel> NavigationItems { get; }
@@ -67,9 +70,11 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             OnPropertyChanged(nameof(HasPrimaryAction));
             OnPropertyChanged(nameof(PageRows));
             OnPropertyChanged(nameof(IsWorkbenchVisible));
+            OnPropertyChanged(nameof(IsBatchInputVisible));
             OnPropertyChanged(nameof(IsTemplateSectionVisible));
             OnPropertyChanged(nameof(IsPlaceholderVisible));
             OnNavigationChanged();
+            OnBatchNavigationChanged();
         }
     }
 
@@ -119,11 +124,11 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
 
     public IReadOnlyList<TaskRowViewModel> RecentTasks { get; }
 
-    public bool IsWorkbenchVisible => SelectedNavigationItem.Key == "workbench";
+    public bool IsWorkbenchVisible => SelectedNavigationItem.Key == "workbench" && !IsBatchInputVisible;
 
     public bool IsTemplateSectionVisible => SelectedNavigationItem.Key == "templates";
 
-    public bool IsPlaceholderVisible => !IsWorkbenchVisible && !IsTemplateSectionVisible;
+    public bool IsPlaceholderVisible => !IsWorkbenchVisible && !IsBatchInputVisible && !IsTemplateSectionVisible;
 
     public bool IsFixtureVisible { get; }
 
@@ -132,6 +137,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
     public void Dispose()
     {
         _templateDraftWrite.Dispose();
+        _batchDraftWrite.Dispose();
+        _batchScanCancellation?.Dispose();
         GC.SuppressFinalize(this);
     }
 

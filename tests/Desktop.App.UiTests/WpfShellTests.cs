@@ -38,6 +38,24 @@ public sealed class WpfShellTests
     private static readonly string[] BoundedElementIds =
         ["PrimaryNavigation", "PageTitle", "PageContent", "ActiveTaskBar"];
 
+    private static readonly string[] ExpectedBatchAutomationIds =
+    [
+        "BatchTemplateSelect",
+        "BatchInputDirectoryField",
+        "ChooseBatchInputDirectoryButton",
+        "BatchRecognitionStatus",
+        "BatchOutputDirectoryField",
+        "ChooseBatchOutputDirectoryButton",
+        "BatchAutomaticSelectionOption",
+        "BatchManualSelectionOption",
+        "BatchPageSelectionSummary",
+        "OpenBatchPageSelectionButton",
+        "BatchEditablePsdToggle",
+        "BatchInputStatus",
+        "CancelBatchInputButton",
+        "ScanBatchInputButton"
+    ];
+
     [Fact]
     public void ShellSupportsWideNarrowUiaFocusAndChineseText()
     {
@@ -45,7 +63,14 @@ public sealed class WpfShellTests
         {
             var application = new Desktop.App.App();
             application.InitializeComponent();
-            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            var workflow = new RecordingBatchInputWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                folderPicker: new QueueFolderPicker(
+                    @"C:\商品 素材\秋季上新",
+                    @"D:\生产输出\秋季上新"),
+                batchInputWorkflow: workflow);
             var window = new MainWindow(viewModel);
             try
             {
@@ -165,6 +190,8 @@ public sealed class WpfShellTests
                 Assert.True(dialogTask.IsCompleted);
                 Assert.False(viewModel.IsTemplateDialogVisible);
                 Assert.Equal(Visibility.Collapsed, overlay.Visibility);
+
+                VerifyBatchInputPage(window, viewModel, workflow);
             }
             finally
             {
@@ -203,6 +230,171 @@ public sealed class WpfShellTests
             new Size(1440, 900),
             new Size(1100, 760));
         Assert.Equal(new Size(1100, 760), narrowDesignBounds.Size);
+    }
+
+    private static void VerifyBatchInputPage(
+        MainWindow window,
+        MainWindowViewModel viewModel,
+        RecordingBatchInputWorkflow workflow)
+    {
+        viewModel.SelectedNavigationItem = viewModel.NavigationItems[0];
+        FlushLayout(window);
+        var entry = FindByAutomationId<Button>(window, "PrimaryPageAction");
+        Assert.True(entry.IsHitTestVisible);
+        Assert.True(entry.Focusable);
+        viewModel.OpenBatchInputCommand.Execute(null);
+        FlushLayout(window);
+
+        var page = FindByAutomationId<Grid>(window, "BatchInputPage");
+        Assert.Equal(Visibility.Visible, page.Visibility);
+        Assert.Equal(
+            "新建批次",
+            FindByAutomationId<TextBlock>(window, "BatchInputTitle").Text);
+
+        viewModel.TemplateGroups.Add(new TemplateLibraryCardViewModel(
+            "group_batch_ui",
+            "通用品类模板",
+            "2 个页面 · Committed",
+            "今天 10:00",
+            "Committed"));
+        viewModel.SelectedBatchTemplate = viewModel.TemplateGroups[0];
+        FlushLayout(window);
+        var templateSelect = FindByAutomationId<ComboBox>(window, "BatchTemplateSelect");
+        Assert.Contains(
+            EnumerateVisualDescendants<TextBlock>(templateSelect),
+            text => string.Equals(text.Text, "通用品类模板", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            EnumerateVisualDescendants<TextBlock>(templateSelect),
+            text => text.Text.Contains(nameof(TemplateLibraryCardViewModel), StringComparison.Ordinal));
+        viewModel.BatchPages.Add(new BatchPageOptionViewModel(
+            "page_1",
+            "详情页一",
+            "普通套图页 · 每款一次",
+            true));
+        viewModel.BatchPages.Add(new BatchPageOptionViewModel(
+            "page_2",
+            "详情页二",
+            "普通套图页 · 每款一次",
+            true));
+
+        Assert.False(viewModel.ScanBatchInputCommand.CanExecute(null));
+        viewModel.ChooseBatchInputDirectoryCommand.Execute(null);
+        viewModel.ChooseBatchOutputDirectoryCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Equal(@"C:\商品 素材\秋季上新", viewModel.BatchInputDirectory);
+        Assert.Equal(@"D:\生产输出\秋季上新", viewModel.BatchOutputDirectory);
+        Assert.True(viewModel.ScanBatchInputCommand.CanExecute(null));
+
+        Assert.All(
+            ExpectedBatchAutomationIds,
+            id => Assert.NotNull(FindByAutomationId<FrameworkElement>(window, id)));
+
+        viewModel.OpenBatchPageSelectionCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Equal(
+            Visibility.Visible,
+            FindByAutomationId<Grid>(window, "BatchPageSelectionDialog").Visibility);
+        viewModel.AreAllBatchPagesSelected = false;
+        Assert.Equal(0, viewModel.SelectedBatchPageCount);
+        Assert.False(viewModel.ScanBatchInputCommand.CanExecute(null));
+        viewModel.BatchPages[0].IsSelected = true;
+        viewModel.ApplyBatchPageSelectionCommand.Execute(null);
+        Assert.True(viewModel.ScanBatchInputCommand.CanExecute(null));
+
+        viewModel.IsBatchManualSelection = true;
+        viewModel.BatchIncludeEditablePsd = true;
+        var scanGate = new TaskCompletionSource();
+        workflow.ScanGate = scanGate;
+        viewModel.ScanBatchInputCommand.Execute(null);
+        FlushLayout(window);
+        Assert.True(viewModel.IsBatchScanning);
+        Assert.Equal(
+            Visibility.Visible,
+            FindByAutomationId<Button>(window, "CancelBatchScanButton").Visibility);
+        scanGate.SetResult();
+        FlushLayout(window);
+
+        var submission = Assert.IsType<BatchInputSubmission>(workflow.Submission);
+        Assert.Equal("group_batch_ui", submission.TemplateGroupId);
+        Assert.Single(submission.SelectedPageIds);
+        Assert.Equal("page_1", submission.SelectedPageIds[0]);
+        Assert.Equal(BatchSelectionMode.Manual, submission.SelectionMode);
+        Assert.True(submission.IncludeEditablePsd);
+        Assert.True(viewModel.IsBatchScanReady);
+        Assert.Equal("已识别为正常批次 · 2 款", viewModel.BatchRecognitionText);
+        Assert.Equal("重新扫描", viewModel.BatchPrimaryActionText);
+
+        workflow.NextStatus = BatchInputUiStatus.ScanBlocked;
+        workflow.NextRecognitionText = "目录结构需要整理后重新扫描。";
+        workflow.NextStatusMessage =
+            "所选目录同时包含根目录图片和款式子文件夹。请整理后重新选择；软件不会猜测图片归属。";
+        viewModel.ScanBatchInputCommand.Execute(null);
+        FlushLayout(window);
+        Assert.True(viewModel.IsBatchScanBlocked);
+        Assert.Contains("不会猜测图片归属", viewModel.BatchStatusMessage, StringComparison.Ordinal);
+
+        workflow.NextStatusMessage =
+            "未找到可用商品图片。请选择直接包含商品图片的单款目录，或包含款式子文件夹的批次目录。";
+        viewModel.RetryBatchScanCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Contains("未找到可用商品图片", viewModel.BatchStatusMessage, StringComparison.Ordinal);
+
+        workflow.NextStatusMessage = "扫描未能安全提交。请重试；如果问题持续，请导出诊断信息。";
+        viewModel.RetryBatchScanCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Contains("扫描未能安全提交", viewModel.BatchStatusMessage, StringComparison.Ordinal);
+
+        workflow.NextStatus = BatchInputUiStatus.ScanReady;
+        workflow.NextRecognitionText = "已识别为单款批次 · 1 款";
+        workflow.NextStatusMessage = "扫描完成，共识别 1 款、3 张商品图片，可进入后续分析。";
+        viewModel.RetryBatchScanCommand.Execute(null);
+        FlushLayout(window);
+        Assert.True(viewModel.IsBatchScanReady);
+        Assert.Equal("已识别为单款批次 · 1 款", viewModel.BatchRecognitionText);
+
+        viewModel.CancelBatchInputCommand.Execute(null);
+        viewModel.OpenBatchInputCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Equal("", viewModel.BatchInputDirectory);
+        Assert.Equal("", viewModel.BatchOutputDirectory);
+        Assert.Equal("新批次草稿", viewModel.BatchDraftSaveText);
+        Assert.False(viewModel.IsBatchScanReady);
+
+        var narrowBounds = WindowBoundsCalculator.Fit(
+            SystemParameters.WorkArea,
+            new Size(1100, 760),
+            new Size(window.MinWidth, window.MinHeight));
+        window.Left = narrowBounds.Left;
+        window.Top = narrowBounds.Top;
+        window.Width = narrowBounds.Width;
+        window.Height = narrowBounds.Height;
+        viewModel.SetWindowWidth(narrowBounds.Width);
+        FlushLayout(window);
+        Assert.Equal(1100, window.ActualWidth, precision: 0);
+        Assert.Equal(760, window.ActualHeight, precision: 0);
+        Assert.True(viewModel.IsBatchNarrowLayout);
+        var pageBounds = page.TransformToAncestor(window).TransformBounds(new Rect(page.RenderSize));
+        Assert.True(pageBounds.Left >= 0);
+        Assert.True(pageBounds.Right <= window.ActualWidth + 0.5);
+
+        workflow.RestoreProjection = new BatchInputProjection(
+            "batch_recovered",
+            "group_batch_ui",
+            BatchInputUiStatus.ScanBlocked,
+            @"C:\商品 素材\秋季上新",
+            @"D:\生产输出\秋季上新",
+            ["page_1"],
+            BatchSelectionMode.Manual,
+            true,
+            "已识别为正常批次 · 2 款",
+            "上次扫描未安全完成。源图片没有更改，请重新扫描。");
+        viewModel.CancelBatchInputCommand.Execute(null);
+        viewModel.OpenBatchInputCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Equal("草稿已自动保存", viewModel.BatchDraftSaveText);
+        Assert.Equal("group_batch_ui", viewModel.SelectedBatchTemplate?.GroupId);
+        Assert.True(viewModel.IsBatchScanBlocked);
+        Assert.Equal(1, viewModel.SelectedBatchPageCount);
     }
 
     [Fact]
@@ -389,6 +581,24 @@ public sealed class WpfShellTests
         throw new InvalidOperationException($"Automation element not found: {automationId}");
     }
 
+    private static IEnumerable<T> EnumerateVisualDescendants<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T candidate)
+            {
+                yield return candidate;
+            }
+
+            foreach (var descendant in EnumerateVisualDescendants<T>(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
     private static void FlushLayout(Window window) => window.UpdateLayout();
 
     private static void RunInSta(Action action)
@@ -420,5 +630,75 @@ public sealed class WpfShellTests
         {
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
+    }
+
+    private sealed class QueueFolderPicker(params string[] paths) : IFolderPicker
+    {
+        private readonly Queue<string> _paths = new(paths);
+
+        public Task<string?> PickFolderAsync(
+            string title,
+            string? initialDirectory,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<string?>(_paths.Dequeue());
+        }
+    }
+
+    private sealed class RecordingBatchInputWorkflow : IBatchInputWorkflow
+    {
+        public BatchInputSubmission? Submission { get; private set; }
+
+        public BatchInputProjection? RestoreProjection { get; set; }
+
+        public TaskCompletionSource? ScanGate { get; set; }
+
+        public BatchInputUiStatus NextStatus { get; set; } = BatchInputUiStatus.ScanReady;
+
+        public string NextRecognitionText { get; set; } = "已识别为正常批次 · 2 款";
+
+        public string NextStatusMessage { get; set; } = "扫描完成，可进入后续分析。";
+
+        public Task<BatchInputProjection?> RestoreLatestDraftAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(RestoreProjection);
+
+        public async Task<BatchInputProjection> ScanAsync(
+            BatchInputSubmission submission,
+            CancellationToken cancellationToken)
+        {
+            Submission = submission;
+            if (ScanGate is { } gate)
+            {
+                await gate.Task.WaitAsync(cancellationToken);
+                ScanGate = null;
+            }
+
+            return new BatchInputProjection(
+                "batch_ui_test",
+                submission.TemplateGroupId,
+                NextStatus,
+                submission.InputDirectory,
+                submission.OutputDirectory,
+                submission.SelectedPageIds,
+                submission.SelectionMode,
+                submission.IncludeEditablePsd,
+                NextRecognitionText,
+                NextStatusMessage);
+        }
+
+        public Task<BatchInputProjection> SaveDraftAsync(
+            BatchInputSubmission submission,
+            CancellationToken cancellationToken) => Task.FromResult(new BatchInputProjection(
+                submission.BatchId ?? "batch_ui_test",
+                submission.TemplateGroupId,
+                BatchInputUiStatus.Draft,
+                submission.InputDirectory,
+                submission.OutputDirectory,
+                submission.SelectedPageIds,
+                submission.SelectionMode,
+                submission.IncludeEditablePsd,
+                "目录已选择；等待扫描识别。",
+                "草稿已自动保存。"));
     }
 }

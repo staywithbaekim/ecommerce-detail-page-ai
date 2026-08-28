@@ -184,6 +184,61 @@ public sealed partial class SqliteDesktopStore
                 PRIMARY KEY(draft_id, page_id),
                 FOREIGN KEY(draft_id) REFERENCES calibration_drafts(draft_id) ON DELETE CASCADE
             );
+            """),
+        new(5, "desktop-v5-batch-input-schema-001", """
+            CREATE TABLE IF NOT EXISTS input_batches (
+                batch_id TEXT PRIMARY KEY,
+                scan_status TEXT NOT NULL,
+                input_type TEXT NULL,
+                input_root TEXT NOT NULL,
+                output_root TEXT NOT NULL,
+                template_snapshot_id TEXT NOT NULL,
+                selection_mode TEXT NOT NULL,
+                include_editable_psd INTEGER NOT NULL CHECK(include_editable_psd IN (0, 1)),
+                manifest_reference TEXT NULL,
+                manifest_digest TEXT NULL,
+                block_reason_code TEXT NULL,
+                block_reason_category TEXT NULL,
+                block_reason_action TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(template_snapshot_id) REFERENCES batch_template_snapshots(snapshot_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS input_styles (
+                style_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                default_style_code TEXT NOT NULL,
+                source_relative_directory TEXT NOT NULL,
+                order_index INTEGER NOT NULL CHECK(order_index >= 0),
+                UNIQUE(batch_id, order_index),
+                FOREIGN KEY(batch_id) REFERENCES input_batches(batch_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS input_assets (
+                asset_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                source_relative_path TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                length INTEGER NOT NULL CHECK(length > 0),
+                sha256 TEXT NOT NULL,
+                pixel_width INTEGER NOT NULL CHECK(pixel_width > 0),
+                pixel_height INTEGER NOT NULL CHECK(pixel_height > 0),
+                image_format TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                readability TEXT NOT NULL,
+                UNIQUE(batch_id, source_relative_path),
+                FOREIGN KEY(batch_id) REFERENCES input_batches(batch_id) ON DELETE CASCADE,
+                FOREIGN KEY(style_id) REFERENCES input_styles(style_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_input_batches_status_updated
+                ON input_batches(scan_status, updated_at);
+            CREATE INDEX IF NOT EXISTS IX_input_styles_batch
+                ON input_styles(batch_id, order_index);
+            CREATE INDEX IF NOT EXISTS IX_input_assets_batch_style
+                ON input_assets(batch_id, style_id);
             """)
     ];
 
