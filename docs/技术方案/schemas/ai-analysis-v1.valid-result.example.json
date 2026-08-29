@@ -1,0 +1,39 @@
+{
+  "schema_version": "ai-analysis-result/v1",
+  "document_kind": "result",
+  "request_id": "request_0001",
+  "provider_request_ref": "provider_ref_0001",
+  "model_config_version": "volcark/doubao-seed-2.1-pro-260628/proposed-ai01",
+  "requirement_matches": [{
+    "requirement_id": "frame_0001",
+    "asset_id": "asset_0001",
+    "rank": 1,
+    "confidence": 0.96,
+    "evidence_codes": ["subject_complete", "orientation_match"]
+  }],
+  "variant_groups": [{
+    "variant_id": "variant_0001",
+    "dimension": "商品版本",
+    "value": "示例版本一",
+    "asset_ids": ["asset_0001"],
+    "is_primary_suggestion": true
+  }],
+  "subject_geometry": [{
+    "asset_id": "asset_0001",
+    "left": 0.1,
+    "top": 0.05,
+    "right": 0.9,
+    "bottom": 0.95,
+    "confidence": 0.94
+  }],
+  "size_table_candidate": null,
+  "warnings": [],
+  "usage": {
+    "usage_event_id": "usage_0001",
+    "input_units": 0,
+    "output_units": 0,
+    "request_count": 1,
+    "provider_cost_amount": null,
+    "provider_cost_currency": null
+  }
+}

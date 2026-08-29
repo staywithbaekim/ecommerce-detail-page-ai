@@ -6,5 +6,6 @@ public enum ContractDocumentKind
     BridgeEnvelope,
     TemplateRevisionManifest,
     TemplatePackageManifest,
-    AssetManifest
+    AssetManifest,
+    AiAnalysis
 }

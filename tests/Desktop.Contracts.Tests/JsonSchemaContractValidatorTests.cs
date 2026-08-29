@@ -151,6 +151,55 @@ public sealed class JsonSchemaContractValidatorTests
     }
 
     [Fact]
+    public void AiAnalysisSchemaAcceptsVersionedRequestAndResult()
+    {
+        Assert.True(_validator.Validate(
+            ContractDocumentKind.AiAnalysis,
+            LoadValidAiRequest()).IsValid);
+        Assert.True(_validator.Validate(
+            ContractDocumentKind.AiAnalysis,
+            LoadValidAiResult()).IsValid);
+    }
+
+    [Theory]
+    [InlineData("secret-field")]
+    [InlineData("unsupported-analysis-kind")]
+    [InlineData("absolute-analysis-copy")]
+    [InlineData("out-of-bounds-geometry")]
+    [InlineData("raw-provider-response")]
+    public void AiAnalysisSchemaRejectsUnsafeShapes(string mutation)
+    {
+        var root = JsonNode.Parse(LoadValidAiRequest())!.AsObject();
+        switch (mutation)
+        {
+            case "secret-field":
+                root["api_key"] = "secret";
+                break;
+            case "unsupported-analysis-kind":
+                root["analysis_kind"] = "front_view";
+                break;
+            case "absolute-analysis-copy":
+                root["assets"]![0]!["analysis_copy_ref"] = @"C:\source.jpg";
+                break;
+            case "out-of-bounds-geometry":
+                root = JsonNode.Parse(LoadValidAiResult())!.AsObject();
+                root["subject_geometry"]![0]!["right"] = 1.5;
+                break;
+            case "raw-provider-response":
+                root = JsonNode.Parse(LoadValidAiResult())!.AsObject();
+                root["provider_raw_response"] = new JsonObject();
+                break;
+            default:
+                throw new InvalidOperationException("Unknown mutation.");
+        }
+
+        var result = _validator.Validate(ContractDocumentKind.AiAnalysis, root.ToJsonString());
+
+        Assert.False(result.IsValid);
+        Assert.Equal("CONTRACT_SCHEMA_REJECTED", Assert.Single(result.Errors).Code);
+    }
+
+    [Fact]
     public void TemplatePackageSchemaAcceptsV1AndRejectsTraversalOrUnknownVersion()
     {
         var valid = LoadValidTemplatePackageManifest();
@@ -241,4 +290,10 @@ public sealed class JsonSchemaContractValidatorTests
 
     private static string LoadValidAssetManifest() => File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "asset-manifest-v1.valid.example.json"));
+
+    private static string LoadValidAiRequest() => File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "ai-analysis-v1.valid-request.example.json"));
+
+    private static string LoadValidAiResult() => File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "ai-analysis-v1.valid-result.example.json"));
 }

@@ -1,0 +1,32 @@
+{
+  "schema_version": "ai-analysis/v1",
+  "document_kind": "request",
+  "request_id": "request_0001",
+  "correlation_id": "corr_0001",
+  "product_id": "style_0001",
+  "batch_id": "batch_0001",
+  "style_id": "style_0001",
+  "template_snapshot_id": "snapshot_0001",
+  "template_revision_id": "revision_0001",
+  "analysis_kind": "product_joint_understanding",
+  "model_config_version": "volcark/doubao-seed-2.1-pro-260628/proposed-ai01",
+  "prompt_contract_version": "ai-prompt/v1-proposed",
+  "response_schema_version": "ai-analysis-result/v1",
+  "compression_profile_version": "analysis-copy/v1-proposed",
+  "consent_id": "consent_0001",
+  "requirements_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "assets": [{
+    "asset_id": "asset_0001",
+    "content_hash": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "mime_type": "image/jpeg",
+    "pixel_width": 1200,
+    "pixel_height": 1600,
+    "analysis_copy_ref": "analysis_copy_0001"
+  }],
+  "requirements": [{
+    "requirement_id": "frame_0001",
+    "selection_requirement": "选择完整展示商品主体且方向符合示范的图片",
+    "layout_intent": "主体完整，允许按图片框比例裁切背景",
+    "required": true
+  }]
+}

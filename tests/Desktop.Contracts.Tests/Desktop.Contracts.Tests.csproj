@@ -35,6 +35,12 @@
     <None Include="..\..\docs\技术方案\schemas\asset-manifest-v1.valid.example.json"
           Link="Fixtures\asset-manifest-v1.valid.example.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\技术方案\schemas\ai-analysis-v1.valid-request.example.json"
+          Link="Fixtures\ai-analysis-v1.valid-request.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\技术方案\schemas\ai-analysis-v1.valid-result.example.json"
+          Link="Fixtures\ai-analysis-v1.valid-result.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

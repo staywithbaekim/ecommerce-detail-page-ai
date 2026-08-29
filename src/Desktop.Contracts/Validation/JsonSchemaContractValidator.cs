@@ -59,7 +59,8 @@ public sealed class JsonSchemaContractValidator : IJsonContractValidator
         [ContractDocumentKind.BridgeEnvelope] = LoadSchema("bridge-v1.schema.json"),
         [ContractDocumentKind.TemplateRevisionManifest] = LoadSchema("template-revision-v1.schema.json"),
         [ContractDocumentKind.TemplatePackageManifest] = LoadSchema("template-package-v1.schema.json"),
-        [ContractDocumentKind.AssetManifest] = LoadSchema("asset-manifest-v1.schema.json")
+        [ContractDocumentKind.AssetManifest] = LoadSchema("asset-manifest-v1.schema.json"),
+        [ContractDocumentKind.AiAnalysis] = LoadSchema("ai-analysis-v1.schema.json")
     };
 
     private static ContractValidationResult Failure(string code, string userAction) =>
