@@ -22,10 +22,45 @@ public sealed class AiAnalysisInputProjectorTests
         Assert.Equal("ai-analysis/v1", request.SchemaVersion);
         Assert.Equal("batch_01", request.BatchId);
         Assert.Equal("style_01", request.ProductId);
-        Assert.Equal("sha256:" + new string('d', 64), request.RequirementsDigest);
+        Assert.StartsWith("sha256:", request.RequirementsDigest, StringComparison.Ordinal);
+        Assert.Equal(71, request.RequirementsDigest.Length);
         Assert.Equal("asset_01", Assert.Single(request.Assets).AssetId);
         Assert.Equal("frame_01", Assert.Single(request.Requirements).RequirementId);
         Assert.DoesNotContain(request.Assets, asset => asset.AnalysisCopyReference.Contains(':'));
+    }
+
+    [Fact]
+    public void RequirementsDigestIsIndependentFromManifestAndChangesWithRequirements()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var revision = CommittedRevision(now);
+        var batch = ReadyBatch(revision, now);
+        var baseline = AiAnalysisInputProjector.Project(batch, revision, "style_01", Options());
+
+        var differentManifest = BatchDraft.Restore(
+            batch.BatchId, batch.ScanStatus, batch.InputType, batch.InputRoot, batch.OutputRoot,
+            batch.TemplateSnapshot, batch.SelectionMode, batch.IncludeEditablePsd, batch.Styles,
+            batch.Assets, batch.ManifestReference, "sha256:" + new string('e', 64), null,
+            batch.CreatedAt, batch.UpdatedAt);
+        var manifestChanged = AiAnalysisInputProjector.Project(
+            differentManifest, revision, "style_01", Options());
+
+        Assert.Equal(baseline.RequirementsDigest, manifestChanged.RequirementsDigest);
+        Assert.NotEqual("sha256:" + new string('d', 64), baseline.RequirementsDigest);
+
+        var changedBinding = FrameBinding.Create(
+            "frame_01", "page_01", LayerPath.Create([1]),
+            ExpectedLayerEvidence.Create(1, "frame", true, false, false, false, 255, "normal",
+                LayerStructureSignature.Create("sha256:" + new string('b', 64))),
+            [], SelectionRequirement.Create("选择背面商品图", [SelectionCriterion.Create("asset_id", "asset_01")]),
+            LayoutIntent.Create("主体完整", 1, 0, 0, TemplateRect.Create(0, 0, 100, 100)));
+        var changedRevision = TemplateRevision.Restore(
+            revision.RevisionId, revision.GroupId, revision.RevisionNo, TemplateRevisionState.Committed,
+            revision.ManifestRef, revision.RuleDigest, revision.CreatedAt, revision.Pages, [changedBinding]);
+
+        var requirementChanged = AiAnalysisInputProjector.Project(
+            batch, changedRevision, "style_01", Options());
+        Assert.NotEqual(baseline.RequirementsDigest, requirementChanged.RequirementsDigest);
     }
 
     [Fact]

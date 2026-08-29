@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 
 namespace Desktop.Contracts.Tests;
@@ -159,6 +161,23 @@ public sealed class JsonSchemaContractValidatorTests
         Assert.True(_validator.Validate(
             ContractDocumentKind.AiAnalysis,
             LoadValidAiResult()).IsValid);
+    }
+
+    [Fact]
+    public void AiAnalysisResultRoundTripsRequestIdAndRequiresIt()
+    {
+        var result = JsonSerializer.Deserialize<AiAnalysisResultV1>(LoadValidAiResult());
+
+        Assert.NotNull(result);
+        Assert.Equal("request_0001", result!.RequestId);
+        var serialized = JsonSerializer.Serialize(result);
+        Assert.Contains("\"request_id\":\"request_0001\"", serialized, StringComparison.Ordinal);
+
+        var missingRequestId = JsonNode.Parse(LoadValidAiResult())!.AsObject();
+        missingRequestId.Remove("request_id");
+        Assert.False(_validator.Validate(
+            ContractDocumentKind.AiAnalysis,
+            missingRequestId.ToJsonString()).IsValid);
     }
 
     [Theory]

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Desktop.Contracts.Ai;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.Templates;
@@ -36,6 +38,9 @@ public static class AiAnalysisInputProjector
         {
             throw new InvalidOperationException("AI_INPUT_MANIFEST_REFERENCE_INVALID");
         }
+
+        _ = NormalizeDigest(batch.ManifestDigest
+            ?? throw new InvalidOperationException("AI_INPUT_MANIFEST_DIGEST_MISSING"));
 
         if (templateRevision.State != TemplateRevisionState.Committed
             || templateRevision.RuleDigest is null
@@ -103,6 +108,8 @@ public static class AiAnalysisInputProjector
             throw new InvalidOperationException("AI_INPUT_SELECTION_REQUIREMENTS_MISSING");
         }
 
+        var requirementsDigest = ComputeRequirementsDigest(requirements);
+
         return new AiAnalysisRequestV1(
             AiAnalysisProtocol.RequestSchemaVersion,
             "request",
@@ -119,9 +126,23 @@ public static class AiAnalysisInputProjector
             AiAnalysisProtocol.ResultSchemaVersion,
             options.CompressionProfileVersion,
             options.ConsentId,
-            NormalizeDigest(batch.ManifestDigest ?? throw new InvalidOperationException("AI_INPUT_MANIFEST_DIGEST_MISSING")),
+            requirementsDigest,
             assets,
             requirements);
+    }
+
+    private static string ComputeRequirementsDigest(IReadOnlyList<AiRequirementInputV1> requirements)
+    {
+        var canonical = string.Join(
+            "\n",
+            requirements.Select(requirement => string.Join(
+                "|",
+                requirement.RequirementId,
+                requirement.SelectionRequirement,
+                requirement.LayoutIntent,
+                requirement.Required ? "true" : "false")));
+        return "sha256:" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
     private static string NormalizeDigest(string value)
