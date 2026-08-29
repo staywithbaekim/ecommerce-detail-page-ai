@@ -70,6 +70,35 @@ public sealed class VolcArkAiAdapterTests
     }
 
     [Fact]
+    public async Task RejectsCredentialWithHeaderControlCharactersWithoutSendingRequest()
+    {
+        var handler = new StubHandler((Func<CancellationToken, HttpResponseMessage>)(_ =>
+            throw new InvalidOperationException("should not send")));
+        var adapter = CreateAdapter(handler, new FakeCopySource(), credential: "test-key\r\n");
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_CREDENTIAL_INVALID", execution.Error!.Code);
+        Assert.Equal(0, handler.CallCount);
+        Assert.DoesNotContain("test-key", execution.Error.UserAction, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectsCredentialWithEmbeddedNulWithoutSendingRequest()
+    {
+        var handler = new StubHandler((Func<CancellationToken, HttpResponseMessage>)(_ =>
+            throw new InvalidOperationException("should not send")));
+        var adapter = CreateAdapter(handler, new FakeCopySource(), credential: "test\0key");
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_CREDENTIAL_INVALID", execution.Error!.Code);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
     public async Task CancellationAndTimeoutAreSeparatedFromUnknownResult()
     {
         var handler = new StubHandler(async cancellationToken =>

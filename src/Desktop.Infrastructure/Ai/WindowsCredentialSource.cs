@@ -75,8 +75,18 @@ public sealed class WindowsCredentialSource : IAiCredentialSource
 
     private static string DecodeCredential(byte[] bytes)
     {
-        // cmdkey/PowerShell integrations commonly write UTF-8; accept UTF-16
-        // only when the blob has the characteristic alternating zero bytes.
+        // Generic Credential Manager blobs are commonly UTF-16LE when written
+        // by cmdkey/PowerShell. Detect that representation before attempting
+        // UTF-8 so internal NUL bytes never reach an HTTP header.
+        if (bytes.Length >= 2
+            && bytes.Length % 2 == 0
+            && bytes.Where((value, index) => index % 2 == 1).All(value => value == 0))
+        {
+            return Encoding.Unicode.GetString(bytes).TrimEnd('\0').Trim();
+        }
+
+        // Otherwise accept UTF-8, rejecting replacement characters as a sign
+        // that the blob should not be treated as a valid API key.
         var utf8 = Encoding.UTF8.GetString(bytes).TrimEnd('\0').Trim();
         if (!utf8.Contains('\uFFFD', StringComparison.Ordinal))
         {

@@ -73,6 +73,19 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                     stopwatch);
             }
 
+            // Header values must be a single opaque credential. Reject
+            // malformed Credential Manager entries before constructing an
+            // Authorization header, without logging or echoing the secret.
+            if (credential.Any(character => character is '\r' or '\n' or '\0'))
+            {
+                return Failure(
+                    AiProviderOutcome.TerminalError,
+                    "AI_PROVIDER_CREDENTIAL_INVALID",
+                    retryable: false,
+                    "本机 AI 凭据格式无效，请在凭据管理器中重新保存单行 API Key。",
+                    stopwatch);
+            }
+
             var images = new List<AiAnalysisCopy>(request.Assets.Count);
             try
             {
