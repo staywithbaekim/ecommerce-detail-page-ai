@@ -14,6 +14,7 @@ public sealed partial class SqliteDesktopStore
         string fingerprint,
         CancellationToken cancellationToken)
     {
+        ValidateDigest(fingerprint, "AI_FINGERPRINT_INVALID");
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT request_id, fingerprint, batch_id, style_id, status, result_reference, created_at, updated_at FROM ai_request_ledger WHERE fingerprint = $fingerprint;";
@@ -27,13 +28,22 @@ public sealed partial class SqliteDesktopStore
         CancellationToken cancellationToken) => _writer.ExecuteAsync(
         async (connection, token) =>
         {
+            ValidateInitialLedgerEntry(entry);
             await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
             var existing = await FindLedgerByRequestIdAsync(connection, transaction, entry.RequestId, token).ConfigureAwait(false);
             if (existing is not null)
             {
-                if (!string.Equals(existing.Fingerprint, entry.Fingerprint, StringComparison.Ordinal))
+                if (!LedgerIdentityMatches(existing, entry))
                 {
                     throw new InvalidOperationException("AI_REQUEST_ID_CONFLICT");
+                }
+
+                if (!string.Equals(existing.Status, AiAnalysisSessionStatus.Queued.ToString(), StringComparison.Ordinal)
+                    || existing.ResultReference is not null
+                    || existing.CreatedAt != entry.CreatedAt
+                    || existing.UpdatedAt != entry.UpdatedAt)
+                {
+                    throw new InvalidOperationException("AI_REQUEST_INITIAL_STATE_CONFLICT");
                 }
 
                 await transaction.RollbackAsync(token).ConfigureAwait(false);
@@ -43,7 +53,14 @@ public sealed partial class SqliteDesktopStore
             var fingerprintOwner = await FindLedgerByFingerprintAsync(connection, transaction, entry.Fingerprint, token).ConfigureAwait(false);
             if (fingerprintOwner is not null)
             {
-                throw new InvalidOperationException("AI_REQUEST_FINGERPRINT_CONFLICT");
+                if (!string.Equals(fingerprintOwner.BatchId, entry.BatchId, StringComparison.Ordinal)
+                    || !string.Equals(fingerprintOwner.StyleId, entry.StyleId, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("AI_REQUEST_FINGERPRINT_SEMANTIC_CONFLICT");
+                }
+
+                await transaction.RollbackAsync(token).ConfigureAwait(false);
+                return fingerprintOwner;
             }
 
             await using var command = connection.CreateCommand();
@@ -65,9 +82,108 @@ public sealed partial class SqliteDesktopStore
             return entry;
         }, cancellationToken);
 
-    public Task SaveSessionAsync(AiAnalysisSession session, CancellationToken cancellationToken) => _writer.ExecuteAsync(
+    public Task<AiRequestLedgerEntry> UpdateRequestStatusAsync(
+        string requestId,
+        string expectedStatus,
+        string nextStatus,
+        string? resultReference,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken) => _writer.ExecuteAsync(
         async (connection, token) =>
         {
+            ValidateIdentifier(requestId, "AI_REQUEST_ID_INVALID");
+            ValidateStatus(expectedStatus);
+            ValidateStatus(nextStatus);
+            ValidateResultReference(resultReference);
+            var existing = await FindLedgerByRequestIdAsync(connection, null, requestId, token).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("AI_REQUEST_NOT_FOUND");
+            if (!string.Equals(existing.Status, expectedStatus, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_REQUEST_STATUS_CONFLICT");
+            }
+
+            if (!IsAllowedStatusTransition(expectedStatus, nextStatus))
+            {
+                throw new InvalidOperationException("AI_REQUEST_STATUS_TRANSITION_INVALID");
+            }
+
+            if (updatedAt < existing.UpdatedAt)
+            {
+                throw new InvalidOperationException("AI_LEDGER_TIME_INVALID");
+            }
+
+            var requiresResult = nextStatus is "Validated" or "ManualReview" or "PlanClosed";
+            if (requiresResult != (resultReference is not null))
+            {
+                throw new InvalidOperationException("AI_REQUEST_RESULT_REFERENCE_STATE_INVALID");
+            }
+
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ai_request_ledger SET status = $next_status, result_reference = $result_reference, updated_at = $updated_at WHERE request_id = $request_id AND status = $expected_status;";
+            command.Parameters.AddWithValue("$next_status", nextStatus);
+            command.Parameters.AddWithValue("$result_reference", (object?)resultReference ?? DBNull.Value);
+            command.Parameters.AddWithValue("$updated_at", updatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$request_id", requestId);
+            command.Parameters.AddWithValue("$expected_status", expectedStatus);
+            if (await command.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1)
+            {
+                throw new InvalidOperationException("AI_REQUEST_STATUS_CONFLICT");
+            }
+
+            return existing with { Status = nextStatus, ResultReference = resultReference, UpdatedAt = updatedAt };
+        }, cancellationToken);
+
+    public Task SaveSessionAsync(AiAnalysisSession session, CancellationToken cancellationToken, long? expectedSelectionRevision = null) => _writer.ExecuteAsync(
+        async (connection, token) =>
+        {
+            var existing = await LoadSessionForWriteAsync(connection, session.SessionId, token).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                if (!IdentityMatches(existing, session))
+                {
+                    throw new InvalidOperationException("AI_SESSION_IDENTITY_CONFLICT");
+                }
+
+                if (expectedSelectionRevision is null)
+                {
+                    if (SessionPayloadEquals(existing, session))
+                    {
+                        return true;
+                    }
+
+                    throw new InvalidOperationException("AI_SESSION_EXPECTED_REVISION_REQUIRED");
+                }
+
+                if (expectedSelectionRevision.Value != existing.SelectionRevision)
+                {
+                    throw new InvalidOperationException("AI_SESSION_REVISION_CONFLICT");
+                }
+
+                if (session.SelectionRevision < existing.SelectionRevision
+                    || (session.SelectionRevision == existing.SelectionRevision
+                        && existing.Status == session.Status
+                        && !SessionPayloadEquals(existing, session)))
+                {
+                    throw new InvalidOperationException("AI_SESSION_STALE_WRITE");
+                }
+
+                if (!SessionPayloadEquals(existing, session)
+                    && existing.Status != session.Status
+                    && !existing.CanAdvanceTo(session.Status))
+                {
+                    throw new InvalidOperationException("AI_SESSION_STATUS_TRANSITION_INVALID");
+                }
+            }
+            else if (expectedSelectionRevision is not null and not 0)
+            {
+                throw new InvalidOperationException("AI_SESSION_REVISION_CONFLICT");
+            }
+
+            if (existing is null && session.Status != AiAnalysisSessionStatus.Queued)
+            {
+                throw new InvalidOperationException("AI_SESSION_INITIAL_STATE_INVALID");
+            }
+
             await using var command = connection.CreateCommand();
             command.CommandText = """
                 INSERT INTO ai_analysis_sessions(
@@ -103,7 +219,7 @@ public sealed partial class SqliteDesktopStore
             command.Parameters.AddWithValue("$has_verified_result", session.HasVerifiedResult ? 1 : 0);
             command.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
             var affected = await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-            if (affected == 0)
+            if (affected == 0 && existing is null)
             {
                 throw new InvalidOperationException("AI_SESSION_IDENTITY_CONFLICT");
             }
@@ -124,16 +240,7 @@ public sealed partial class SqliteDesktopStore
 
         try
         {
-            var requirements = JsonSerializer.Deserialize<string[]>(reader.GetString(7), AiJsonOptions)
-                ?? throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT");
-            var assets = JsonSerializer.Deserialize<string[]>(reader.GetString(8), AiJsonOptions)
-                ?? throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT");
-            var locks = JsonSerializer.Deserialize<AiLockedSelection[]>(reader.GetString(9), AiJsonOptions)
-                ?? throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT");
-            return AiAnalysisSession.Restore(
-                reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-                Enum.Parse<AiAnalysisSessionStatus>(reader.GetString(5), false), reader.GetInt64(6), locks,
-                requirements, assets, reader.GetInt64(10) == 1);
+            return ReadSession(reader);
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
         {
@@ -144,13 +251,34 @@ public sealed partial class SqliteDesktopStore
     public Task SaveCacheReferenceAsync(AiCacheReference reference, CancellationToken cancellationToken) => _writer.ExecuteAsync(
         async (connection, token) =>
         {
+            ValidateCacheReference(reference);
+            var usage = await FindUsageByIdForWriteAsync(connection, reference.UsageEventId, token).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("AI_CACHE_USAGE_NOT_FOUND");
+            var ledger = await FindLedgerByRequestIdAsync(connection, null, usage.RequestId, token).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("AI_CACHE_REQUEST_NOT_FOUND");
+            if (ledger.ResultReference is null
+                || !string.Equals(ledger.ResultReference, reference.ResultReference, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_CACHE_RESULT_REFERENCE_CONFLICT");
+            }
+            var existing = await FindCacheReferenceForWriteAsync(connection, reference.CacheKey, token).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                if (!Equals(existing, reference))
+                {
+                    throw new InvalidOperationException("AI_CACHE_KEY_CONFLICT");
+                }
+
+                return true;
+            }
+
             ValidateOpaqueReference(reference.CacheKey, "AI_CACHE_KEY_INVALID");
             ValidateOwnedReference(reference.ResultReference, "AI_CACHE_REFERENCE_INVALID");
             ValidateOpaqueReference(reference.ConsentId, "AI_CONSENT_ID_INVALID");
             ValidateOpaqueReference(reference.ModelConfigVersion, "AI_MODEL_CONFIG_INVALID");
             ValidateOpaqueReference(reference.UsageEventId, "AI_USAGE_ID_INVALID");
             await using var command = connection.CreateCommand();
-            command.CommandText = "INSERT INTO ai_cache_references(cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at) VALUES($cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at) ON CONFLICT(cache_key) DO NOTHING;";
+            command.CommandText = "INSERT INTO ai_cache_references(cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at) VALUES($cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at);";
             command.Parameters.AddWithValue("$cache_key", reference.CacheKey);
             command.Parameters.AddWithValue("$result_reference", reference.ResultReference);
             command.Parameters.AddWithValue("$consent_id", reference.ConsentId);
@@ -163,21 +291,41 @@ public sealed partial class SqliteDesktopStore
 
     public async Task<AiCacheReference?> FindCacheReferenceAsync(string cacheKey, CancellationToken cancellationToken)
     {
+        ValidateDigest(cacheKey, "AI_CACHE_KEY_INVALID");
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at FROM ai_cache_references WHERE cache_key = $cache_key;";
         command.Parameters.AddWithValue("$cache_key", cacheKey);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)))
-            : null;
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        var reference = new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)));
+        ValidateCacheReference(reference);
+        return reference;
     }
 
     public Task RecordUsageAsync(AiUsageEventRecord usage, CancellationToken cancellationToken) => _writer.ExecuteAsync(
         async (connection, token) =>
         {
+            ValidateUsage(usage);
+            _ = await FindLedgerByRequestIdAsync(connection, null, usage.RequestId, token).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("AI_USAGE_REQUEST_NOT_FOUND");
+            var existing = await FindUsageForWriteAsync(connection, usage.RequestId, token).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                if (!Equals(existing, usage))
+                {
+                    throw new InvalidOperationException("AI_USAGE_REQUEST_CONFLICT");
+                }
+
+                return true;
+            }
+
             await using var command = connection.CreateCommand();
-            command.CommandText = "INSERT INTO ai_usage_events(usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount, provider_cost_currency, recorded_at) VALUES($usage_event_id, $request_id, $model_config_version, $input_units, $output_units, $cache_hit, $retry_count, $provider_cost_amount, $provider_cost_currency, $recorded_at) ON CONFLICT(request_id) DO NOTHING;";
+            command.CommandText = "INSERT INTO ai_usage_events(usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at) VALUES($usage_event_id, $request_id, $model_config_version, $input_units, $output_units, $cache_hit, $retry_count, $provider_cost_amount_text, $provider_cost_currency, $recorded_at);";
             command.Parameters.AddWithValue("$usage_event_id", usage.UsageEventId);
             command.Parameters.AddWithValue("$request_id", usage.RequestId);
             command.Parameters.AddWithValue("$model_config_version", usage.ModelConfigVersion);
@@ -185,7 +333,7 @@ public sealed partial class SqliteDesktopStore
             command.Parameters.AddWithValue("$output_units", usage.OutputUnits);
             command.Parameters.AddWithValue("$cache_hit", usage.CacheHit ? 1 : 0);
             command.Parameters.AddWithValue("$retry_count", usage.RetryCount);
-            command.Parameters.AddWithValue("$provider_cost_amount", (object?)usage.ProviderCostAmount ?? DBNull.Value);
+            command.Parameters.AddWithValue("$provider_cost_amount_text", (object?)usage.ProviderCostAmount?.ToString("G29", CultureInfo.InvariantCulture) ?? DBNull.Value);
             command.Parameters.AddWithValue("$provider_cost_currency", (object?)usage.ProviderCostCurrency ?? DBNull.Value);
             command.Parameters.AddWithValue("$recorded_at", usage.RecordedAt.ToString("O"));
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
@@ -196,23 +344,88 @@ public sealed partial class SqliteDesktopStore
     {
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount, provider_cost_currency, recorded_at FROM ai_usage_events WHERE request_id = $request_id ORDER BY recorded_at;";
+        command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at FROM ai_usage_events WHERE request_id = $request_id ORDER BY recorded_at;";
         command.Parameters.AddWithValue("$request_id", requestId);
         var events = new List<AiUsageEventRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            events.Add(new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : reader.GetDecimal(7), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9))));
+            var usage = new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)));
+            ValidateUsage(usage);
+            events.Add(usage);
         }
 
         return events;
     }
 
-    private static AiRequestLedgerEntry ReadLedger(SqliteDataReader reader) => new(
-        reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-        reader.IsDBNull(5) ? null : reader.GetString(5), ParseTime(reader.GetString(6)), ParseTime(reader.GetString(7)));
+    private static AiRequestLedgerEntry ReadLedger(SqliteDataReader reader)
+    {
+        var entry = new AiRequestLedgerEntry(
+            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5), ParseTime(reader.GetString(6)), ParseTime(reader.GetString(7)));
+        ValidateStoredLedger(entry);
+        return entry;
+    }
 
     private static DateTimeOffset ParseTime(string value) => DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+    private static AiAnalysisSession ReadSession(SqliteDataReader reader)
+    {
+        var requirements = JsonSerializer.Deserialize<string[]>(reader.GetString(7), AiJsonOptions)
+            ?? throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT");
+        var assets = JsonSerializer.Deserialize<string[]>(reader.GetString(8), AiJsonOptions)
+            ?? throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT");
+        var locks = JsonSerializer.Deserialize<AiLockedSelection[]>(reader.GetString(9), AiJsonOptions)
+            ?? throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT");
+        return AiAnalysisSession.Restore(
+            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+            Enum.Parse<AiAnalysisSessionStatus>(reader.GetString(5), false), reader.GetInt64(6), locks,
+            requirements, assets, reader.GetInt64(10) == 1);
+    }
+
+    private static async Task<AiAnalysisSession?> LoadSessionForWriteAsync(
+        SqliteConnection connection,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT session_id, batch_id, style_id, template_snapshot_id, analysis_key, status, selection_revision, allowed_requirement_ids_json, allowed_asset_ids_json, locked_selections_json, has_verified_result FROM ai_analysis_sessions WHERE session_id = $session_id;";
+        command.Parameters.AddWithValue("$session_id", sessionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        try
+        {
+            return ReadSession(reader);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
+        {
+            throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT", exception);
+        }
+    }
+
+    private static bool IdentityMatches(AiAnalysisSession left, AiAnalysisSession right) =>
+        string.Equals(left.BatchId, right.BatchId, StringComparison.Ordinal)
+        && string.Equals(left.StyleId, right.StyleId, StringComparison.Ordinal)
+        && string.Equals(left.TemplateSnapshotId, right.TemplateSnapshotId, StringComparison.Ordinal)
+        && string.Equals(left.AnalysisKey, right.AnalysisKey, StringComparison.Ordinal);
+
+    private static bool SessionPayloadEquals(AiAnalysisSession left, AiAnalysisSession right) =>
+        left.Status == right.Status
+        && left.SelectionRevision == right.SelectionRevision
+        && left.HasVerifiedResult == right.HasVerifiedResult
+        && left.AllowedRequirementIds.SetEquals(right.AllowedRequirementIds)
+        && left.AllowedAssetIds.SetEquals(right.AllowedAssetIds)
+        && left.LockedSelections.Count == right.LockedSelections.Count
+        && left.LockedSelections.All(item => right.LockedSelections.TryGetValue(item.Key, out var other) && Equals(item.Value, other));
+
+    private static bool LedgerIdentityMatches(AiRequestLedgerEntry left, AiRequestLedgerEntry right) =>
+        string.Equals(left.Fingerprint, right.Fingerprint, StringComparison.Ordinal)
+        && string.Equals(left.BatchId, right.BatchId, StringComparison.Ordinal)
+        && string.Equals(left.StyleId, right.StyleId, StringComparison.Ordinal);
 
     private static void ValidateOpaqueReference(string value, string code)
     {
@@ -221,6 +434,135 @@ public sealed partial class SqliteDesktopStore
         {
             throw new InvalidOperationException(code);
         }
+    }
+
+    private static void ValidateIdentifier(string value, string code)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 128
+            || value.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '_' or '-')))
+        {
+            throw new InvalidOperationException(code);
+        }
+    }
+
+    private static void ValidateStatus(string value)
+    {
+        if (!Enum.TryParse<AiAnalysisSessionStatus>(value, false, out _))
+        {
+            throw new InvalidOperationException("AI_STATUS_INVALID");
+        }
+    }
+
+    private static void ValidateResultReference(string? value)
+    {
+        if (value is not null)
+        {
+            ValidateOwnedReference(value, "AI_RESULT_REFERENCE_INVALID");
+        }
+    }
+
+    private static void ValidateLedgerEntry(AiRequestLedgerEntry entry)
+    {
+        ValidateIdentifier(entry.RequestId, "AI_REQUEST_ID_INVALID");
+        ValidateOpaqueReference(entry.Fingerprint, "AI_FINGERPRINT_INVALID");
+        ValidateIdentifier(entry.BatchId, "AI_BATCH_ID_INVALID");
+        ValidateIdentifier(entry.StyleId, "AI_STYLE_ID_INVALID");
+        ValidateStatus(entry.Status);
+        ValidateResultReference(entry.ResultReference);
+        if (entry.UpdatedAt < entry.CreatedAt)
+        {
+            throw new InvalidOperationException("AI_LEDGER_TIME_INVALID");
+        }
+    }
+
+    private static void ValidateInitialLedgerEntry(AiRequestLedgerEntry entry)
+    {
+        ValidateLedgerEntry(entry);
+        if (!string.Equals(entry.Status, AiAnalysisSessionStatus.Queued.ToString(), StringComparison.Ordinal)
+            || entry.ResultReference is not null
+            || entry.CreatedAt != entry.UpdatedAt)
+        {
+            throw new InvalidOperationException("AI_REQUEST_INITIAL_STATE_INVALID");
+        }
+    }
+
+    private static void ValidateStoredLedger(AiRequestLedgerEntry entry)
+    {
+        ValidateIdentifier(entry.RequestId, "AI_REQUEST_ID_INVALID");
+        ValidateDigest(entry.Fingerprint, "AI_FINGERPRINT_INVALID");
+        ValidateIdentifier(entry.BatchId, "AI_BATCH_ID_INVALID");
+        ValidateIdentifier(entry.StyleId, "AI_STYLE_ID_INVALID");
+        ValidateStatus(entry.Status);
+        ValidateResultReference(entry.ResultReference);
+        if (entry.UpdatedAt < entry.CreatedAt)
+        {
+            throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT");
+        }
+
+        var requiresResult = entry.Status is "Validated" or "ManualReview" or "PlanClosed";
+        if (requiresResult != (entry.ResultReference is not null))
+        {
+            throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT");
+        }
+    }
+
+    private static void ValidateCacheReference(AiCacheReference reference)
+    {
+        ValidateDigest(reference.CacheKey, "AI_CACHE_KEY_INVALID");
+        ValidateOwnedReference(reference.ResultReference, "AI_CACHE_REFERENCE_INVALID");
+        ValidateOpaqueReference(reference.ConsentId, "AI_CONSENT_ID_INVALID");
+        ValidateOpaqueReference(reference.ModelConfigVersion, "AI_MODEL_CONFIG_INVALID");
+        ValidateOpaqueReference(reference.UsageEventId, "AI_USAGE_ID_INVALID");
+    }
+
+    private static void ValidateUsage(AiUsageEventRecord usage)
+    {
+        ValidateIdentifier(usage.UsageEventId, "AI_USAGE_ID_INVALID");
+        ValidateIdentifier(usage.RequestId, "AI_REQUEST_ID_INVALID");
+        ValidateOpaqueReference(usage.ModelConfigVersion, "AI_MODEL_CONFIG_INVALID");
+        if (usage.InputUnits < 0 || usage.OutputUnits < 0 || usage.RetryCount < 0
+            || (usage.ProviderCostAmount is null) != (usage.ProviderCostCurrency is null)
+            || usage.ProviderCostAmount < 0
+            || (usage.ProviderCostCurrency is not null
+                && !System.Text.RegularExpressions.Regex.IsMatch(usage.ProviderCostCurrency, "^[A-Z]{3}$")))
+        {
+            throw new InvalidOperationException("AI_USAGE_INVALID");
+        }
+    }
+
+    private static void ValidateDigest(string value, string code)
+    {
+        if (value is null
+            || value.Length != 71
+            || !value.StartsWith("sha256:", StringComparison.Ordinal)
+            || value.Skip(7).Any(character => !((character >= '0' && character <= '9')
+                || (character >= 'a' && character <= 'f'))))
+        {
+            throw new InvalidOperationException(code);
+        }
+    }
+
+    private static bool IsAllowedStatusTransition(string current, string next)
+    {
+        var pair = (Enum.Parse<AiAnalysisSessionStatus>(current, false), Enum.Parse<AiAnalysisSessionStatus>(next, false));
+        return pair is
+            (AiAnalysisSessionStatus.Queued, AiAnalysisSessionStatus.Uploading)
+            or (AiAnalysisSessionStatus.Uploading, AiAnalysisSessionStatus.Analysing)
+            or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.Validated)
+            or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.RetryableError)
+            or (AiAnalysisSessionStatus.Uploading, AiAnalysisSessionStatus.TerminalError)
+            or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.TerminalError)
+            or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.AiResultUnknown)
+            or (AiAnalysisSessionStatus.Validated, AiAnalysisSessionStatus.ManualReview)
+            or (AiAnalysisSessionStatus.Validated, AiAnalysisSessionStatus.PlanClosed)
+            or (AiAnalysisSessionStatus.ManualReview, AiAnalysisSessionStatus.PlanClosed)
+            or (AiAnalysisSessionStatus.RetryableError, AiAnalysisSessionStatus.Queued)
+            or (AiAnalysisSessionStatus.AiResultUnknown, AiAnalysisSessionStatus.TerminalError)
+            or (AiAnalysisSessionStatus.AiResultUnknown, AiAnalysisSessionStatus.Cancelled)
+            or (AiAnalysisSessionStatus.Queued, AiAnalysisSessionStatus.Cancelled)
+            or (AiAnalysisSessionStatus.Uploading, AiAnalysisSessionStatus.Cancelled)
+            or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.Cancelled)
+            or (AiAnalysisSessionStatus.RetryableError, AiAnalysisSessionStatus.Cancelled);
     }
 
     private static void ValidateOwnedReference(string value, string code)
@@ -234,7 +576,7 @@ public sealed partial class SqliteDesktopStore
         }
     }
 
-    private static async Task<AiRequestLedgerEntry?> FindLedgerByRequestIdAsync(SqliteConnection connection, SqliteTransaction transaction, string requestId, CancellationToken cancellationToken)
+    private static async Task<AiRequestLedgerEntry?> FindLedgerByRequestIdAsync(SqliteConnection connection, SqliteTransaction? transaction, string requestId, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -244,7 +586,7 @@ public sealed partial class SqliteDesktopStore
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadLedger(reader) : null;
     }
 
-    private static async Task<AiRequestLedgerEntry?> FindLedgerByFingerprintAsync(SqliteConnection connection, SqliteTransaction transaction, string fingerprint, CancellationToken cancellationToken)
+    private static async Task<AiRequestLedgerEntry?> FindLedgerByFingerprintAsync(SqliteConnection connection, SqliteTransaction? transaction, string fingerprint, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -252,5 +594,47 @@ public sealed partial class SqliteDesktopStore
         command.Parameters.AddWithValue("$fingerprint", fingerprint);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadLedger(reader) : null;
+    }
+
+    private static async Task<AiCacheReference?> FindCacheReferenceForWriteAsync(
+        SqliteConnection connection,
+        string cacheKey,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at FROM ai_cache_references WHERE cache_key = $cache_key;";
+        command.Parameters.AddWithValue("$cache_key", cacheKey);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)))
+            : null;
+    }
+
+    private static async Task<AiUsageEventRecord?> FindUsageForWriteAsync(
+        SqliteConnection connection,
+        string requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at FROM ai_usage_events WHERE request_id = $request_id;";
+        command.Parameters.AddWithValue("$request_id", requestId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)))
+            : null;
+    }
+
+    private static async Task<AiUsageEventRecord?> FindUsageByIdForWriteAsync(
+        SqliteConnection connection,
+        string usageEventId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at FROM ai_usage_events WHERE usage_event_id = $usage_event_id;";
+        command.Parameters.AddWithValue("$usage_event_id", usageEventId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)))
+            : null;
     }
 }

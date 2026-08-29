@@ -4,6 +4,7 @@ using Desktop.Application.Tasks;
 using Desktop.Domain.Ai;
 using Desktop.Domain.Tasks;
 using Desktop.Infrastructure.Persistence;
+using Desktop.Infrastructure.Files;
 using Microsoft.Data.Sqlite;
 
 namespace Desktop.Infrastructure.Tests;
@@ -106,13 +107,16 @@ public sealed class SqliteDesktopStoreTests
         await using var store = new SqliteDesktopStore(options);
         await store.InitializeAsync();
         var now = DateTimeOffset.UtcNow;
-        var entry = new AiRequestLedgerEntry("request_01", "fingerprint_01", "batch_01", "style_01", "Queued", null, now, now);
+        var entry = new AiRequestLedgerEntry("request_01", "sha256:" + new string('f', 64), "batch_01", "style_01", "Queued", null, now, now);
 
         var first = await store.RecordRequestAsync(entry, CancellationToken.None);
-        var duplicate = await store.RecordRequestAsync(entry with { UpdatedAt = now.AddMinutes(1) }, CancellationToken.None);
+        var duplicate = await store.RecordRequestAsync(entry, CancellationToken.None);
         Assert.Equal(first, duplicate);
+        var sameFingerprint = await store.RecordRequestAsync(
+            entry with { RequestId = "request_02" }, CancellationToken.None);
+        Assert.Equal("request_01", sameFingerprint.RequestId);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
-            entry with { RequestId = "request_02" }, CancellationToken.None));
+            entry with { RequestId = "request_03", BatchId = "batch_02" }, CancellationToken.None));
     }
 
     [Fact]
@@ -120,21 +124,31 @@ public sealed class SqliteDesktopStoreTests
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
-        var session = AiAnalysisSession.Create(
-                "session_01", "batch_01", "style_01", "snapshot_01", "analysis_key_01",
-                ["frame_01"], ["asset_01", "asset_02"])
-            .AdvanceTo(AiAnalysisSessionStatus.Uploading)
-            .AdvanceTo(AiAnalysisSessionStatus.Analysing)
-            .AdvanceTo(AiAnalysisSessionStatus.Validated)
-            .LockSelection("frame_01", "asset_02", 0);
+        var initial = AiAnalysisSession.Create(
+            "session_01", "batch_01", "style_01", "snapshot_01", "analysis_key_01",
+            ["frame_01"], ["asset_01", "asset_02"]);
+        var uploading = initial.AdvanceTo(AiAnalysisSessionStatus.Uploading);
+        var analysing = uploading.AdvanceTo(AiAnalysisSessionStatus.Analysing);
+        var validated = analysing.AdvanceTo(AiAnalysisSessionStatus.Validated);
+        var session = validated.LockSelection("frame_01", "asset_02", 0);
         await using (var first = new SqliteDesktopStore(options))
         {
             await first.InitializeAsync();
-            await first.SaveSessionAsync(session, CancellationToken.None);
-            await first.SaveCacheReferenceAsync(new AiCacheReference(
-                "cache_key_01", "results/session_01.json", "consent_01", "model/proposed", "usage_01", DateTimeOffset.UtcNow), CancellationToken.None);
+            await first.SaveSessionAsync(initial, CancellationToken.None);
+            await first.SaveSessionAsync(uploading, CancellationToken.None, expectedSelectionRevision: 0);
+            await first.SaveSessionAsync(analysing, CancellationToken.None, expectedSelectionRevision: 0);
+            await first.SaveSessionAsync(validated, CancellationToken.None, expectedSelectionRevision: 0);
+            await first.SaveSessionAsync(session, CancellationToken.None, expectedSelectionRevision: 0);
+            var requestTime = DateTimeOffset.UtcNow;
+            await first.RecordRequestAsync(new AiRequestLedgerEntry(
+                "request_01", "sha256:" + new string('a', 64), "batch_01", "style_01", "Queued", null, requestTime, requestTime), CancellationToken.None);
+            await first.UpdateRequestStatusAsync("request_01", "Queued", "Uploading", null, DateTimeOffset.UtcNow, CancellationToken.None);
+            await first.UpdateRequestStatusAsync("request_01", "Uploading", "Analysing", null, DateTimeOffset.UtcNow, CancellationToken.None);
+            await first.UpdateRequestStatusAsync("request_01", "Analysing", "Validated", "results/session_01.json", DateTimeOffset.UtcNow, CancellationToken.None);
             await first.RecordUsageAsync(new AiUsageEventRecord(
                 "usage_01", "request_01", "model/proposed", 10, 5, false, 0, null, null, DateTimeOffset.UtcNow), CancellationToken.None);
+            await first.SaveCacheReferenceAsync(new AiCacheReference(
+                "sha256:" + new string('c', 64), "results/session_01.json", "consent_01", "model/proposed", "usage_01", DateTimeOffset.UtcNow), CancellationToken.None);
         }
 
         await using var reopened = new SqliteDesktopStore(options);
@@ -146,7 +160,7 @@ public sealed class SqliteDesktopStoreTests
         Assert.Equal("asset_02", loaded.LockedSelections["frame_01"].AssetId);
         Assert.Contains("asset_01", loaded.AllowedAssetIds);
         Assert.True(loaded.HasVerifiedResult);
-        Assert.Equal("results/session_01.json", (await reopened.FindCacheReferenceAsync("cache_key_01", CancellationToken.None))!.ResultReference);
+        Assert.Equal("results/session_01.json", (await reopened.FindCacheReferenceAsync("sha256:" + new string('c', 64), CancellationToken.None))!.ResultReference);
         Assert.Single(await reopened.LoadUsageAsync("request_01", CancellationToken.None));
     }
 
@@ -180,8 +194,107 @@ public sealed class SqliteDesktopStoreTests
         await store.InitializeAsync();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
-            new AiCacheReference("cache_key", @"C:\\secret.json", "consent", "model", "usage", DateTimeOffset.UtcNow),
+            new AiCacheReference("sha256:" + new string('a', 64), @"C:\\secret.json", "consent", "model", "usage", DateTimeOffset.UtcNow),
             CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.FindCacheReferenceAsync("cache_key", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SessionSaveUsesSelectionRevisionCasAndStatusLedgerUsesControlledCas()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var initial = AiAnalysisSession.Create("session_01", "batch_01", "style_01", "snapshot_01", "key_01", ["frame_01"], ["asset_01"]);
+        await store.SaveSessionAsync(initial, CancellationToken.None);
+        var uploading = initial.AdvanceTo(AiAnalysisSessionStatus.Uploading);
+        await store.SaveSessionAsync(uploading, CancellationToken.None, expectedSelectionRevision: 0);
+        var analysing = uploading.AdvanceTo(AiAnalysisSessionStatus.Analysing);
+        await store.SaveSessionAsync(analysing, CancellationToken.None, expectedSelectionRevision: 0);
+        var session = analysing.AdvanceTo(AiAnalysisSessionStatus.Validated);
+        await store.SaveSessionAsync(session, CancellationToken.None, expectedSelectionRevision: 0);
+        var locked = session.LockSelection("frame_01", "asset_01", 0);
+        await store.SaveSessionAsync(locked, CancellationToken.None, expectedSelectionRevision: 0);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
+            session, CancellationToken.None, expectedSelectionRevision: 0));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
+            locked, CancellationToken.None, expectedSelectionRevision: 0));
+
+        var requestTime = DateTimeOffset.UtcNow;
+        var request = new AiRequestLedgerEntry("request_01", "sha256:" + new string('b', 64), "batch_01", "style_01", "Queued", null, requestTime, requestTime);
+        await store.RecordRequestAsync(request, CancellationToken.None);
+        var progressed = await store.UpdateRequestStatusAsync("request_01", "Queued", "Uploading", null, DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal("Uploading", progressed.Status);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.UpdateRequestStatusAsync(
+            "request_01", "Uploading", "Analysing", "results/early.json", DateTimeOffset.UtcNow, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.UpdateRequestStatusAsync(
+            "request_01", "Queued", "Analysing", null, DateTimeOffset.UtcNow, CancellationToken.None));
+
+        var queuedJump = AiAnalysisSession.Restore(
+            "session_jump", "batch_01", "style_01", "snapshot_01", "key_jump",
+            AiAnalysisSessionStatus.Queued, 0, [], ["frame_01"], ["asset_01"], false);
+        await store.SaveSessionAsync(queuedJump, CancellationToken.None);
+        var planClosed = AiAnalysisSession.Restore(
+            "session_jump", "batch_01", "style_01", "snapshot_01", "key_jump",
+            AiAnalysisSessionStatus.PlanClosed, 0, [], ["frame_01"], ["asset_01"], true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
+            planClosed, CancellationToken.None, expectedSelectionRevision: 0));
+    }
+
+    [Fact]
+    public async Task CacheAndUsageConflictsAreRejectedWithoutDecimalLoss()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var requestTime = DateTimeOffset.UtcNow;
+        var request = new AiRequestLedgerEntry("request_01", "sha256:" + new string('b', 64), "batch_01", "style_01", "Queued", null, requestTime, requestTime);
+        var amount = 1234567890.1234567890123456789m;
+        var usage = new AiUsageEventRecord("usage_01", "request_01", "model", 1, 2, false, 0, amount, "USD", DateTimeOffset.UtcNow);
+        var cache = new AiCacheReference("sha256:" + new string('c', 64), "results/session.json", "consent", "model", "usage_01", DateTimeOffset.UtcNow);
+        await store.RecordRequestAsync(request, CancellationToken.None);
+        await store.UpdateRequestStatusAsync("request_01", "Queued", "Uploading", null, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.UpdateRequestStatusAsync("request_01", "Uploading", "Analysing", null, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.UpdateRequestStatusAsync("request_01", "Analysing", "Validated", "results/session.json", DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.RecordUsageAsync(usage, CancellationToken.None);
+        await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
+        await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
+            cache with { ResultReference = "results/other.json" }, CancellationToken.None));
+        await store.RecordUsageAsync(usage, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
+            usage with { OutputUnits = 3 }, CancellationToken.None));
+        Assert.Equal(amount, Assert.Single(await store.LoadUsageAsync("request_01", CancellationToken.None)).ProviderCostAmount);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
+            request with { Fingerprint = "not-a-digest" }, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
+            usage with { RequestId = "missing_request" }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AiStateManifestStagesCommitsAndRecoversAfterRestart()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var manifests = new AiAnalysisStateManifestStore(files);
+        var manifest = new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version, "manifest_01", "batch_01", ["session_01"], ["request_01"], ["cache_01"], DateTimeOffset.UtcNow);
+        var staged = await manifests.StageAsync(manifest, CancellationToken.None);
+        var stagedInspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
+        Assert.NotNull(stagedInspection);
+        Assert.True(stagedInspection!.IsStaged);
+        Assert.False(stagedInspection.IsCommitted);
+
+        await manifests.CommitAsync(staged, CancellationToken.None);
+        var committed = await manifests.InspectAsync("batch_01", CancellationToken.None);
+        Assert.True(committed!.IsCommitted);
+        Assert.False(committed.IsStaged);
+
+        await files.WriteAtomicallyAsync(committed.ManifestReference, "tampered"u8.ToArray(), CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidDataException>(() => manifests.InspectAsync("batch_01", CancellationToken.None));
     }
 
     [Fact]

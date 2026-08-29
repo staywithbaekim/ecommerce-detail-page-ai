@@ -123,6 +123,19 @@ public sealed record AiAnalysisSession
             })
             .ToImmutableDictionary(selection => selection.RequirementId, StringComparer.Ordinal);
 
+        if (selectionRevision == 0 && lockList.Length != 0)
+        {
+            throw new InvalidOperationException("AI_SELECTION_REVISION_WITHOUT_LOCK");
+        }
+
+        if (selectionRevision > 0
+            && (lockList.Length == 0
+                || locks.Values.Max(selection => selection.SelectionRevision) != selectionRevision
+                || locks.Values.Select(selection => selection.SelectionRevision).Distinct().Count() != locks.Count))
+        {
+            throw new InvalidOperationException("AI_SELECTION_REVISION_NOT_CLOSED");
+        }
+
         if (locks.Count != lockList.Length)
         {
             throw new InvalidOperationException("AI_SELECTION_DUPLICATE_REQUIREMENT");
@@ -133,6 +146,15 @@ public sealed record AiAnalysisSession
             && !hasVerifiedResult)
         {
             throw new InvalidOperationException("AI_VERIFIED_RESULT_REQUIRED");
+        }
+
+        if (status is (AiAnalysisSessionStatus.Queued or AiAnalysisSessionStatus.Uploading
+                or AiAnalysisSessionStatus.Analysing or AiAnalysisSessionStatus.RetryableError
+                or AiAnalysisSessionStatus.TerminalError or AiAnalysisSessionStatus.Cancelled
+                or AiAnalysisSessionStatus.AiResultUnknown)
+            && (hasVerifiedResult || lockList.Length != 0))
+        {
+            throw new InvalidOperationException("AI_UNVERIFIED_STATE_INVARIANT_INVALID");
         }
 
         if (status == AiAnalysisSessionStatus.AiResultUnknown && hasVerifiedResult)
@@ -173,6 +195,8 @@ public sealed record AiAnalysisSession
             LockedSelections.ToImmutableDictionary(StringComparer.Ordinal),
             next == AiAnalysisSessionStatus.Validated || HasVerifiedResult);
     }
+
+    public bool CanAdvanceTo(AiAnalysisSessionStatus next) => IsAllowed(Status, next);
 
     public AiAnalysisSession LockSelection(
         string requirementId,

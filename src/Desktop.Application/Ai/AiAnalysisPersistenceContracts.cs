@@ -1,4 +1,5 @@
 using Desktop.Domain.Ai;
+using Desktop.Application.Files;
 
 namespace Desktop.Application.Ai;
 
@@ -36,10 +37,63 @@ public interface IAiAnalysisStore
 {
     Task<AiRequestLedgerEntry?> FindRequestByFingerprintAsync(string fingerprint, CancellationToken cancellationToken);
     Task<AiRequestLedgerEntry> RecordRequestAsync(AiRequestLedgerEntry entry, CancellationToken cancellationToken);
-    Task SaveSessionAsync(AiAnalysisSession session, CancellationToken cancellationToken);
+    Task SaveSessionAsync(AiAnalysisSession session, CancellationToken cancellationToken, long? expectedSelectionRevision = null);
+    Task<AiRequestLedgerEntry> UpdateRequestStatusAsync(
+        string requestId,
+        string expectedStatus,
+        string nextStatus,
+        string? resultReference,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken);
     Task<AiAnalysisSession?> LoadSessionAsync(string sessionId, CancellationToken cancellationToken);
     Task SaveCacheReferenceAsync(AiCacheReference reference, CancellationToken cancellationToken);
     Task<AiCacheReference?> FindCacheReferenceAsync(string cacheKey, CancellationToken cancellationToken);
     Task RecordUsageAsync(AiUsageEventRecord usage, CancellationToken cancellationToken);
     Task<IReadOnlyList<AiUsageEventRecord>> LoadUsageAsync(string requestId, CancellationToken cancellationToken);
+}
+
+public static class AiAnalysisStateProtocol
+{
+    public const string Version = "ai-analysis-state/v1";
+}
+
+public sealed record AiAnalysisStateManifestV1(
+    string SchemaVersion,
+    string ManifestId,
+    string BatchId,
+    IReadOnlyList<string> SessionIds,
+    IReadOnlyList<string> RequestIds,
+    IReadOnlyList<string> CacheKeys,
+    DateTimeOffset CreatedAt);
+
+public sealed record StagedAiAnalysisStateManifest(
+    string BatchId,
+    string ManifestReference,
+    string ManifestDigest,
+    string StageToken);
+
+public sealed record AiAnalysisStateManifestInspection(
+    string BatchId,
+    string ManifestReference,
+    string ManifestDigest,
+    bool IsStaged,
+    bool IsCommitted);
+
+public interface IAiAnalysisStateManifestStore
+{
+    Task<StagedAiAnalysisStateManifest> StageAsync(
+        AiAnalysisStateManifestV1 manifest,
+        CancellationToken cancellationToken);
+
+    Task CommitAsync(
+        StagedAiAnalysisStateManifest stagedManifest,
+        CancellationToken cancellationToken);
+
+    Task RollbackAsync(
+        StagedAiAnalysisStateManifest stagedManifest,
+        CancellationToken cancellationToken);
+
+    Task<AiAnalysisStateManifestInspection?> InspectAsync(
+        string batchId,
+        CancellationToken cancellationToken);
 }

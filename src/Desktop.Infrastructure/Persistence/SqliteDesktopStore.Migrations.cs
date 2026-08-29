@@ -284,7 +284,7 @@ public sealed partial class SqliteDesktopStore
                 output_units INTEGER NOT NULL CHECK(output_units >= 0),
                 cache_hit INTEGER NOT NULL CHECK(cache_hit IN (0, 1)),
                 retry_count INTEGER NOT NULL CHECK(retry_count >= 0),
-                provider_cost_amount REAL NULL CHECK(provider_cost_amount IS NULL OR provider_cost_amount >= 0),
+                provider_cost_amount_text TEXT NULL,
                 provider_cost_currency TEXT NULL,
                 recorded_at TEXT NOT NULL
             );
