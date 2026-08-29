@@ -303,6 +303,10 @@ public sealed class WpfShellTests
 
         viewModel.IsBatchManualSelection = true;
         viewModel.BatchIncludeEditablePsd = true;
+        workflow.NextStatus = BatchInputUiStatus.ScanBlocked;
+        workflow.NextRecognitionText = "目录结构需要整理后重新扫描。";
+        workflow.NextStatusMessage =
+            "所选目录同时包含根目录图片和款式子文件夹。请整理后重新选择；软件不会猜测图片归属。";
         var scanGate = new TaskCompletionSource();
         workflow.ScanGate = scanGate;
         viewModel.ScanBatchInputCommand.Execute(null);
@@ -320,16 +324,6 @@ public sealed class WpfShellTests
         Assert.Equal("page_1", submission.SelectedPageIds[0]);
         Assert.Equal(BatchSelectionMode.Manual, submission.SelectionMode);
         Assert.True(submission.IncludeEditablePsd);
-        Assert.True(viewModel.IsBatchScanReady);
-        Assert.Equal("已识别为正常批次 · 2 款", viewModel.BatchRecognitionText);
-        Assert.Equal("重新扫描", viewModel.BatchPrimaryActionText);
-
-        workflow.NextStatus = BatchInputUiStatus.ScanBlocked;
-        workflow.NextRecognitionText = "目录结构需要整理后重新扫描。";
-        workflow.NextStatusMessage =
-            "所选目录同时包含根目录图片和款式子文件夹。请整理后重新选择；软件不会猜测图片归属。";
-        viewModel.ScanBatchInputCommand.Execute(null);
-        FlushLayout(window);
         Assert.True(viewModel.IsBatchScanBlocked);
         Assert.Contains("不会猜测图片归属", viewModel.BatchStatusMessage, StringComparison.Ordinal);
 
@@ -351,14 +345,35 @@ public sealed class WpfShellTests
         FlushLayout(window);
         Assert.True(viewModel.IsBatchScanReady);
         Assert.Equal("已识别为单款批次 · 1 款", viewModel.BatchRecognitionText);
+        Assert.Equal("扫描完成", viewModel.BatchPrimaryActionText);
+        Assert.False(viewModel.ScanBatchInputCommand.CanExecute(null));
+        Assert.False(viewModel.ChooseBatchInputDirectoryCommand.CanExecute(null));
+        Assert.False(viewModel.ChooseBatchOutputDirectoryCommand.CanExecute(null));
+        Assert.False(viewModel.OpenBatchPageSelectionCommand.CanExecute(null));
+        Assert.False(FindByAutomationId<ComboBox>(window, "BatchTemplateSelect").IsEnabled);
+        Assert.False(FindByAutomationId<RadioButton>(window, "BatchAutomaticSelectionOption").IsEnabled);
+        Assert.False(FindByAutomationId<CheckBox>(window, "BatchEditablePsdToggle").IsEnabled);
 
+        workflow.RestoreProjection = new BatchInputProjection(
+            "batch_ready_recovered",
+            "group_batch_ui",
+            BatchInputUiStatus.ScanReady,
+            @"C:\商品 素材\秋季上新",
+            @"D:\生产输出\秋季上新",
+            ["page_1"],
+            BatchSelectionMode.Manual,
+            true,
+            "已识别为单款批次 · 1 款",
+            "扫描完成，共识别 1 款、3 张商品图片，可进入后续分析。");
         viewModel.CancelBatchInputCommand.Execute(null);
         viewModel.OpenBatchInputCommand.Execute(null);
         FlushLayout(window);
-        Assert.Equal("", viewModel.BatchInputDirectory);
-        Assert.Equal("", viewModel.BatchOutputDirectory);
-        Assert.Equal("新批次草稿", viewModel.BatchDraftSaveText);
-        Assert.False(viewModel.IsBatchScanReady);
+        Assert.Equal(@"C:\商品 素材\秋季上新", viewModel.BatchInputDirectory);
+        Assert.Equal(@"D:\生产输出\秋季上新", viewModel.BatchOutputDirectory);
+        Assert.Equal("草稿已自动保存", viewModel.BatchDraftSaveText);
+        Assert.True(viewModel.IsBatchScanReady);
+        Assert.Equal("group_batch_ui", viewModel.SelectedBatchTemplate?.GroupId);
+        Assert.Equal(1, viewModel.SelectedBatchPageCount);
 
         var narrowBounds = WindowBoundsCalculator.Fit(
             SystemParameters.WorkArea,

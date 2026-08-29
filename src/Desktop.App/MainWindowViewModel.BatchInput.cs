@@ -130,7 +130,9 @@ public sealed partial class MainWindowViewModel
 
     public bool HasBatchRetry => IsBatchScanBlocked && !BatchBusy;
 
-    public string BatchPrimaryActionText => IsBatchScanReady ? "重新扫描" : "扫描并分析";
+    public string BatchPrimaryActionText => IsBatchScanReady ? "扫描完成" : "扫描并分析";
+
+    public bool IsBatchConfigurationEditable => !BatchBusy && !IsBatchScanReady;
 
     public bool IsBatchAutomaticSelection
     {
@@ -186,6 +188,7 @@ public sealed partial class MainWindowViewModel
             {
                 OnPropertyChanged(nameof(HasBatchRetry));
                 OnPropertyChanged(nameof(CanScanBatch));
+                OnPropertyChanged(nameof(IsBatchConfigurationEditable));
                 RaiseBatchCommandCanExecuteChanged();
             }
         }
@@ -226,7 +229,7 @@ public sealed partial class MainWindowViewModel
 
     public string BatchDraftSaveText => _currentBatchId is null ? "新批次草稿" : "草稿已自动保存";
 
-    public bool CanScanBatch => !BatchBusy
+    public bool CanScanBatch => IsBatchConfigurationEditable
         && SelectedBatchTemplate is not null
         && !string.IsNullOrWhiteSpace(BatchInputDirectory)
         && !string.IsNullOrWhiteSpace(BatchOutputDirectory)
@@ -240,11 +243,13 @@ public sealed partial class MainWindowViewModel
         CancelBatchInputCommand = new RelayCommand(CloseBatchInput, () => !IsBatchScanning);
         ChooseBatchInputDirectoryCommand = new AsyncRelayCommand(
             ChooseBatchInputDirectoryAsync,
-            () => !BatchBusy);
+            () => IsBatchConfigurationEditable);
         ChooseBatchOutputDirectoryCommand = new AsyncRelayCommand(
             ChooseBatchOutputDirectoryAsync,
-            () => !BatchBusy);
-        OpenBatchPageSelectionCommand = new RelayCommand(OpenBatchPageSelection, () => BatchPages.Count > 0 && !BatchBusy);
+            () => IsBatchConfigurationEditable);
+        OpenBatchPageSelectionCommand = new RelayCommand(
+            OpenBatchPageSelection,
+            () => BatchPages.Count > 0 && IsBatchConfigurationEditable);
         ApplyBatchPageSelectionCommand = new RelayCommand(ApplyBatchPageSelection);
         CancelBatchPageSelectionCommand = new RelayCommand(CancelBatchPageSelection);
         ScanBatchInputCommand = new AsyncRelayCommand(ScanBatchInputAsync, () => CanScanBatch);
@@ -686,6 +691,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasBatchRetry));
         OnPropertyChanged(nameof(BatchPrimaryActionText));
         OnPropertyChanged(nameof(CanScanBatch));
+        OnPropertyChanged(nameof(IsBatchConfigurationEditable));
         RaiseBatchCommandCanExecuteChanged();
     }
 

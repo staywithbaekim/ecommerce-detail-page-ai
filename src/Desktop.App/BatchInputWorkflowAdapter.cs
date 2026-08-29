@@ -10,7 +10,6 @@ public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow)
     {
         var drafts = await workflow.ListRecoverableAsync(cancellationToken).ConfigureAwait(false);
         var draft = drafts
-            .Where(candidate => candidate.Status != BatchInputWorkflowStatus.ScanReady)
             .OrderByDescending(candidate => candidate.UpdatedAt)
             .ThenBy(candidate => candidate.BatchId, StringComparer.Ordinal)
             .FirstOrDefault();

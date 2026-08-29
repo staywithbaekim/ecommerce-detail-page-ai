@@ -603,6 +603,7 @@
                                 <ComboBox Margin="0,6,0,0"
                                           ItemsSource="{Binding TemplateGroups}"
                                           SelectedItem="{Binding SelectedBatchTemplate, Mode=TwoWay}"
+                                          IsEnabled="{Binding IsBatchConfigurationEditable}"
                                           Style="{StaticResource FieldComboBoxStyle}"
                                           AutomationProperties.AutomationId="BatchTemplateSelect"
                                           AutomationProperties.Name="模板组">
@@ -716,6 +717,7 @@
                                     <RadioButton Grid.Column="0"
                                                  GroupName="BatchSelectionMode"
                                                  Style="{StaticResource FieldRadioCardStyle}"
+                                                 IsEnabled="{Binding IsBatchConfigurationEditable}"
                                                  IsChecked="{Binding IsBatchAutomaticSelection, Mode=TwoWay}"
                                                  AutomationProperties.AutomationId="BatchAutomaticSelectionOption"
                                                  AutomationProperties.Name="AI 自动选图">
@@ -729,6 +731,7 @@
                                     <RadioButton Grid.Column="2"
                                                  GroupName="BatchSelectionMode"
                                                  Style="{StaticResource FieldRadioCardStyle}"
+                                                 IsEnabled="{Binding IsBatchConfigurationEditable}"
                                                  IsChecked="{Binding IsBatchManualSelection, Mode=TwoWay}"
                                                  AutomationProperties.AutomationId="BatchManualSelectionOption"
                                                  AutomationProperties.Name="人工选图">
@@ -777,6 +780,7 @@
                                         <CheckBox Grid.Column="1"
                                                   VerticalAlignment="Center"
                                                   Style="{StaticResource ToggleSwitchStyle}"
+                                                  IsEnabled="{Binding IsBatchConfigurationEditable}"
                                                   IsChecked="{Binding BatchIncludeEditablePsd, Mode=TwoWay}"
                                                   AutomationProperties.AutomationId="BatchEditablePsdToggle"
                                                   AutomationProperties.Name="同时输出可编辑 PSD" />
@@ -862,7 +866,7 @@
                                         Command="{Binding ScanBatchInputCommand}"
                                         Content="{Binding BatchPrimaryActionText}"
                                         AutomationProperties.AutomationId="ScanBatchInputButton"
-                                        AutomationProperties.Name="扫描并分析" />
+                                        AutomationProperties.Name="{Binding BatchPrimaryActionText}" />
                             </StackPanel>
                             </Grid>
                         </Border>

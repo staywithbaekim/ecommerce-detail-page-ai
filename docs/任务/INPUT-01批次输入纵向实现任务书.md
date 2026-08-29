@@ -210,6 +210,7 @@ SQLite 只单调新增 v5，不修改 v1-v4 SQL 或 checksum。v5 至少保存�
 
 - 经产品负责人授权，Codex 再次打开隔离实际应用检查，确认 B-01 入口、中文页面和隔离数据根正常；
 - 复核发现共享自绘模板下拉框回显 `TemplateLibraryCardViewModel` 对象字符串。该显示违反普通界面不暴露内部字段的既有合同，已改为显式 `Name` 数据模板，并增加实际 WPF 渲染树断言；聚焦 UI 测试 5/5 通过；
+- 主任务复核 `e11cd96` 时补正 ready 状态合同：恢复适配器保留 `ScanReady`，应用重启恢复同一 ready 批次；ready 页面显示“扫描完成”并禁用扫描、模板、目录、页面、选图和 PSD 配置，WPF 回归覆盖完成态与 ready 恢复；补正后聚焦测试 5/5、完整 solution 测试 148/148；
 - Domain 继续作为 `BatchDraft`、扫描状态和业务不变量的唯一来源；Application facade 暴露 Presentation DTO/枚举，WPF 不直接引用 Domain，架构测试保持通过；
 - 产品走查、自动化、故障/恢复、源文件安全和纵向生产者合同均已满足；任务状态转为已完成，等待最终 reviewed diff、提交 SHA 和主任务复核合并；
 - 本分支不自行合并 `codex/desktop-foundation-01`，不恢复 `AI-01`。
