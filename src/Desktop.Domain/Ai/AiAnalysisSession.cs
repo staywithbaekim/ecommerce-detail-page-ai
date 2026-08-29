@@ -99,6 +99,11 @@ public sealed record AiAnalysisSession
         IEnumerable<string> allowedAssetIds,
         bool hasVerifiedResult)
     {
+        if (!Enum.IsDefined(status))
+        {
+            throw new InvalidOperationException("AI_STATUS_INVALID");
+        }
+
         if (selectionRevision < 0)
         {
             throw new InvalidOperationException("AI_SELECTION_REVISION_INVALID");
@@ -146,6 +151,12 @@ public sealed record AiAnalysisSession
             && !hasVerifiedResult)
         {
             throw new InvalidOperationException("AI_VERIFIED_RESULT_REQUIRED");
+        }
+
+        if (status == AiAnalysisSessionStatus.Validated
+            && (selectionRevision != 0 || lockList.Length != 0))
+        {
+            throw new InvalidOperationException("AI_VALIDATED_SELECTION_INVARIANT_INVALID");
         }
 
         if (status is (AiAnalysisSessionStatus.Queued or AiAnalysisSessionStatus.Uploading

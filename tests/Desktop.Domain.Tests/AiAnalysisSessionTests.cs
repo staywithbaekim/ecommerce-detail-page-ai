@@ -66,4 +66,21 @@ public sealed class AiAnalysisSessionTests
         var replaced = first.LockSelection("frame_01", "asset_02", 1);
         Assert.Equal("asset_02", replaced.LockedSelections["frame_01"].AssetId);
     }
+
+    [Fact]
+    public void RestoreRejectsUndefinedStatusValues()
+    {
+        Assert.Throws<InvalidOperationException>(() => AiAnalysisSession.Restore(
+            "session_01", "batch_01", "style_01", "snapshot_01", "key_01",
+            (AiAnalysisSessionStatus)999, 0, [], ["frame_01"], ["asset_01"], false));
+    }
+
+    [Fact]
+    public void ValidatedCannotBeRestoredWithManualLocks()
+    {
+        Assert.Throws<InvalidOperationException>(() => AiAnalysisSession.Restore(
+            "session_01", "batch_01", "style_01", "snapshot_01", "key_01",
+            AiAnalysisSessionStatus.Validated, 1,
+            [new AiLockedSelection("frame_01", "asset_01", 1)], ["frame_01"], ["asset_01"], true));
+    }
 }

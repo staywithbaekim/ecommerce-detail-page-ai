@@ -1,5 +1,6 @@
 using System.Globalization;
 using Desktop.Application.Ai;
+using Desktop.Application.Files;
 using Desktop.Application.Tasks;
 using Desktop.Domain.Ai;
 using Desktop.Domain.Tasks;
@@ -120,6 +121,28 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
+    public async Task AiLedgerAcceptsOnlyCanonicalInitialEntriesAndSha256Fingerprints()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
+            new AiRequestLedgerEntry("request_bad_digest", "opaque-fingerprint", "batch_01", "style_01", "Queued", null, now, now),
+            CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
+            new AiRequestLedgerEntry("request_bad_status", "sha256:" + new string('a', 64), "batch_01", "style_01", "Validated", "results/result.json", now, now),
+            CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
+            new AiRequestLedgerEntry("request_bad_result", "sha256:" + new string('b', 64), "batch_01", "style_01", "Queued", "results/result.json", now, now),
+            CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
+            new AiRequestLedgerEntry("request_bad_time", "sha256:" + new string('c', 64), "batch_01", "style_01", "Queued", null, now, now.AddTicks(1)),
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task AiSessionRoundTripsStateAndCacheUsageAcrossRestart()
     {
         using var directory = new TestDirectory();
@@ -187,6 +210,28 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
+    public async Task CorruptValidatedSessionWithLockIsRejectedOnRecovery()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO ai_analysis_sessions(session_id,batch_id,style_id,template_snapshot_id,analysis_key,status,selection_revision,allowed_requirement_ids_json,allowed_asset_ids_json,locked_selections_json,has_verified_result,updated_at) VALUES('session_bad_validated','batch_01','style_01','snapshot_01','key_01','Validated',1,'[\"frame_01\"]','[\"asset_01\"]','[{\"requirementId\":\"frame_01\",\"assetId\":\"asset_01\",\"selectionRevision\":1}]',1,$updated);";
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => reopened.LoadSessionAsync("session_bad_validated", CancellationToken.None));
+        Assert.Equal("AI_SESSION_RECORD_CORRUPT", exception.Message);
+    }
+
+    [Fact]
     public async Task CacheReferenceRejectsAbsolutePaths()
     {
         using var directory = new TestDirectory();
@@ -206,7 +251,7 @@ public sealed class SqliteDesktopStoreTests
         var options = new DesktopDataOptions(directory.Path);
         await using var store = new SqliteDesktopStore(options);
         await store.InitializeAsync();
-        var initial = AiAnalysisSession.Create("session_01", "batch_01", "style_01", "snapshot_01", "key_01", ["frame_01"], ["asset_01"]);
+        var initial = AiAnalysisSession.Create("session_01", "batch_01", "style_01", "snapshot_01", "key_01", ["frame_01"], ["asset_01", "asset_02"]);
         await store.SaveSessionAsync(initial, CancellationToken.None);
         var uploading = initial.AdvanceTo(AiAnalysisSessionStatus.Uploading);
         await store.SaveSessionAsync(uploading, CancellationToken.None, expectedSelectionRevision: 0);
@@ -216,6 +261,22 @@ public sealed class SqliteDesktopStoreTests
         await store.SaveSessionAsync(session, CancellationToken.None, expectedSelectionRevision: 0);
         var locked = session.LockSelection("frame_01", "asset_01", 0);
         await store.SaveSessionAsync(locked, CancellationToken.None, expectedSelectionRevision: 0);
+        var replaced = locked.LockSelection("frame_01", "asset_02", 1);
+        await store.SaveSessionAsync(replaced, CancellationToken.None, expectedSelectionRevision: 1);
+        var stolenAtSameRevision = AiAnalysisSession.Restore(
+            "session_01", "batch_01", "style_01", "snapshot_01", "key_01",
+            AiAnalysisSessionStatus.ManualReview, 2,
+            [new AiLockedSelection("frame_01", "asset_01", 2)], ["frame_01"], ["asset_01", "asset_02"], true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
+            stolenAtSameRevision, CancellationToken.None, expectedSelectionRevision: 2));
+        var closed = replaced.AdvanceTo(AiAnalysisSessionStatus.PlanClosed);
+        await store.SaveSessionAsync(closed, CancellationToken.None, expectedSelectionRevision: 2);
+        var closedRollback = AiAnalysisSession.Restore(
+            "session_01", "batch_01", "style_01", "snapshot_01", "key_01",
+            AiAnalysisSessionStatus.ManualReview, 2,
+            [new AiLockedSelection("frame_01", "asset_02", 2)], ["frame_01"], ["asset_01", "asset_02"], true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
+            closedRollback, CancellationToken.None, expectedSelectionRevision: 2));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
             session, CancellationToken.None, expectedSelectionRevision: 0));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
@@ -240,6 +301,18 @@ public sealed class SqliteDesktopStoreTests
             AiAnalysisSessionStatus.PlanClosed, 0, [], ["frame_01"], ["asset_01"], true);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
             planClosed, CancellationToken.None, expectedSelectionRevision: 0));
+
+        var terminal = AiAnalysisSession.Create("session_terminal", "batch_01", "style_01", "snapshot_01", "key_terminal", ["frame_01"], ["asset_01"]);
+        await store.SaveSessionAsync(terminal, CancellationToken.None);
+        terminal = terminal.AdvanceTo(AiAnalysisSessionStatus.Uploading);
+        await store.SaveSessionAsync(terminal, CancellationToken.None, expectedSelectionRevision: 0);
+        terminal = terminal.AdvanceTo(AiAnalysisSessionStatus.TerminalError);
+        await store.SaveSessionAsync(terminal, CancellationToken.None, expectedSelectionRevision: 0);
+        var terminalRollback = AiAnalysisSession.Restore(
+            "session_terminal", "batch_01", "style_01", "snapshot_01", "key_terminal",
+            AiAnalysisSessionStatus.Uploading, 0, [], ["frame_01"], ["asset_01"], false);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSessionAsync(
+            terminalRollback, CancellationToken.None, expectedSelectionRevision: 0));
     }
 
     [Fact]
@@ -263,6 +336,16 @@ public sealed class SqliteDesktopStoreTests
         await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
             cache with { ResultReference = "results/other.json" }, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
+            cache with { ModelConfigVersion = "model/other" }, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
+            cache with { CreatedAt = usage.RecordedAt.AddTicks(-1) }, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.UpdateRequestStatusAsync(
+            "request_01", "Validated", "ManualReview", "results/other.json", DateTimeOffset.UtcNow, CancellationToken.None));
+        await store.UpdateRequestStatusAsync(
+            "request_01", "Validated", "ManualReview", "results/session.json", DateTimeOffset.UtcNow, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.UpdateRequestStatusAsync(
+            "request_01", "ManualReview", "PlanClosed", "results/other.json", DateTimeOffset.UtcNow, CancellationToken.None));
         await store.RecordUsageAsync(usage, CancellationToken.None);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
             usage with { OutputUnits = 3 }, CancellationToken.None));
@@ -271,30 +354,211 @@ public sealed class SqliteDesktopStoreTests
             request with { Fingerprint = "not-a-digest" }, CancellationToken.None));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
             usage with { RequestId = "missing_request" }, CancellationToken.None));
+
+        await store.RecordRequestAsync(request with { RequestId = "request_02", Fingerprint = "sha256:" + new string('d', 64) }, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
+            usage with { RequestId = "request_02" }, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
+            cache with { CacheKey = "sha256:" + new string('e', 64), UsageEventId = "usage_missing" }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CacheReadRejectsDanglingUsageAndResultReferences()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO ai_cache_references(cache_key,result_reference,consent_id,model_config_version,usage_event_id,created_at) VALUES($key,'results/result.json','consent','model','usage_missing',$created);";
+            command.Parameters.AddWithValue("$key", "sha256:" + new string('f', 64));
+            command.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.FindCacheReferenceAsync(
+            "sha256:" + new string('f', 64), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CorruptLedgerAndUsageRecordsMapToStableRecoveryErrors()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var now = DateTimeOffset.UtcNow;
+        var fingerprint = "sha256:" + new string('a', 64);
+        await store.RecordRequestAsync(new AiRequestLedgerEntry(
+            "request_01", fingerprint, "batch_01", "style_01", "Queued", null, now, now), CancellationToken.None);
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ai_request_ledger SET status='not-a-status' WHERE request_id='request_01';";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.FindRequestByFingerprintAsync(fingerprint, CancellationToken.None));
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ai_request_ledger SET status='Queued' WHERE request_id='request_01'; INSERT INTO ai_usage_events(usage_event_id,request_id,model_config_version,input_units,output_units,cache_hit,retry_count,provider_cost_amount_text,provider_cost_currency,recorded_at) VALUES('usage_bad','request_01','model',1,1,0,0,'not-decimal','USD',$recorded);";
+            command.Parameters.AddWithValue("$recorded", now.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.LoadUsageAsync("request_01", CancellationToken.None));
     }
 
     [Fact]
     public async Task AiStateManifestStagesCommitsAndRecoversAfterRestart()
     {
         using var directory = new TestDirectory();
-        var options = new DesktopDataOptions(directory.Path);
-        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
-        var manifests = new AiAnalysisStateManifestStore(files);
         var manifest = new AiAnalysisStateManifestV1(
-            AiAnalysisStateProtocol.Version, "manifest_01", "batch_01", ["session_01"], ["request_01"], ["cache_01"], DateTimeOffset.UtcNow);
-        var staged = await manifests.StageAsync(manifest, CancellationToken.None);
-        var stagedInspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
-        Assert.NotNull(stagedInspection);
-        Assert.True(stagedInspection!.IsStaged);
-        Assert.False(stagedInspection.IsCommitted);
+            AiAnalysisStateProtocol.Version, "manifest_01", "batch_01", ["session_01"], ["request_01"], ["sha256:" + new string('a', 64)], DateTimeOffset.UtcNow);
+        StagedAiAnalysisStateManifest staged;
+        {
+            var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+            var manifests = new AiAnalysisStateManifestStore(files);
+            staged = await manifests.StageAsync(manifest, CancellationToken.None);
+            var stagedInspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
+            Assert.NotNull(stagedInspection);
+            Assert.True(stagedInspection!.IsStaged);
+            Assert.False(stagedInspection.IsCommitted);
+        }
 
-        await manifests.CommitAsync(staged, CancellationToken.None);
-        var committed = await manifests.InspectAsync("batch_01", CancellationToken.None);
+        AiAnalysisStateManifestInspection? committed;
+        {
+            var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+            var manifests = new AiAnalysisStateManifestStore(files);
+            await manifests.CommitAsync(staged, CancellationToken.None);
+            committed = await manifests.InspectAsync("batch_01", CancellationToken.None);
+        }
         Assert.True(committed!.IsCommitted);
         Assert.False(committed.IsStaged);
 
-        await files.WriteAtomicallyAsync(committed.ManifestReference, "tampered"u8.ToArray(), CancellationToken.None);
-        await Assert.ThrowsAsync<InvalidDataException>(() => manifests.InspectAsync("batch_01", CancellationToken.None));
+        var filesAfterRestart = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        await filesAfterRestart.WriteAtomicallyAsync(committed.ManifestReference, "tampered"u8.ToArray(), CancellationToken.None);
+        var manifestsAfterRestart = new AiAnalysisStateManifestStore(filesAfterRestart);
+        await Assert.ThrowsAsync<InvalidDataException>(() => manifestsAfterRestart.InspectAsync("batch_01", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ManifestRollbackDoesNotDeleteNewerStageAndRejectsForgedStagedRecord()
+    {
+        using var directory = new TestDirectory();
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var manifests = new AiAnalysisStateManifestStore(files);
+        var first = await manifests.StageAsync(new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version, "manifest_a", "batch_01", ["session_a"], ["request_a"], ["sha256:" + new string('a', 64)], DateTimeOffset.UtcNow), CancellationToken.None);
+        var second = await manifests.StageAsync(new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version, "manifest_b", "batch_01", ["session_b"], ["request_b"], ["sha256:" + new string('b', 64)], DateTimeOffset.UtcNow), CancellationToken.None);
+
+        await manifests.RollbackAsync(first, CancellationToken.None);
+        var inspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
+        Assert.NotNull(inspection);
+        Assert.True(inspection!.IsStaged);
+        Assert.Equal(second.ManifestDigest, inspection.ManifestDigest);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => manifests.CommitAsync(
+            second with { ManifestReference = "batches/other/ai-analysis/state/manifest.json" }, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidDataException>(() => manifests.RollbackAsync(
+            second with { StageToken = "../escape" }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ManifestStageWriteFailureRollsBackOwnedStage()
+    {
+        using var directory = new TestDirectory();
+        var backing = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var failing = new FailingFileStore(backing, path => path.EndsWith("staged.marker", StringComparison.Ordinal));
+        var manifests = new AiAnalysisStateManifestStore(failing);
+        var manifest = new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version, "manifest_fail", "batch_01", ["session_01"], ["request_01"], ["sha256:" + new string('c', 64)], DateTimeOffset.UtcNow);
+
+        await Assert.ThrowsAsync<IOException>(() => manifests.StageAsync(manifest, CancellationToken.None));
+        var recovered = new AiAnalysisStateManifestStore(backing);
+        Assert.Null(await recovered.InspectAsync("batch_01", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task V5DataUpgradesSuccessfullyToV6AndPreservesSentinel()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM schema_migrations WHERE version=6; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var upgraded = new SqliteDesktopStore(options))
+        {
+            await upgraded.InitializeAsync();
+        }
+
+        await using var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await verify.OpenAsync();
+        await using var versionCommand = verify.CreateCommand();
+        versionCommand.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        await using var sentinelCommand = verify.CreateCommand();
+        sentinelCommand.CommandText = "SELECT value FROM v5_sentinel;";
+        await using var tablesCommand = verify.CreateCommand();
+        tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
+        await using var columnCommand = verify.CreateCommand();
+        columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
+        Assert.Equal(6L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
+        Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
+        Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task V5UpgradeFailureRollsBackVersionSixAndPreservesSentinel()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM schema_migrations WHERE version=6; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var failed = new SqliteDesktopStore(options))
+        {
+            await Assert.ThrowsAsync<SqliteException>(() => failed.InitializeAsync());
+        }
+
+        await using var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await verify.OpenAsync();
+        await using var version = verify.CreateCommand();
+        version.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        await using var sentinel = verify.CreateCommand();
+        sentinel.CommandText = "SELECT value FROM v5_sentinel;";
+        Assert.Equal(5L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal("preserve-me", await sentinel.ExecuteScalarAsync());
     }
 
     [Fact]
@@ -372,4 +636,26 @@ public sealed class SqliteDesktopStoreTests
 
     private static TaskEvent Event(long sequence, TaskEventType type, string? pageId = null) =>
         new(Guid.NewGuid(), "task-01", sequence, type, DateTimeOffset.UtcNow, pageId);
+
+    private sealed class FailingFileStore(IFileStore inner, Func<string, bool> shouldFail) : IFileStore
+    {
+        public Task WriteAtomicallyAsync(string relativePath, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+        {
+            if (shouldFail(relativePath))
+            {
+                throw new IOException("TEST_ATOMIC_WRITE_FAILURE");
+            }
+
+            return inner.WriteAtomicallyAsync(relativePath, content, cancellationToken);
+        }
+
+        public Task<byte[]?> ReadAsync(string relativePath, CancellationToken cancellationToken) =>
+            inner.ReadAsync(relativePath, cancellationToken);
+
+        public Task<string?> ComputeSha256Async(string relativePath, CancellationToken cancellationToken) =>
+            inner.ComputeSha256Async(relativePath, cancellationToken);
+
+        public Task<bool> DeleteAsync(string relativePath, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(relativePath, cancellationToken);
+    }
 }

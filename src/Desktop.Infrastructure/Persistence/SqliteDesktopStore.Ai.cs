@@ -118,6 +118,13 @@ public sealed partial class SqliteDesktopStore
                 throw new InvalidOperationException("AI_REQUEST_RESULT_REFERENCE_STATE_INVALID");
             }
 
+            if ((existing.Status is "Validated" or "ManualReview" or "PlanClosed")
+                && (nextStatus is "ManualReview" or "PlanClosed")
+                && !string.Equals(existing.ResultReference, resultReference, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_REQUEST_RESULT_REFERENCE_CONFLICT");
+            }
+
             await using var command = connection.CreateCommand();
             command.CommandText = "UPDATE ai_request_ledger SET status = $next_status, result_reference = $result_reference, updated_at = $updated_at WHERE request_id = $request_id AND status = $expected_status;";
             command.Parameters.AddWithValue("$next_status", nextStatus);
@@ -159,17 +166,30 @@ public sealed partial class SqliteDesktopStore
                     throw new InvalidOperationException("AI_SESSION_REVISION_CONFLICT");
                 }
 
-                if (session.SelectionRevision < existing.SelectionRevision
-                    || (session.SelectionRevision == existing.SelectionRevision
-                        && existing.Status == session.Status
-                        && !SessionPayloadEquals(existing, session)))
+                if (!existing.AllowedRequirementIds.SetEquals(session.AllowedRequirementIds)
+                    || !existing.AllowedAssetIds.SetEquals(session.AllowedAssetIds))
+                {
+                    throw new InvalidOperationException("AI_SESSION_INPUT_CLOSURE_CONFLICT");
+                }
+
+                var payloadEquals = SessionPayloadEquals(existing, session);
+                if (payloadEquals)
+                {
+                    return true;
+                }
+
+                if (session.SelectionRevision < existing.SelectionRevision)
                 {
                     throw new InvalidOperationException("AI_SESSION_STALE_WRITE");
                 }
 
-                if (!SessionPayloadEquals(existing, session)
-                    && existing.Status != session.Status
-                    && !existing.CanAdvanceTo(session.Status))
+                if (session.SelectionRevision == existing.SelectionRevision
+                    && (existing.Status == session.Status || !SessionSelectionPayloadEquals(existing, session)))
+                {
+                    throw new InvalidOperationException("AI_SESSION_STALE_WRITE");
+                }
+
+                if (existing.Status != session.Status && !existing.CanAdvanceTo(session.Status))
                 {
                     throw new InvalidOperationException("AI_SESSION_STATUS_TRANSITION_INVALID");
                 }
@@ -242,7 +262,7 @@ public sealed partial class SqliteDesktopStore
         {
             return ReadSession(reader);
         }
-        catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or InvalidCastException or ArgumentException)
         {
             throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT", exception);
         }
@@ -252,16 +272,26 @@ public sealed partial class SqliteDesktopStore
         async (connection, token) =>
         {
             ValidateCacheReference(reference);
-            var usage = await FindUsageByIdForWriteAsync(connection, reference.UsageEventId, token).ConfigureAwait(false)
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+            var usage = await FindUsageByIdForWriteAsync(connection, reference.UsageEventId, token, transaction).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("AI_CACHE_USAGE_NOT_FOUND");
-            var ledger = await FindLedgerByRequestIdAsync(connection, null, usage.RequestId, token).ConfigureAwait(false)
+            ValidateUsage(usage);
+            var ledger = await FindLedgerByRequestIdAsync(connection, transaction, usage.RequestId, token).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("AI_CACHE_REQUEST_NOT_FOUND");
             if (ledger.ResultReference is null
                 || !string.Equals(ledger.ResultReference, reference.ResultReference, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("AI_CACHE_RESULT_REFERENCE_CONFLICT");
             }
-            var existing = await FindCacheReferenceForWriteAsync(connection, reference.CacheKey, token).ConfigureAwait(false);
+            if (!string.Equals(usage.ModelConfigVersion, reference.ModelConfigVersion, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_CACHE_MODEL_CONFIG_CONFLICT");
+            }
+            if (reference.CreatedAt < usage.RecordedAt)
+            {
+                throw new InvalidOperationException("AI_CACHE_TIME_INVALID");
+            }
+            var existing = await FindCacheReferenceForWriteAsync(connection, reference.CacheKey, token, transaction).ConfigureAwait(false);
             if (existing is not null)
             {
                 if (!Equals(existing, reference))
@@ -269,15 +299,12 @@ public sealed partial class SqliteDesktopStore
                     throw new InvalidOperationException("AI_CACHE_KEY_CONFLICT");
                 }
 
+                await transaction.RollbackAsync(token).ConfigureAwait(false);
                 return true;
             }
 
-            ValidateOpaqueReference(reference.CacheKey, "AI_CACHE_KEY_INVALID");
-            ValidateOwnedReference(reference.ResultReference, "AI_CACHE_REFERENCE_INVALID");
-            ValidateOpaqueReference(reference.ConsentId, "AI_CONSENT_ID_INVALID");
-            ValidateOpaqueReference(reference.ModelConfigVersion, "AI_MODEL_CONFIG_INVALID");
-            ValidateOpaqueReference(reference.UsageEventId, "AI_USAGE_ID_INVALID");
             await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText = "INSERT INTO ai_cache_references(cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at) VALUES($cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at);";
             command.Parameters.AddWithValue("$cache_key", reference.CacheKey);
             command.Parameters.AddWithValue("$result_reference", reference.ResultReference);
@@ -286,6 +313,7 @@ public sealed partial class SqliteDesktopStore
             command.Parameters.AddWithValue("$usage_event_id", reference.UsageEventId);
             command.Parameters.AddWithValue("$created_at", reference.CreatedAt.ToString("O"));
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
         }, cancellationToken);
 
@@ -302,8 +330,23 @@ public sealed partial class SqliteDesktopStore
             return null;
         }
 
-        var reference = new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)));
-        ValidateCacheReference(reference);
+        var reference = ReadCacheReference(reader);
+        var usage = await FindUsageByIdForWriteAsync(connection, reference.UsageEventId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("AI_CACHE_USAGE_NOT_FOUND");
+        ValidateUsage(usage);
+        var ledger = await FindLedgerByRequestIdAsync(connection, null, usage.RequestId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("AI_CACHE_REQUEST_NOT_FOUND");
+        if (ledger.ResultReference is null
+            || !string.Equals(ledger.ResultReference, reference.ResultReference, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("AI_CACHE_RESULT_REFERENCE_CONFLICT");
+        }
+        if (!string.Equals(usage.ModelConfigVersion, reference.ModelConfigVersion, StringComparison.Ordinal)
+            || reference.CreatedAt < usage.RecordedAt)
+        {
+            throw new InvalidDataException("AI_CACHE_CLOSURE_INVALID");
+        }
+
         return reference;
     }
 
@@ -311,9 +354,10 @@ public sealed partial class SqliteDesktopStore
         async (connection, token) =>
         {
             ValidateUsage(usage);
-            _ = await FindLedgerByRequestIdAsync(connection, null, usage.RequestId, token).ConfigureAwait(false)
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+            _ = await FindLedgerByRequestIdAsync(connection, transaction, usage.RequestId, token).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("AI_USAGE_REQUEST_NOT_FOUND");
-            var existing = await FindUsageForWriteAsync(connection, usage.RequestId, token).ConfigureAwait(false);
+            var existing = await FindUsageForWriteAsync(connection, usage.RequestId, token, transaction).ConfigureAwait(false);
             if (existing is not null)
             {
                 if (!Equals(existing, usage))
@@ -321,10 +365,24 @@ public sealed partial class SqliteDesktopStore
                     throw new InvalidOperationException("AI_USAGE_REQUEST_CONFLICT");
                 }
 
+                await transaction.RollbackAsync(token).ConfigureAwait(false);
+                return true;
+            }
+
+            var existingById = await FindUsageByIdForWriteAsync(connection, usage.UsageEventId, token, transaction).ConfigureAwait(false);
+            if (existingById is not null)
+            {
+                if (!Equals(existingById, usage))
+                {
+                    throw new InvalidOperationException("AI_USAGE_ID_CONFLICT");
+                }
+
+                await transaction.RollbackAsync(token).ConfigureAwait(false);
                 return true;
             }
 
             await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText = "INSERT INTO ai_usage_events(usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at) VALUES($usage_event_id, $request_id, $model_config_version, $input_units, $output_units, $cache_hit, $retry_count, $provider_cost_amount_text, $provider_cost_currency, $recorded_at);";
             command.Parameters.AddWithValue("$usage_event_id", usage.UsageEventId);
             command.Parameters.AddWithValue("$request_id", usage.RequestId);
@@ -337,12 +395,16 @@ public sealed partial class SqliteDesktopStore
             command.Parameters.AddWithValue("$provider_cost_currency", (object?)usage.ProviderCostCurrency ?? DBNull.Value);
             command.Parameters.AddWithValue("$recorded_at", usage.RecordedAt.ToString("O"));
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
         }, cancellationToken);
 
     public async Task<IReadOnlyList<AiUsageEventRecord>> LoadUsageAsync(string requestId, CancellationToken cancellationToken)
     {
+        ValidateIdentifier(requestId, "AI_REQUEST_ID_INVALID");
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        _ = await FindLedgerByRequestIdAsync(connection, null, requestId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("AI_USAGE_REQUEST_NOT_FOUND");
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at FROM ai_usage_events WHERE request_id = $request_id ORDER BY recorded_at;";
         command.Parameters.AddWithValue("$request_id", requestId);
@@ -350,9 +412,7 @@ public sealed partial class SqliteDesktopStore
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            var usage = new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)));
-            ValidateUsage(usage);
-            events.Add(usage);
+            events.Add(ReadUsageEvent(reader));
         }
 
         return events;
@@ -360,14 +420,81 @@ public sealed partial class SqliteDesktopStore
 
     private static AiRequestLedgerEntry ReadLedger(SqliteDataReader reader)
     {
-        var entry = new AiRequestLedgerEntry(
-            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-            reader.IsDBNull(5) ? null : reader.GetString(5), ParseTime(reader.GetString(6)), ParseTime(reader.GetString(7)));
-        ValidateStoredLedger(entry);
-        return entry;
+        try
+        {
+            var entry = new AiRequestLedgerEntry(
+                reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5), ParseTime(reader.GetString(6)), ParseTime(reader.GetString(7)));
+            ValidateStoredLedger(entry);
+            return entry;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or InvalidCastException or FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT", exception);
+        }
     }
 
-    private static DateTimeOffset ParseTime(string value) => DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+    private static DateTimeOffset ParseTime(string value)
+    {
+        try
+        {
+            return DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        }
+        catch (Exception exception) when (exception is FormatException or ArgumentOutOfRangeException)
+        {
+            throw new InvalidDataException("AI_TIME_RECORD_CORRUPT", exception);
+        }
+    }
+
+    private static AiCacheReference ReadCacheReference(SqliteDataReader reader)
+    {
+        try
+        {
+            var reference = new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)));
+            ValidateCacheReference(reference);
+            return reference;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or InvalidCastException or FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException("AI_CACHE_RECORD_CORRUPT", exception);
+        }
+    }
+
+    private static AiUsageEventRecord ReadUsageEvent(SqliteDataReader reader)
+    {
+        try
+        {
+            var cacheHit = reader.GetInt32(5);
+            if (cacheHit is not (0 or 1))
+            {
+                throw new InvalidDataException("AI_USAGE_RECORD_CORRUPT");
+            }
+
+            var usage = new AiUsageEventRecord(
+                reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4),
+                cacheHit == 1, reader.GetInt32(6),
+                reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture),
+                reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)));
+            ValidateUsage(usage);
+            return usage;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or InvalidCastException or FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException("AI_USAGE_RECORD_CORRUPT", exception);
+        }
+    }
 
     private static AiAnalysisSession ReadSession(SqliteDataReader reader)
     {
@@ -401,7 +528,7 @@ public sealed partial class SqliteDesktopStore
         {
             return ReadSession(reader);
         }
-        catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or InvalidCastException or ArgumentException)
         {
             throw new InvalidDataException("AI_SESSION_RECORD_CORRUPT", exception);
         }
@@ -422,6 +549,13 @@ public sealed partial class SqliteDesktopStore
         && left.LockedSelections.Count == right.LockedSelections.Count
         && left.LockedSelections.All(item => right.LockedSelections.TryGetValue(item.Key, out var other) && Equals(item.Value, other));
 
+    private static bool SessionSelectionPayloadEquals(AiAnalysisSession left, AiAnalysisSession right) =>
+        left.SelectionRevision == right.SelectionRevision
+        && left.AllowedRequirementIds.SetEquals(right.AllowedRequirementIds)
+        && left.AllowedAssetIds.SetEquals(right.AllowedAssetIds)
+        && left.LockedSelections.Count == right.LockedSelections.Count
+        && left.LockedSelections.All(item => right.LockedSelections.TryGetValue(item.Key, out var other) && Equals(item.Value, other));
+
     private static bool LedgerIdentityMatches(AiRequestLedgerEntry left, AiRequestLedgerEntry right) =>
         string.Equals(left.Fingerprint, right.Fingerprint, StringComparison.Ordinal)
         && string.Equals(left.BatchId, right.BatchId, StringComparison.Ordinal)
@@ -431,6 +565,13 @@ public sealed partial class SqliteDesktopStore
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length > 512
             || value.Contains('\\') || value.Contains('\0'))
+        {
+            throw new InvalidOperationException(code);
+        }
+
+        var normalized = value.Replace('\\', '/');
+        if (Path.IsPathFullyQualified(normalized)
+            || normalized.Split('/').Any(segment => segment is "" or "." or ".."))
         {
             throw new InvalidOperationException(code);
         }
@@ -447,7 +588,8 @@ public sealed partial class SqliteDesktopStore
 
     private static void ValidateStatus(string value)
     {
-        if (!Enum.TryParse<AiAnalysisSessionStatus>(value, false, out _))
+        if (!Enum.TryParse<AiAnalysisSessionStatus>(value, false, out var status)
+            || !Enum.IsDefined(status))
         {
             throw new InvalidOperationException("AI_STATUS_INVALID");
         }
@@ -464,11 +606,13 @@ public sealed partial class SqliteDesktopStore
     private static void ValidateLedgerEntry(AiRequestLedgerEntry entry)
     {
         ValidateIdentifier(entry.RequestId, "AI_REQUEST_ID_INVALID");
-        ValidateOpaqueReference(entry.Fingerprint, "AI_FINGERPRINT_INVALID");
+        ValidateDigest(entry.Fingerprint, "AI_FINGERPRINT_INVALID");
         ValidateIdentifier(entry.BatchId, "AI_BATCH_ID_INVALID");
         ValidateIdentifier(entry.StyleId, "AI_STYLE_ID_INVALID");
         ValidateStatus(entry.Status);
         ValidateResultReference(entry.ResultReference);
+        ValidateTimestamp(entry.CreatedAt, "AI_LEDGER_TIME_INVALID");
+        ValidateTimestamp(entry.UpdatedAt, "AI_LEDGER_TIME_INVALID");
         if (entry.UpdatedAt < entry.CreatedAt)
         {
             throw new InvalidOperationException("AI_LEDGER_TIME_INVALID");
@@ -488,21 +632,18 @@ public sealed partial class SqliteDesktopStore
 
     private static void ValidateStoredLedger(AiRequestLedgerEntry entry)
     {
-        ValidateIdentifier(entry.RequestId, "AI_REQUEST_ID_INVALID");
-        ValidateDigest(entry.Fingerprint, "AI_FINGERPRINT_INVALID");
-        ValidateIdentifier(entry.BatchId, "AI_BATCH_ID_INVALID");
-        ValidateIdentifier(entry.StyleId, "AI_STYLE_ID_INVALID");
-        ValidateStatus(entry.Status);
-        ValidateResultReference(entry.ResultReference);
-        if (entry.UpdatedAt < entry.CreatedAt)
+        try
         {
-            throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT");
+            ValidateLedgerEntry(entry);
+            var requiresResult = entry.Status is "Validated" or "ManualReview" or "PlanClosed";
+            if (requiresResult != (entry.ResultReference is not null))
+            {
+                throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT");
+            }
         }
-
-        var requiresResult = entry.Status is "Validated" or "ManualReview" or "PlanClosed";
-        if (requiresResult != (entry.ResultReference is not null))
+        catch (InvalidOperationException exception)
         {
-            throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT");
+            throw new InvalidDataException("AI_LEDGER_RECORD_CORRUPT", exception);
         }
     }
 
@@ -513,6 +654,7 @@ public sealed partial class SqliteDesktopStore
         ValidateOpaqueReference(reference.ConsentId, "AI_CONSENT_ID_INVALID");
         ValidateOpaqueReference(reference.ModelConfigVersion, "AI_MODEL_CONFIG_INVALID");
         ValidateOpaqueReference(reference.UsageEventId, "AI_USAGE_ID_INVALID");
+        ValidateTimestamp(reference.CreatedAt, "AI_CACHE_TIME_INVALID");
     }
 
     private static void ValidateUsage(AiUsageEventRecord usage)
@@ -527,6 +669,16 @@ public sealed partial class SqliteDesktopStore
                 && !System.Text.RegularExpressions.Regex.IsMatch(usage.ProviderCostCurrency, "^[A-Z]{3}$")))
         {
             throw new InvalidOperationException("AI_USAGE_INVALID");
+        }
+
+        ValidateTimestamp(usage.RecordedAt, "AI_USAGE_TIME_INVALID");
+    }
+
+    private static void ValidateTimestamp(DateTimeOffset value, string code)
+    {
+        if (value == default)
+        {
+            throw new InvalidOperationException(code);
         }
     }
 
@@ -599,42 +751,48 @@ public sealed partial class SqliteDesktopStore
     private static async Task<AiCacheReference?> FindCacheReferenceForWriteAsync(
         SqliteConnection connection,
         string cacheKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at FROM ai_cache_references WHERE cache_key = $cache_key;";
         command.Parameters.AddWithValue("$cache_key", cacheKey);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)))
+            ? ReadCacheReference(reader)
             : null;
     }
 
     private static async Task<AiUsageEventRecord?> FindUsageForWriteAsync(
         SqliteConnection connection,
         string requestId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at FROM ai_usage_events WHERE request_id = $request_id;";
         command.Parameters.AddWithValue("$request_id", requestId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)))
+            ? ReadUsageEvent(reader)
             : null;
     }
 
     private static async Task<AiUsageEventRecord?> FindUsageByIdForWriteAsync(
         SqliteConnection connection,
         string usageEventId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT usage_event_id, request_id, model_config_version, input_units, output_units, cache_hit, retry_count, provider_cost_amount_text, provider_cost_currency, recorded_at FROM ai_usage_events WHERE usage_event_id = $usage_event_id;";
         command.Parameters.AddWithValue("$usage_event_id", usageEventId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new AiUsageEventRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5) == 1, reader.GetInt32(6), reader.IsDBNull(7) ? null : decimal.Parse(reader.GetString(7), CultureInfo.InvariantCulture), reader.IsDBNull(8) ? null : reader.GetString(8), ParseTime(reader.GetString(9)))
+            ? ReadUsageEvent(reader)
             : null;
     }
 }
