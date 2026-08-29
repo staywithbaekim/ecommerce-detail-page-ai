@@ -24,6 +24,7 @@ public sealed class AiAnalysisInputProjectorTests
         Assert.Equal("style_01", request.ProductId);
         Assert.StartsWith("sha256:", request.RequirementsDigest, StringComparison.Ordinal);
         Assert.Equal(71, request.RequirementsDigest.Length);
+        Assert.NotEqual("sha256:" + new string('d', 64), request.RequirementsDigest);
         Assert.Equal("asset_01", Assert.Single(request.Assets).AssetId);
         Assert.Equal("frame_01", Assert.Single(request.Requirements).RequirementId);
         Assert.DoesNotContain(request.Assets, asset => asset.AnalysisCopyReference.Contains(':'));
