@@ -36,7 +36,10 @@ public sealed record AiAnalysisSession
         string analysisKey,
         AiAnalysisSessionStatus status,
         long selectionRevision,
-        ImmutableDictionary<string, AiLockedSelection> lockedSelections)
+        ImmutableDictionary<string, AiLockedSelection> lockedSelections,
+        ImmutableHashSet<string> allowedRequirementIds,
+        ImmutableHashSet<string> allowedAssetIds,
+        bool hasVerifiedResult)
     {
         SessionId = sessionId;
         BatchId = batchId;
@@ -46,6 +49,9 @@ public sealed record AiAnalysisSession
         Status = status;
         SelectionRevision = selectionRevision;
         LockedSelections = lockedSelections;
+        AllowedRequirementIds = allowedRequirementIds;
+        AllowedAssetIds = allowedAssetIds;
+        HasVerifiedResult = hasVerifiedResult;
     }
 
     public string SessionId { get; }
@@ -56,13 +62,18 @@ public sealed record AiAnalysisSession
     public AiAnalysisSessionStatus Status { get; }
     public long SelectionRevision { get; }
     public IReadOnlyDictionary<string, AiLockedSelection> LockedSelections { get; }
+    public IReadOnlySet<string> AllowedRequirementIds { get; }
+    public IReadOnlySet<string> AllowedAssetIds { get; }
+    public bool HasVerifiedResult { get; }
 
     public static AiAnalysisSession Create(
         string sessionId,
         string batchId,
         string styleId,
         string templateSnapshotId,
-        string analysisKey) => new(
+        string analysisKey,
+        IEnumerable<string> allowedRequirementIds,
+        IEnumerable<string> allowedAssetIds) => new(
             Identifier(sessionId, "AI_SESSION_ID_INVALID"),
             Identifier(batchId, "AI_BATCH_ID_INVALID"),
             Identifier(styleId, "AI_STYLE_ID_INVALID"),
@@ -70,7 +81,10 @@ public sealed record AiAnalysisSession
             Identifier(analysisKey, "AI_ANALYSIS_KEY_INVALID"),
             AiAnalysisSessionStatus.Queued,
             0,
-            ImmutableDictionary<string, AiLockedSelection>.Empty);
+            ImmutableDictionary<string, AiLockedSelection>.Empty,
+            Identifiers(allowedRequirementIds, "AI_REQUIREMENTS_INVALID"),
+            Identifiers(allowedAssetIds, "AI_ASSETS_INVALID"),
+            false);
 
     public AiAnalysisSession AdvanceTo(AiAnalysisSessionStatus next)
     {
@@ -85,7 +99,11 @@ public sealed record AiAnalysisSession
             throw new InvalidOperationException("AI_SESSION_TRANSITION_INVALID");
         }
 
-        return Copy(next, SelectionRevision, LockedSelections.ToImmutableDictionary(StringComparer.Ordinal));
+        return Copy(
+            next,
+            SelectionRevision,
+            LockedSelections.ToImmutableDictionary(StringComparer.Ordinal),
+            next == AiAnalysisSessionStatus.Validated || HasVerifiedResult);
     }
 
     public AiAnalysisSession LockSelection(
@@ -103,6 +121,16 @@ public sealed record AiAnalysisSession
             throw new InvalidOperationException("AI_SELECTION_NOT_AVAILABLE");
         }
 
+        if (!AllowedRequirementIds.Contains(requirementId))
+        {
+            throw new InvalidOperationException("AI_SELECTION_REQUIREMENT_UNKNOWN");
+        }
+
+        if (!AllowedAssetIds.Contains(assetId))
+        {
+            throw new InvalidOperationException("AI_SELECTION_ASSET_UNKNOWN");
+        }
+
         var nextRevision = SelectionRevision + 1;
         var selection = new AiLockedSelection(
             Identifier(requirementId, "AI_REQUIREMENT_ID_INVALID"),
@@ -112,13 +140,15 @@ public sealed record AiAnalysisSession
             AiAnalysisSessionStatus.ManualReview,
             nextRevision,
             LockedSelections.ToImmutableDictionary(StringComparer.Ordinal)
-                .SetItem(selection.RequirementId, selection));
+                .SetItem(selection.RequirementId, selection),
+            HasVerifiedResult);
     }
 
     private AiAnalysisSession Copy(
         AiAnalysisSessionStatus status,
         long selectionRevision,
-        ImmutableDictionary<string, AiLockedSelection> lockedSelections) => new(
+        ImmutableDictionary<string, AiLockedSelection> lockedSelections,
+        bool hasVerifiedResult) => new(
             SessionId,
             BatchId,
             StyleId,
@@ -126,7 +156,10 @@ public sealed record AiAnalysisSession
             AnalysisKey,
             status,
             selectionRevision,
-            lockedSelections);
+            lockedSelections,
+            AllowedRequirementIds.ToImmutableHashSet(StringComparer.Ordinal),
+            AllowedAssetIds.ToImmutableHashSet(StringComparer.Ordinal),
+            hasVerifiedResult);
 
     private static bool IsAllowed(AiAnalysisSessionStatus current, AiAnalysisSessionStatus next) =>
         (current, next) is
@@ -134,12 +167,15 @@ public sealed record AiAnalysisSession
             or (AiAnalysisSessionStatus.Uploading, AiAnalysisSessionStatus.Analysing)
             or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.Validated)
             or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.RetryableError)
+            or (AiAnalysisSessionStatus.Uploading, AiAnalysisSessionStatus.TerminalError)
+            or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.TerminalError)
             or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.AiResultUnknown)
             or (AiAnalysisSessionStatus.Validated, AiAnalysisSessionStatus.ManualReview)
             or (AiAnalysisSessionStatus.Validated, AiAnalysisSessionStatus.PlanClosed)
             or (AiAnalysisSessionStatus.ManualReview, AiAnalysisSessionStatus.PlanClosed)
             or (AiAnalysisSessionStatus.RetryableError, AiAnalysisSessionStatus.Queued)
-            or (AiAnalysisSessionStatus.AiResultUnknown, AiAnalysisSessionStatus.ManualReview)
+            or (AiAnalysisSessionStatus.AiResultUnknown, AiAnalysisSessionStatus.TerminalError)
+            or (AiAnalysisSessionStatus.AiResultUnknown, AiAnalysisSessionStatus.Cancelled)
             or (AiAnalysisSessionStatus.Queued, AiAnalysisSessionStatus.Cancelled)
             or (AiAnalysisSessionStatus.Uploading, AiAnalysisSessionStatus.Cancelled)
             or (AiAnalysisSessionStatus.Analysing, AiAnalysisSessionStatus.Cancelled)
@@ -155,5 +191,18 @@ public sealed record AiAnalysisSession
         }
 
         return value;
+    }
+
+    private static ImmutableHashSet<string> Identifiers(IEnumerable<string> values, string code)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var result = values.Select(value => Identifier(value, code))
+            .ToImmutableHashSet(StringComparer.Ordinal);
+        if (result.Count == 0)
+        {
+            throw new InvalidOperationException(code);
+        }
+
+        return result;
     }
 }
