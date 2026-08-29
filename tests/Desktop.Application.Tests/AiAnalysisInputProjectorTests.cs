@@ -65,6 +65,18 @@ public sealed class AiAnalysisInputProjectorTests
     }
 
     [Fact]
+    public void RequirementsDigestEscapesDelimiterAndNewlineContent()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var firstRevision = RevisionWithRequirement("A|B", "C\nD", now);
+        var secondRevision = RevisionWithRequirement("A", "B|C\nD", now);
+        var first = AiAnalysisInputProjector.Project(ReadyBatch(firstRevision, now), firstRevision, "style_01", Options());
+        var second = AiAnalysisInputProjector.Project(ReadyBatch(secondRevision, now), secondRevision, "style_01", Options());
+
+        Assert.NotEqual(first.RequirementsDigest, second.RequirementsDigest);
+    }
+
+    [Fact]
     public void RejectsDraftAndScanningBatchesBeforeReadingAssets()
     {
         var now = DateTimeOffset.UtcNow;
@@ -143,6 +155,9 @@ public sealed class AiAnalysisInputProjectorTests
         BatchTemplateSnapshot.Create("snapshot_01", "batch_01", revision, ["page_01"], now);
 
     private static TemplateRevision CommittedRevision(DateTimeOffset now)
+        => RevisionWithRequirement("选择完整商品图", "主体完整", now);
+
+    private static TemplateRevision RevisionWithRequirement(string selection, string layout, DateTimeOffset now)
     {
         var page = TemplatePage.Create(
             "page_01", "revision_01", 0, "详情页", TemplatePageContentType.NormalComposition,
@@ -151,8 +166,8 @@ public sealed class AiAnalysisInputProjectorTests
             "frame_01", "page_01", LayerPath.Create([1]),
             ExpectedLayerEvidence.Create(1, "frame", true, false, false, false, 255, "normal",
                 LayerStructureSignature.Create("sha256:" + new string('b', 64))),
-            [], SelectionRequirement.Create("选择完整商品图", [SelectionCriterion.Create("asset_id", "asset_01")]),
-            LayoutIntent.Create("主体完整", 1, 0, 0, TemplateRect.Create(0, 0, 100, 100)));
+            [], SelectionRequirement.Create(selection, [SelectionCriterion.Create("asset_id", "asset_01")]),
+            LayoutIntent.Create(layout, 1, 0, 0, TemplateRect.Create(0, 0, 100, 100)));
         return TemplateRevision.Restore(
             "revision_01", "group_01", 1, TemplateRevisionState.Committed,
             "templates/revision_01/manifest.json", "sha256:" + new string('d', 64), now,

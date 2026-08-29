@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Desktop.Contracts.Ai;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.Templates;
@@ -133,14 +134,13 @@ public static class AiAnalysisInputProjector
 
     private static string ComputeRequirementsDigest(IReadOnlyList<AiRequirementInputV1> requirements)
     {
-        var canonical = string.Join(
-            "\n",
-            requirements.Select(requirement => string.Join(
-                "|",
-                requirement.RequirementId,
-                requirement.SelectionRequirement,
-                requirement.LayoutIntent,
-                requirement.Required ? "true" : "false")));
+        var canonical = JsonSerializer.Serialize(requirements.Select(requirement => new
+        {
+            requirement.RequirementId,
+            requirement.SelectionRequirement,
+            requirement.LayoutIntent,
+            requirement.Required
+        }).ToArray());
         return "sha256:" + Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
