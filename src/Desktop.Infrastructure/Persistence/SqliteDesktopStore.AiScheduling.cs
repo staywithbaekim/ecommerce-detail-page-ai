@@ -30,24 +30,7 @@ public sealed partial class SqliteDesktopStore
 
         try
         {
-            var items = JsonSerializer.Deserialize<AiAnalysisWorkItem[]>(
-                reader.GetString(0), AiJsonOptions)
-                ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT");
-            var estimatedCost = decimal.Parse(
-                reader.GetString(4), NumberStyles.Number, CultureInfo.InvariantCulture);
-            var budget = new AiAnalysisBudgetSnapshot(
-                reader.GetInt32(1),
-                reader.GetInt32(2),
-                reader.GetInt32(3),
-                estimatedCost,
-                ReadBoolean(reader.GetInt32(5), "AI_SCHEDULER_STATE_CORRUPT"),
-                ReadBoolean(reader.GetInt32(6), "AI_SCHEDULER_STATE_CORRUPT"));
-            var state = new AiAnalysisSchedulingState(
-                items,
-                budget,
-                ParseTime(reader.GetString(7)));
-            ValidateSchedulingState(state);
-            return state;
+            return ReadSchedulingState(reader);
         }
         catch (InvalidDataException)
         {
@@ -71,59 +54,127 @@ public sealed partial class SqliteDesktopStore
             ValidateSchedulingState(state);
             await using var transaction = (SqliteTransaction)await connection
                 .BeginTransactionAsync(token).ConfigureAwait(false);
-            await using (var existingCommand = connection.CreateCommand())
-            {
-                existingCommand.Transaction = transaction;
-                existingCommand.CommandText = "SELECT updated_at FROM ai_analysis_scheduler_state WHERE state_key = $state_key;";
-                existingCommand.Parameters.AddWithValue("$state_key", stateKey);
-                var existingValue = await existingCommand.ExecuteScalarAsync(token).ConfigureAwait(false);
-                if (existingValue is string existingText)
-                {
-                    var existingUpdatedAt = ParseTime(existingText);
-                    if (state.UpdatedAt < existingUpdatedAt)
-                    {
-                        throw new InvalidOperationException("AI_SCHEDULER_STATE_STALE_WRITE");
-                    }
-                }
-            }
-            await using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = """
-                INSERT INTO ai_analysis_scheduler_state(
-                    state_key, pending_items_json, request_count, input_tokens,
-                    output_tokens, estimated_cost_text, warning_reached,
-                    hard_stopped, updated_at)
-                VALUES(
-                    $state_key, $pending_items_json, $request_count, $input_tokens,
-                    $output_tokens, $estimated_cost_text, $warning_reached,
-                    $hard_stopped, $updated_at)
-                ON CONFLICT(state_key) DO UPDATE SET
-                    pending_items_json = excluded.pending_items_json,
-                    request_count = excluded.request_count,
-                    input_tokens = excluded.input_tokens,
-                    output_tokens = excluded.output_tokens,
-                    estimated_cost_text = excluded.estimated_cost_text,
-                    warning_reached = excluded.warning_reached,
-                    hard_stopped = excluded.hard_stopped,
-                    updated_at = excluded.updated_at;
-                """;
-            command.Parameters.AddWithValue("$state_key", stateKey);
-            command.Parameters.AddWithValue(
-                "$pending_items_json",
-                JsonSerializer.Serialize(state.PendingItems, AiJsonOptions));
-            command.Parameters.AddWithValue("$request_count", state.Budget.RequestCount);
-            command.Parameters.AddWithValue("$input_tokens", state.Budget.InputTokens);
-            command.Parameters.AddWithValue("$output_tokens", state.Budget.OutputTokens);
-            command.Parameters.AddWithValue(
-                "$estimated_cost_text",
-                state.Budget.EstimatedCost.ToString("G29", CultureInfo.InvariantCulture));
-            command.Parameters.AddWithValue("$warning_reached", state.Budget.WarningReached ? 1 : 0);
-            command.Parameters.AddWithValue("$hard_stopped", state.Budget.HardStopped ? 1 : 0);
-            command.Parameters.AddWithValue("$updated_at", state.UpdatedAt.ToString("O"));
-            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            await UpsertSchedulingStateAsync(connection, transaction, stateKey, state, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
         }, cancellationToken);
+
+    private static async Task UpsertSchedulingStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string stateKey,
+        AiAnalysisSchedulingState state,
+        CancellationToken cancellationToken)
+    {
+        await using (var existingCommand = connection.CreateCommand())
+        {
+            existingCommand.Transaction = transaction;
+            existingCommand.CommandText = """
+                SELECT pending_items_json, request_count, input_tokens, output_tokens,
+                       estimated_cost_text, warning_reached, hard_stopped, updated_at
+                FROM ai_analysis_scheduler_state WHERE state_key = $state_key;
+                """;
+            existingCommand.Parameters.AddWithValue("$state_key", stateKey);
+            await using var reader = await existingCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var existing = ReadSchedulingState(reader);
+                if (state.UpdatedAt < existing.UpdatedAt
+                    || (state.UpdatedAt == existing.UpdatedAt && !SchedulingStateEquals(existing, state)))
+                {
+                    throw new InvalidOperationException("AI_SCHEDULER_STATE_STALE_WRITE");
+                }
+
+                if (SchedulingStateEquals(existing, state))
+                {
+                    return;
+                }
+            }
+        }
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO ai_analysis_scheduler_state(
+                state_key, pending_items_json, request_count, input_tokens,
+                output_tokens, estimated_cost_text, warning_reached,
+                hard_stopped, updated_at)
+            VALUES(
+                $state_key, $pending_items_json, $request_count, $input_tokens,
+                $output_tokens, $estimated_cost_text, $warning_reached,
+                $hard_stopped, $updated_at)
+            ON CONFLICT(state_key) DO UPDATE SET
+                pending_items_json = excluded.pending_items_json,
+                request_count = excluded.request_count,
+                input_tokens = excluded.input_tokens,
+                output_tokens = excluded.output_tokens,
+                estimated_cost_text = excluded.estimated_cost_text,
+                warning_reached = excluded.warning_reached,
+                hard_stopped = excluded.hard_stopped,
+                updated_at = excluded.updated_at;
+            """;
+        command.Parameters.AddWithValue("$state_key", stateKey);
+        command.Parameters.AddWithValue("$pending_items_json", JsonSerializer.Serialize(state.PendingItems, AiJsonOptions));
+        command.Parameters.AddWithValue("$request_count", state.Budget.RequestCount);
+        command.Parameters.AddWithValue("$input_tokens", state.Budget.InputTokens);
+        command.Parameters.AddWithValue("$output_tokens", state.Budget.OutputTokens);
+        command.Parameters.AddWithValue("$estimated_cost_text", state.Budget.EstimatedCost.ToString("G29", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$warning_reached", state.Budget.WarningReached ? 1 : 0);
+        command.Parameters.AddWithValue("$hard_stopped", state.Budget.HardStopped ? 1 : 0);
+        command.Parameters.AddWithValue("$updated_at", state.UpdatedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static AiAnalysisSchedulingState ReadSchedulingState(Microsoft.Data.Sqlite.SqliteDataReader reader)
+    {
+        try
+        {
+            var items = JsonSerializer.Deserialize<AiAnalysisWorkItem[]>(reader.GetString(0), AiJsonOptions)
+                ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT");
+            var budget = new AiAnalysisBudgetSnapshot(
+                reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3),
+                decimal.Parse(reader.GetString(4), NumberStyles.Number, CultureInfo.InvariantCulture),
+                ReadBoolean(reader.GetInt32(5), "AI_SCHEDULER_STATE_CORRUPT"),
+                ReadBoolean(reader.GetInt32(6), "AI_SCHEDULER_STATE_CORRUPT"));
+            var state = new AiAnalysisSchedulingState(items, budget, ParseTime(reader.GetString(7)));
+            ValidateSchedulingState(state);
+            return state;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException
+            or InvalidCastException or FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT", exception);
+        }
+    }
+
+    private static bool SchedulingStateEquals(AiAnalysisSchedulingState left, AiAnalysisSchedulingState right) =>
+        left.UpdatedAt == right.UpdatedAt
+        && left.Budget == right.Budget
+        && JsonSerializer.Serialize(left.PendingItems, AiJsonOptions) == JsonSerializer.Serialize(right.PendingItems, AiJsonOptions);
+
+    private static async Task<AiAnalysisSchedulingState?> LoadSchedulingStateForWriteAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string stateKey,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT pending_items_json, request_count, input_tokens, output_tokens,
+                   estimated_cost_text, warning_reached, hard_stopped, updated_at
+            FROM ai_analysis_scheduler_state WHERE state_key = $state_key;
+            """;
+        command.Parameters.AddWithValue("$state_key", stateKey);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadSchedulingState(reader)
+            : null;
+    }
 
     private static void ValidateSchedulingState(AiAnalysisSchedulingState state)
     {

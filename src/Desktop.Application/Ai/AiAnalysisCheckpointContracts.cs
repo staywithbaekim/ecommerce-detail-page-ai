@@ -38,7 +38,9 @@ public sealed record AiAnalysisCheckpointCommand(
     string CheckpointId,
     AiAnalysisStateManifestV1 Manifest,
     IReadOnlyList<AiAnalysisCheckpointGraph> Graphs,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string? SchedulerStateKey = null,
+    AiAnalysisSchedulingState? SchedulerState = null);
 
 public sealed record AiAnalysisCheckpointJournalItem(
     string RequestId,
@@ -60,7 +62,10 @@ public sealed record AiAnalysisCheckpointJournal(
     IReadOnlyList<AiAnalysisCheckpointJournalItem> Items,
     AiAnalysisCheckpointJournalState State,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? SchedulerStateKey = null,
+    string? SchedulerStateDigest = null,
+    AiAnalysisSchedulingState? SchedulerState = null);
 
 public sealed record AiAnalysisCheckpointResult(
     string? CheckpointId,

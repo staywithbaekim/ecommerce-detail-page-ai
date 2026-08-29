@@ -349,6 +349,14 @@ public sealed partial class SqliteDesktopStore
                 hard_stopped INTEGER NOT NULL CHECK(hard_stopped IN (0, 1)),
                 updated_at TEXT NOT NULL
             );
+            """),
+        new(9, "desktop-v9-ai-checkpoint-scheduler-closure-001", """
+            ALTER TABLE ai_analysis_checkpoint_journal
+                ADD COLUMN scheduler_state_key TEXT NULL;
+            ALTER TABLE ai_analysis_checkpoint_journal
+                ADD COLUMN scheduler_state_digest TEXT NULL;
+            ALTER TABLE ai_analysis_checkpoint_journal
+                ADD COLUMN scheduler_state_json TEXT NULL;
             """)
     ];
 

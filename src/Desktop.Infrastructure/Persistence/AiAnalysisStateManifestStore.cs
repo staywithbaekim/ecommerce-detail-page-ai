@@ -274,6 +274,11 @@ public sealed class AiAnalysisStateManifestStore(
             throw new InvalidDataException("AI_STATE_CREATED_AT_INVALID");
         }
 
+        if (manifest.SchedulerStateDigest is not null)
+        {
+            ValidateDigest(manifest.SchedulerStateDigest, "AI_STATE_SCHEDULER_DIGEST_INVALID");
+        }
+
         ValidateIds(manifest.SessionIds, "AI_STATE_SESSION_IDS_INVALID", value => ValidateId(value, "AI_STATE_SESSION_IDS_INVALID"));
         ValidateIds(manifest.RequestIds, "AI_STATE_REQUEST_IDS_INVALID", value => ValidateId(value, "AI_STATE_REQUEST_IDS_INVALID"));
         ValidateIds(manifest.CacheKeys, "AI_STATE_CACHE_KEYS_INVALID", value => ValidateDigest(value, "AI_STATE_CACHE_KEYS_INVALID"));

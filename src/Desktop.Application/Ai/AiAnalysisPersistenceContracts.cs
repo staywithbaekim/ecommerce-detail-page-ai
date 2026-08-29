@@ -66,7 +66,8 @@ public sealed record AiAnalysisStateManifestV1(
     IReadOnlyList<string> SessionIds,
     IReadOnlyList<string> RequestIds,
     IReadOnlyList<string> CacheKeys,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string? SchedulerStateDigest = null);
 
 public sealed record StagedAiAnalysisStateManifest(
     string BatchId,

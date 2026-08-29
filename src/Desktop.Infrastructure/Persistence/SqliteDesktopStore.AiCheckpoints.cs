@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Desktop.Application.Ai;
 using Desktop.Domain.Ai;
 using Desktop.Infrastructure.Ai;
@@ -111,6 +112,19 @@ public sealed partial class SqliteDesktopStore
                 await PersistCacheAsync(connection, transaction, graph, token).ConfigureAwait(false);
             }
 
+            if (command.SchedulerState is not null)
+            {
+                await UpsertSchedulingStateAsync(
+                    connection,
+                    transaction,
+                    command.SchedulerStateKey!,
+                    command.SchedulerState,
+                    token).ConfigureAwait(false);
+            }
+
+            var schedulerDigest = command.SchedulerState is null
+                ? null
+                : AiAnalysisCheckpointRules.ComputeSchedulerStateDigest(command.SchedulerState);
             var journal = new AiAnalysisCheckpointJournal(
                 command.CheckpointId,
                 command.Manifest.BatchId,
@@ -122,7 +136,10 @@ public sealed partial class SqliteDesktopStore
                 command.Graphs.Select(AiAnalysisCheckpointRules.ToJournalItem).ToArray(),
                 AiAnalysisCheckpointJournalState.Pending,
                 command.CreatedAt,
-                command.CreatedAt);
+                command.CreatedAt,
+                command.SchedulerStateKey,
+                schedulerDigest,
+                command.SchedulerState);
 
             await InsertJournalAsync(connection, transaction, journal, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -543,7 +560,40 @@ public sealed partial class SqliteDesktopStore
                 cache));
         }
 
-        return new AiAnalysisCheckpointCommand(journal.CheckpointId, manifest, graphs, journal.CreatedAt);
+        AiAnalysisSchedulingState? schedulerState = null;
+        if (journal.SchedulerStateKey is not null)
+        {
+            var persistedSchedulerState = await LoadSchedulingStateForWriteAsync(
+                connection,
+                transaction,
+                journal.SchedulerStateKey,
+                cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("AI_CHECKPOINT_SCHEDULER_STATE_MISSING");
+            if (journal.SchedulerStateDigest is null
+                || !string.Equals(
+                    journal.SchedulerStateDigest,
+                    AiAnalysisCheckpointRules.ComputeSchedulerStateDigest(persistedSchedulerState),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("AI_CHECKPOINT_SCHEDULER_STATE_MISMATCH");
+            }
+
+            if (journal.SchedulerState is not null
+                && !SchedulingStateEquals(journal.SchedulerState, persistedSchedulerState))
+            {
+                throw new InvalidDataException("AI_CHECKPOINT_SCHEDULER_STATE_MISMATCH");
+            }
+
+            schedulerState = persistedSchedulerState;
+        }
+
+        return new AiAnalysisCheckpointCommand(
+            journal.CheckpointId,
+            manifest,
+            graphs,
+            journal.CreatedAt,
+            journal.SchedulerStateKey,
+            schedulerState);
     }
 
     private static async Task InsertLedgerAsync(
@@ -644,10 +694,12 @@ public sealed partial class SqliteDesktopStore
             insert.CommandText = """
                 INSERT INTO ai_analysis_checkpoint_journal(
                     checkpoint_id, batch_id, manifest_id, stage_token, manifest_reference,
-                    manifest_digest, payload_digest, state, created_at, updated_at)
+                    manifest_digest, payload_digest, state, created_at, updated_at,
+                    scheduler_state_key, scheduler_state_digest, scheduler_state_json)
                 VALUES(
                     $checkpoint_id, $batch_id, $manifest_id, $stage_token, $manifest_reference,
-                    $manifest_digest, $payload_digest, $state, $created_at, $updated_at);
+                    $manifest_digest, $payload_digest, $state, $created_at, $updated_at,
+                    $scheduler_state_key, $scheduler_state_digest, $scheduler_state_json);
                 """;
             AddJournalParameters(insert, journal);
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -699,12 +751,16 @@ public sealed partial class SqliteDesktopStore
             string? state = null;
             string? createdAt = null;
             string? updatedAt = null;
+            string? schedulerStateKey = null;
+            string? schedulerStateDigest = null;
+            string? schedulerStateJson = null;
             await using (var command = connection.CreateCommand())
             {
                 command.Transaction = transaction;
                 command.CommandText = $"""
                     SELECT checkpoint_id, batch_id, manifest_id, stage_token, manifest_reference,
-                           manifest_digest, payload_digest, state, created_at, updated_at
+                           manifest_digest, payload_digest, state, created_at, updated_at,
+                           scheduler_state_key, scheduler_state_digest, scheduler_state_json
                     FROM ai_analysis_checkpoint_journal
                     WHERE {predicate}
                     {(orderBy is null ? string.Empty : $"ORDER BY {orderBy}")}
@@ -727,6 +783,9 @@ public sealed partial class SqliteDesktopStore
                 state = reader.GetString(7);
                 createdAt = reader.GetString(8);
                 updatedAt = reader.GetString(9);
+                schedulerStateKey = reader.IsDBNull(10) ? null : reader.GetString(10);
+                schedulerStateDigest = reader.IsDBNull(11) ? null : reader.GetString(11);
+                schedulerStateJson = reader.IsDBNull(12) ? null : reader.GetString(12);
             }
 
             var items = new List<AiAnalysisCheckpointJournalItem>();
@@ -762,9 +821,25 @@ public sealed partial class SqliteDesktopStore
             }
 
             var parsedState = Enum.Parse<AiAnalysisCheckpointJournalState>(state!, false);
+            AiAnalysisSchedulingState? schedulerState = null;
+            if (schedulerStateJson is not null)
+            {
+                try
+                {
+                    schedulerState = System.Text.Json.JsonSerializer.Deserialize<AiAnalysisSchedulingState>(schedulerStateJson, AiJsonOptions)
+                        ?? throw new InvalidDataException("AI_CHECKPOINT_JOURNAL_CORRUPT");
+                    ValidateSchedulingState(schedulerState);
+                }
+                catch (JsonException exception)
+                {
+                    throw new InvalidDataException("AI_CHECKPOINT_JOURNAL_CORRUPT", exception);
+                }
+            }
+
             var journal = new AiAnalysisCheckpointJournal(
                 checkpointId!, batchId!, manifestId!, stageToken!, manifestReference!, manifestDigest!, payloadDigest!,
-                items, parsedState, ParseTime(createdAt!), ParseTime(updatedAt!));
+                items, parsedState, ParseTime(createdAt!), ParseTime(updatedAt!),
+                schedulerStateKey, schedulerStateDigest, schedulerState);
             ValidateStoredJournal(journal);
             return journal;
         }
@@ -790,6 +865,24 @@ public sealed partial class SqliteDesktopStore
             ValidateOwnedReference(journal.ManifestReference, "AI_MANIFEST_REFERENCE_INVALID");
             AiAnalysisCheckpointRules.ValidateDigest(journal.ManifestDigest, "AI_MANIFEST_DIGEST_INVALID");
             AiAnalysisCheckpointRules.ValidateDigest(journal.PayloadDigest, "AI_PAYLOAD_DIGEST_INVALID");
+            if ((journal.SchedulerStateKey is null) != (journal.SchedulerState is null)
+                || (journal.SchedulerState is not null && journal.SchedulerStateDigest is null))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_CLOSURE_INVALID");
+            }
+
+            if (journal.SchedulerStateKey is not null)
+            {
+                AiAnalysisCheckpointRules.ValidateIdentifier(journal.SchedulerStateKey, "AI_SCHEDULER_STATE_KEY_INVALID");
+                AiAnalysisCheckpointRules.ValidateDigest(journal.SchedulerStateDigest!, "AI_SCHEDULER_STATE_DIGEST_INVALID");
+                if (!string.Equals(
+                        journal.SchedulerStateDigest,
+                        AiAnalysisCheckpointRules.ComputeSchedulerStateDigest(journal.SchedulerState!),
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_DIGEST_INVALID");
+                }
+            }
             if (!Enum.IsDefined(journal.State)
                 || journal.Items.Count is 0 or > 4096
                 || journal.CreatedAt == default
@@ -889,6 +982,13 @@ public sealed partial class SqliteDesktopStore
         command.Parameters.AddWithValue("$state", journal.State.ToString());
         command.Parameters.AddWithValue("$created_at", journal.CreatedAt.ToString("O"));
         command.Parameters.AddWithValue("$updated_at", journal.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$scheduler_state_key", (object?)journal.SchedulerStateKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("$scheduler_state_digest", (object?)journal.SchedulerStateDigest ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "$scheduler_state_json",
+            journal.SchedulerState is null
+                ? DBNull.Value
+                : JsonSerializer.Serialize(journal.SchedulerState, AiJsonOptions));
     }
 
     private static void EnsureSameJournalIdentity(
@@ -902,6 +1002,11 @@ public sealed partial class SqliteDesktopStore
             || !string.Equals(expected.ManifestReference, actual.ManifestReference, StringComparison.Ordinal)
             || !string.Equals(expected.ManifestDigest, actual.ManifestDigest, StringComparison.Ordinal)
             || !string.Equals(expected.PayloadDigest, actual.PayloadDigest, StringComparison.Ordinal)
+            || !string.Equals(expected.SchedulerStateKey, actual.SchedulerStateKey, StringComparison.Ordinal)
+            || !string.Equals(expected.SchedulerStateDigest, actual.SchedulerStateDigest, StringComparison.Ordinal)
+            || (expected.SchedulerState is null) != (actual.SchedulerState is null)
+            || (expected.SchedulerState is not null
+                && !SchedulingStateEquals(expected.SchedulerState, actual.SchedulerState!))
             || expected.CreatedAt != actual.CreatedAt
             || !expected.Items.OrderBy(item => item.RequestId, StringComparer.Ordinal)
                 .SequenceEqual(actual.Items.OrderBy(item => item.RequestId, StringComparer.Ordinal)))
@@ -917,7 +1022,8 @@ public sealed partial class SqliteDesktopStore
         journal.Items.Select(item => item.SessionId).ToArray(),
         journal.Items.Select(item => item.RequestId).ToArray(),
         journal.Items.Where(item => item.CacheKey is not null).Select(item => item.CacheKey!).ToArray(),
-        journal.CreatedAt);
+        journal.CreatedAt,
+        journal.SchedulerStateDigest);
 
     private static void EnsurePriorGraphRetained(
         AiAnalysisCheckpointCommand command,

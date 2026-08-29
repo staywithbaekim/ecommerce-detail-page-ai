@@ -1,11 +1,12 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Desktop.Application.Ai;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Ai;
 
 namespace Desktop.Infrastructure.Ai;
 
-internal static class AiAnalysisCheckpointRules
+public static class AiAnalysisCheckpointRules
 {
     private const int MaximumGraphs = 4096;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -37,6 +38,8 @@ internal static class AiAnalysisCheckpointRules
         {
             throw new InvalidOperationException("AI_CHECKPOINT_TIME_CLOSURE_INVALID");
         }
+
+        ValidateSchedulerClosure(command);
 
         var requestIds = new HashSet<string>(StringComparer.Ordinal);
         var sessionIds = new HashSet<string>(StringComparer.Ordinal);
@@ -71,6 +74,7 @@ internal static class AiAnalysisCheckpointRules
                 SessionIds = command.Manifest.SessionIds.Order(StringComparer.Ordinal).ToArray(),
                 RequestIds = command.Manifest.RequestIds.Order(StringComparer.Ordinal).ToArray(),
                 CacheKeys = command.Manifest.CacheKeys.Order(StringComparer.Ordinal).ToArray(),
+                SchedulerStateDigest = command.Manifest.SchedulerStateDigest,
                 CreatedAt = command.Manifest.CreatedAt.ToString("O")
             },
             graphs = command.Graphs
@@ -109,6 +113,10 @@ internal static class AiAnalysisCheckpointRules
             || !string.Equals(journal.BatchId, command.Manifest.BatchId, StringComparison.Ordinal)
             || !string.Equals(journal.ManifestId, command.Manifest.ManifestId, StringComparison.Ordinal)
             || !string.Equals(journal.PayloadDigest, payloadDigest, StringComparison.Ordinal)
+            || !string.Equals(journal.SchedulerStateKey, command.SchedulerStateKey, StringComparison.Ordinal)
+            || !string.Equals(journal.SchedulerStateDigest,
+                command.SchedulerState is null ? null : ComputeSchedulerStateDigest(command.SchedulerState),
+                StringComparison.Ordinal)
             || journal.CreatedAt != command.CreatedAt
             || !expectedItems.SequenceEqual(actualItems))
         {
@@ -155,7 +163,56 @@ internal static class AiAnalysisCheckpointRules
         && string.Equals(journal.BatchId, inspection.BatchId, StringComparison.Ordinal)
         && string.Equals(journal.ManifestReference, inspection.CommittedManifestReference, StringComparison.Ordinal)
         && string.Equals(journal.ManifestDigest, inspection.CommittedManifestDigest, StringComparison.Ordinal)
-        && string.Equals(journal.ManifestId, inspection.CommittedManifest?.ManifestId, StringComparison.Ordinal);
+        && string.Equals(journal.ManifestId, inspection.CommittedManifest?.ManifestId, StringComparison.Ordinal)
+        && string.Equals(journal.SchedulerStateDigest, inspection.CommittedManifest?.SchedulerStateDigest, StringComparison.Ordinal);
+
+    public static string ComputeSchedulerStateDigest(AiAnalysisSchedulingState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var canonical = new
+        {
+            pending_items = state.PendingItems
+                .OrderBy(item => item.WorkItemId, StringComparer.Ordinal)
+                .Select(item => new
+                {
+                    item.WorkItemId,
+                    request = new
+                    {
+                        item.Request.RequestId,
+                        item.Request.CorrelationId,
+                        item.Request.ProductId,
+                        item.Request.BatchId,
+                        item.Request.StyleId,
+                        item.Request.TemplateSnapshotId,
+                        item.Request.AnalysisKind,
+                        item.Request.ModelConfigVersion,
+                        item.Request.PromptContractVersion,
+                        item.Request.ResponseSchemaVersion,
+                        item.Request.CompressionProfileVersion,
+                        item.Request.ConsentId,
+                        item.Request.RequirementsDigest,
+                        assets = item.Request.Assets.OrderBy(asset => asset.AssetId, StringComparer.Ordinal),
+                        requirements = item.Request.Requirements.OrderBy(requirement => requirement.RequirementId, StringComparer.Ordinal)
+                    },
+                    stage = item.Stage.ToString(),
+                    item.Attempt,
+                    EnqueuedAt = item.EnqueuedAt.ToString("O"),
+                    item.ParentRequestId
+                }).ToArray(),
+            budget = new
+            {
+                state.Budget.RequestCount,
+                state.Budget.InputTokens,
+                state.Budget.OutputTokens,
+                EstimatedCost = state.Budget.EstimatedCost.ToString("G29", System.Globalization.CultureInfo.InvariantCulture),
+                state.Budget.WarningReached,
+                state.Budget.HardStopped
+            },
+            UpdatedAt = state.UpdatedAt.ToString("O")
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(canonical, JsonOptions);
+        return "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
 
     public static bool StagedMatches(
         AiAnalysisCheckpointJournal journal,
@@ -278,6 +335,118 @@ internal static class AiAnalysisCheckpointRules
             || graph.Cache.CreatedAt > command.CreatedAt)
         {
             throw new InvalidOperationException("AI_CHECKPOINT_USAGE_CACHE_CLOSURE_INVALID");
+        }
+    }
+
+    private static void ValidateSchedulerClosure(AiAnalysisCheckpointCommand command)
+    {
+        var schedulerState = command.SchedulerState;
+        if ((command.SchedulerStateKey is null) != (schedulerState is null))
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_CLOSURE_INVALID");
+        }
+
+        if (schedulerState is null)
+        {
+            if (command.Manifest.SchedulerStateDigest is not null)
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_DIGEST_INVALID");
+            }
+
+            return;
+        }
+
+        ValidateIdentifier(command.SchedulerStateKey!, "AI_SCHEDULER_STATE_KEY_INVALID");
+        if (schedulerState.UpdatedAt == default || schedulerState.UpdatedAt > command.CreatedAt)
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_TIME_INVALID");
+        }
+
+        if (schedulerState.Budget.RequestCount < 0
+            || schedulerState.Budget.InputTokens < 0
+            || schedulerState.Budget.OutputTokens < 0
+            || schedulerState.Budget.EstimatedCost < 0m
+            || schedulerState.PendingItems is null
+            || schedulerState.PendingItems.Count > 10_000)
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_STATE_INVALID");
+        }
+
+        var graphs = command.Graphs.ToDictionary(graph => graph.Request.RequestId, StringComparer.Ordinal);
+        var pendingIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in schedulerState.PendingItems)
+        {
+            if (item is null || !pendingIds.Add(item.WorkItemId))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_ITEM_INVALID");
+            }
+
+            ValidateIdentifier(item.WorkItemId, "AI_SCHEDULER_WORK_ITEM_INVALID");
+            if (item.EnqueuedAt == default || item.EnqueuedAt > command.CreatedAt || item.Attempt < 0)
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_ITEM_INVALID");
+            }
+
+            if (!graphs.TryGetValue(item.Request.RequestId, out var graph)
+                || !string.Equals(item.Request.BatchId, command.Manifest.BatchId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_REFERENCE_INVALID");
+            }
+
+            if (!string.Equals(
+                    AiAnalysisCacheKeyFactory.Create(item.Request),
+                    graph.Request.Fingerprint,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_REQUEST_MISMATCH");
+            }
+
+            var expectedKind = item.Stage switch
+            {
+                AiAnalysisWorkStage.ProductJointUnderstanding => AiAnalysisKind.ProductJointUnderstanding,
+                AiAnalysisWorkStage.SelectedAssetGeometry => AiAnalysisKind.SelectedAssetGeometry,
+                AiAnalysisWorkStage.SizeTableExtraction => AiAnalysisKind.SizeTableExtraction,
+                _ => throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_STAGE_INVALID")
+            };
+            if (!string.Equals(item.Request.AnalysisKind, expectedKind, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_STAGE_KIND_MISMATCH");
+            }
+
+            if (item.Request.Assets.Any(asset => string.IsNullOrWhiteSpace(asset.AnalysisCopyReference)
+                || Path.IsPathFullyQualified(asset.AnalysisCopyReference)
+                || asset.AnalysisCopyReference.Contains('\\')
+                || asset.AnalysisCopyReference.Contains(':')))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_SOURCE_PATH_INVALID");
+            }
+
+            if (graph.Request.Status is not ("Queued" or "RetryableError" or "Uploading" or "Analysing"))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_STATUS_INVALID");
+            }
+        }
+
+        foreach (var graph in command.Graphs)
+        {
+            if (graph.Request.Status is "Queued" or "RetryableError"
+                && !schedulerState.PendingItems.Any(item => string.Equals(item.Request.RequestId, graph.Request.RequestId, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_PENDING_OMITTED");
+            }
+        }
+
+        var usageInput = command.Graphs.Where(graph => graph.Usage is not null).Sum(graph => graph.Usage!.InputUnits);
+        var usageOutput = command.Graphs.Where(graph => graph.Usage is not null).Sum(graph => graph.Usage!.OutputUnits);
+        if (schedulerState.Budget.InputTokens < usageInput || schedulerState.Budget.OutputTokens < usageOutput)
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_USAGE_OMITTED");
+        }
+
+        var digest = ComputeSchedulerStateDigest(schedulerState);
+        if (!string.Equals(command.Manifest.SchedulerStateDigest, digest, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_DIGEST_INVALID");
         }
     }
 

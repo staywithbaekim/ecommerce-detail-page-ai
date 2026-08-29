@@ -1,4 +1,5 @@
 using Desktop.Application.Ai;
+using Desktop.Contracts.Ai;
 using Desktop.Application.Files;
 using Desktop.Domain.Ai;
 using Desktop.Infrastructure.Ai;
@@ -123,6 +124,122 @@ public sealed class AiAnalysisCheckpointCoordinatorTests
 
         Assert.Equal(AiAnalysisCheckpointOutcome.Committed, result.Outcome);
         Assert.Equal(cache, await store.FindCacheReferenceAsync(cache.CacheKey, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SchedulerStateIsCommittedWithCheckpointAndRestoredAsOneGraph()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        AiAnalysisCheckpointCommand command;
+        AiAnalysisSchedulingState schedulerState;
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            var now = Origin.AddSeconds(2);
+            var seeded = await SeedSchedulerQueuedAsync(store, "batch_01", "scheduled", now);
+            var request = SchedulerRequest(seeded.Request.RequestId, seeded.Request.BatchId, seeded.Request.StyleId, now);
+            var item = new AiAnalysisWorkItem(
+                $"{request.RequestId}-productjointunderstanding",
+                request,
+                AiAnalysisWorkStage.ProductJointUnderstanding,
+                1,
+                now);
+            schedulerState = new AiAnalysisSchedulingState(
+                [item],
+                new AiAnalysisBudgetSnapshot(1, 100, 10, 0.01m, false, false),
+                now);
+            command = CommandWithScheduler(
+                "checkpoint_scheduler",
+                [Graph(seeded)],
+                "ai-s3-default",
+                schedulerState);
+
+            var result = await Coordinator(store, directory.Path)
+                .CommitAsync(command, CancellationToken.None);
+            Assert.Equal(AiAnalysisCheckpointOutcome.Committed, result.Outcome);
+
+            var journal = await store.FindCheckpointAsync(command.CheckpointId, CancellationToken.None);
+            Assert.Equal("ai-s3-default", journal!.SchedulerStateKey);
+            Assert.Equal(
+                AiAnalysisCheckpointRules.ComputeSchedulerStateDigest(schedulerState),
+                journal.SchedulerStateDigest);
+            var persisted = await store.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+            Assert.Equal(schedulerState.Budget, persisted!.Budget);
+            Assert.Single(persisted.PendingItems);
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var recovered = await Coordinator(reopened, directory.Path)
+            .RecoverAsync("batch_01", CancellationToken.None);
+        Assert.Equal(AiAnalysisCheckpointOutcome.Committed, recovered.Outcome);
+        var restored = await reopened.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+        Assert.Equal(schedulerState.Budget, restored!.Budget);
+        Assert.Equal(schedulerState.PendingItems.Single().WorkItemId, restored.PendingItems.Single().WorkItemId);
+    }
+
+    [Fact]
+    public async Task SchedulerCheckpointRejectsQueuedGraphOmittedFromPendingSnapshot()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        var seeded = await SeedQueuedAsync(store, "batch_01", "scheduler_omitted", 0);
+        var now = Origin.AddSeconds(2);
+        var state = new AiAnalysisSchedulingState(
+            [],
+            new AiAnalysisBudgetSnapshot(0, 0, 0, 0m, false, false),
+            now);
+        var command = CommandWithScheduler(
+            "checkpoint_scheduler_omitted",
+            [Graph(seeded)],
+            "ai-s3-default",
+            state);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Coordinator(store, directory.Path).CommitAsync(command, CancellationToken.None));
+        Assert.Equal("AI_CHECKPOINT_SCHEDULER_PENDING_OMITTED", exception.Message);
+        Assert.Null(await store.FindCheckpointAsync(command.CheckpointId, CancellationToken.None));
+        Assert.Null(await store.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SchedulerSnapshotRollsBackWithCheckpointTransactionOnJournalFailure()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var now = Origin.AddSeconds(2);
+        var seeded = await SeedSchedulerQueuedAsync(store, "batch_01", "scheduler_failure", now);
+        var request = SchedulerRequest(seeded.Request.RequestId, seeded.Request.BatchId, seeded.Request.StyleId, now);
+        var schedulerState = new AiAnalysisSchedulingState(
+            [new AiAnalysisWorkItem(
+                $"{request.RequestId}-productjointunderstanding",
+                request,
+                AiAnalysisWorkStage.ProductJointUnderstanding,
+                0,
+                now)],
+            new AiAnalysisBudgetSnapshot(1, 1, 1, 0.01m, false, false),
+            now);
+        var command = CommandWithScheduler("checkpoint_scheduler_failure", [Graph(seeded)], "ai-s3-default", schedulerState);
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = options.DatabasePath,
+            Pooling = false
+        }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var trigger = connection.CreateCommand();
+            trigger.CommandText = "CREATE TRIGGER fail_scheduler_checkpoint BEFORE INSERT ON ai_analysis_checkpoint_journal BEGIN SELECT RAISE(ABORT, 'TEST_SCHEDULER_CHECKPOINT_FAILURE'); END;";
+            await trigger.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(() =>
+            Coordinator(store, directory.Path).CommitAsync(command, CancellationToken.None));
+        Assert.Null(await store.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None));
+        Assert.Null(await store.FindCheckpointAsync(command.CheckpointId, CancellationToken.None));
     }
 
     [Fact]
@@ -706,6 +823,31 @@ public sealed class AiAnalysisCheckpointCoordinatorTests
         return new GraphState(request, session);
     }
 
+    private static async Task<GraphState> SeedSchedulerQueuedAsync(
+        SqliteDesktopStore store,
+        string batchId,
+        string suffix,
+        DateTimeOffset time)
+    {
+        var request = SchedulerRequest($"request_{suffix}", batchId, $"style_{suffix}", time);
+        var ledger = new AiRequestLedgerEntry(
+            request.RequestId,
+            AiAnalysisCacheKeyFactory.Create(request),
+            batchId,
+            $"style_{suffix}",
+            AiAnalysisSessionStatus.Queued.ToString(),
+            null,
+            time,
+            time);
+        var session = AiAnalysisSession.Create(
+            $"session_{suffix}", batchId, $"style_{suffix}", "snapshot_scheduled", $"analysis_{suffix}",
+            request.Requirements.Select(requirement => requirement.RequirementId),
+            request.Assets.Select(asset => asset.AssetId));
+        await store.RecordRequestAsync(ledger, CancellationToken.None);
+        await store.SaveSessionAsync(session, CancellationToken.None, 0);
+        return new GraphState(ledger, session);
+    }
+
     private static async Task<GraphState> SeedAnalysingAsync(
         SqliteDesktopStore store,
         string batchId,
@@ -788,6 +930,63 @@ public sealed class AiAnalysisCheckpointCoordinatorTests
         return new AiAnalysisCheckpointCommand(checkpointId, manifest, graphs, createdAt);
     }
 
+    private static AiAnalysisCheckpointCommand CommandWithScheduler(
+        string checkpointId,
+        IReadOnlyList<AiAnalysisCheckpointGraph> graphs,
+        string schedulerStateKey,
+        AiAnalysisSchedulingState schedulerState)
+    {
+        var createdAt = graphs
+            .SelectMany(graph => new[]
+            {
+                graph.Request.UpdatedAt,
+                graph.Usage?.RecordedAt ?? Origin,
+                graph.Cache?.CreatedAt ?? Origin,
+                schedulerState.UpdatedAt
+            })
+            .Max()
+            .AddSeconds(1);
+        var batchId = graphs[0].Request.BatchId;
+        var schedulerDigest = AiAnalysisCheckpointRules.ComputeSchedulerStateDigest(schedulerState);
+        var manifest = new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version,
+            checkpointId,
+            batchId,
+            graphs.Select(graph => graph.Session.SessionId).ToArray(),
+            graphs.Select(graph => graph.Request.RequestId).ToArray(),
+            graphs.Where(graph => graph.Cache is not null).Select(graph => graph.Cache!.CacheKey).ToArray(),
+            createdAt,
+            schedulerDigest);
+        return new AiAnalysisCheckpointCommand(
+            checkpointId,
+            manifest,
+            graphs,
+            createdAt,
+            schedulerStateKey,
+            schedulerState);
+    }
+
+    private static AiAnalysisRequestV1 SchedulerRequest(string requestId, string batchId, string styleId, DateTimeOffset now) =>
+        new(
+            AiAnalysisProtocol.RequestSchemaVersion,
+            "request",
+            requestId,
+            $"correlation-{requestId}",
+            "product_01",
+            batchId,
+            styleId,
+            "snapshot_01",
+            "revision_01",
+            AiAnalysisKind.ProductJointUnderstanding,
+            "model/v1",
+            "prompt/v1",
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "compression/v1",
+            "consent_01",
+            Digest('a'),
+            [new AiAssetInputV1("asset_scheduled", Digest('b'), "image/jpeg", 10, 10, "copies/asset_scheduled")],
+            [new AiRequirementInputV1("requirement_scheduled", "subject", "center", true)]);
+
     private static AiUsageEventRecord Usage(string requestId, string usageId, DateTimeOffset recordedAt) => new(
         usageId, requestId, "model_v1", 10, 20, false, 0, null, null, recordedAt);
 
@@ -798,6 +997,7 @@ public sealed class AiAnalysisCheckpointCoordinatorTests
         Digest('c'), resultReference, "consent_01", usage.ModelConfigVersion, usage.UsageEventId, createdAt);
 
     private static string Digest(char value) => "sha256:" + new string(value is >= 'a' and <= 'f' ? value : 'a', 64);
+
 
     private sealed record GraphState(AiRequestLedgerEntry Request, AiAnalysisSession Session);
 
