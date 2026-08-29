@@ -232,6 +232,30 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
+    public async Task CorruptSessionBooleanIsRejectedOnRecovery()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA ignore_check_constraints=ON; INSERT INTO ai_analysis_sessions(session_id,batch_id,style_id,template_snapshot_id,analysis_key,status,selection_revision,allowed_requirement_ids_json,allowed_asset_ids_json,locked_selections_json,has_verified_result,updated_at) VALUES('session_bad_boolean','batch_01','style_01','snapshot_01','key_01','Queued',0,'[\"frame_01\"]','[\"asset_01\"]','[]',2,$updated);";
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => reopened.LoadSessionAsync("session_bad_boolean", CancellationToken.None));
+        Assert.Equal("AI_SESSION_RECORD_CORRUPT", exception.Message);
+    }
+
+    [Fact]
     public async Task CacheReferenceRejectsAbsolutePaths()
     {
         using var directory = new TestDirectory();
@@ -331,6 +355,8 @@ public sealed class SqliteDesktopStoreTests
         await store.UpdateRequestStatusAsync("request_01", "Queued", "Uploading", null, DateTimeOffset.UtcNow, CancellationToken.None);
         await store.UpdateRequestStatusAsync("request_01", "Uploading", "Analysing", null, DateTimeOffset.UtcNow, CancellationToken.None);
         await store.UpdateRequestStatusAsync("request_01", "Analysing", "Validated", "results/session.json", DateTimeOffset.UtcNow, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
+            usage with { RecordedAt = requestTime.AddTicks(-1) }, CancellationToken.None));
         await store.RecordUsageAsync(usage, CancellationToken.None);
         await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
         await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
@@ -424,11 +450,10 @@ public sealed class SqliteDesktopStoreTests
         using var directory = new TestDirectory();
         var manifest = new AiAnalysisStateManifestV1(
             AiAnalysisStateProtocol.Version, "manifest_01", "batch_01", ["session_01"], ["request_01"], ["sha256:" + new string('a', 64)], DateTimeOffset.UtcNow);
-        StagedAiAnalysisStateManifest staged;
         {
             var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
             var manifests = new AiAnalysisStateManifestStore(files);
-            staged = await manifests.StageAsync(manifest, CancellationToken.None);
+            await manifests.StageAsync(manifest, CancellationToken.None);
             var stagedInspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
             Assert.NotNull(stagedInspection);
             Assert.True(stagedInspection!.IsStaged);
@@ -439,16 +464,53 @@ public sealed class SqliteDesktopStoreTests
         {
             var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
             var manifests = new AiAnalysisStateManifestStore(files);
-            await manifests.CommitAsync(staged, CancellationToken.None);
+            var recoveredStage = (await manifests.InspectAsync("batch_01", CancellationToken.None))!.StagedManifest;
+            Assert.NotNull(recoveredStage);
+            await manifests.CommitAsync(recoveredStage!, CancellationToken.None);
             committed = await manifests.InspectAsync("batch_01", CancellationToken.None);
         }
         Assert.True(committed!.IsCommitted);
         Assert.False(committed.IsStaged);
 
         var filesAfterRestart = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
-        await filesAfterRestart.WriteAtomicallyAsync(committed.ManifestReference, "tampered"u8.ToArray(), CancellationToken.None);
+        await filesAfterRestart.WriteAtomicallyAsync(committed.CommittedManifestReference!, "tampered"u8.ToArray(), CancellationToken.None);
         var manifestsAfterRestart = new AiAnalysisStateManifestStore(filesAfterRestart);
         await Assert.ThrowsAsync<InvalidDataException>(() => manifestsAfterRestart.InspectAsync("batch_01", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ManifestUpdateKeepsPreviousCommitReadableAndResumesAfterMarkerFailure()
+    {
+        using var directory = new TestDirectory();
+        var backing = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var manifests = new AiAnalysisStateManifestStore(backing);
+        var first = await manifests.StageAsync(new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version, "manifest_a", "batch_01", ["session_a"], ["request_a"], ["sha256:" + new string('a', 64)], DateTimeOffset.UtcNow), CancellationToken.None);
+        await manifests.CommitAsync(first, CancellationToken.None);
+        var firstCommit = await manifests.InspectAsync("batch_01", CancellationToken.None);
+
+        var second = await manifests.StageAsync(new AiAnalysisStateManifestV1(
+            AiAnalysisStateProtocol.Version, "manifest_b", "batch_01", ["session_b"], ["request_b"], ["sha256:" + new string('b', 64)], DateTimeOffset.UtcNow), CancellationToken.None);
+        var failingCommit = new AiAnalysisStateManifestStore(
+            new FailingFileStore(backing, path => path.EndsWith("committed.marker", StringComparison.Ordinal)));
+        await Assert.ThrowsAsync<IOException>(() => failingCommit.CommitAsync(second, CancellationToken.None));
+
+        var afterFailure = await new AiAnalysisStateManifestStore(backing).InspectAsync("batch_01", CancellationToken.None);
+        Assert.NotNull(afterFailure);
+        Assert.True(afterFailure!.IsCommitted);
+        Assert.True(afterFailure.IsStaged);
+        Assert.Equal(firstCommit!.CommittedManifestDigest, afterFailure.CommittedManifestDigest);
+        Assert.Equal(second.ManifestDigest, afterFailure.StagedManifest!.ManifestDigest);
+
+        var restarted = new AiAnalysisStateManifestStore(new AtomicFileStore(new LocalAppPathPolicy(directory.Path)));
+        var recoveredStage = (await restarted.InspectAsync("batch_01", CancellationToken.None))!.StagedManifest;
+        await restarted.CommitAsync(recoveredStage!, CancellationToken.None);
+        await restarted.CommitAsync(recoveredStage!, CancellationToken.None);
+        var recovered = await restarted.InspectAsync("batch_01", CancellationToken.None);
+        Assert.True(recovered!.IsCommitted);
+        Assert.False(recovered.IsStaged);
+        Assert.Equal(second.ManifestDigest, recovered.CommittedManifestDigest);
+        Assert.Null(await backing.ReadAsync(firstCommit.CommittedManifestReference!, CancellationToken.None));
     }
 
     [Fact]
@@ -466,7 +528,7 @@ public sealed class SqliteDesktopStoreTests
         var inspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
         Assert.NotNull(inspection);
         Assert.True(inspection!.IsStaged);
-        Assert.Equal(second.ManifestDigest, inspection.ManifestDigest);
+        Assert.Equal(second.ManifestDigest, inspection.StagedManifest!.ManifestDigest);
 
         await Assert.ThrowsAsync<InvalidDataException>(() => manifests.CommitAsync(
             second with { ManifestReference = "batches/other/ai-analysis/state/manifest.json" }, CancellationToken.None));
@@ -487,6 +549,9 @@ public sealed class SqliteDesktopStoreTests
         await Assert.ThrowsAsync<IOException>(() => manifests.StageAsync(manifest, CancellationToken.None));
         var recovered = new AiAnalysisStateManifestStore(backing);
         Assert.Null(await recovered.InspectAsync("batch_01", CancellationToken.None));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => recovered.StageAsync(
+            manifest with { CreatedAt = default }, CancellationToken.None));
     }
 
     [Fact]

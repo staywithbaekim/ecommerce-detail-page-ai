@@ -74,10 +74,13 @@ public sealed record StagedAiAnalysisStateManifest(
 
 public sealed record AiAnalysisStateManifestInspection(
     string BatchId,
-    string ManifestReference,
-    string ManifestDigest,
-    bool IsStaged,
-    bool IsCommitted);
+    string? CommittedManifestReference,
+    string? CommittedManifestDigest,
+    StagedAiAnalysisStateManifest? StagedManifest)
+{
+    public bool IsStaged => StagedManifest is not null;
+    public bool IsCommitted => CommittedManifestReference is not null;
+}
 
 public interface IAiAnalysisStateManifestStore
 {
