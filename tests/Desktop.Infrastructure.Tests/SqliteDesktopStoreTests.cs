@@ -1,5 +1,7 @@
 using System.Globalization;
+using Desktop.Application.Ai;
 using Desktop.Application.Tasks;
+using Desktop.Domain.Ai;
 using Desktop.Domain.Tasks;
 using Desktop.Infrastructure.Persistence;
 using Microsoft.Data.Sqlite;
@@ -93,7 +95,93 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(5, migrationVersion);
+        Assert.Equal(6, migrationVersion);
+    }
+
+    [Fact]
+    public async Task AiLedgerIsIdempotentAndRejectsDifferentRequestForSameFingerprint()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var now = DateTimeOffset.UtcNow;
+        var entry = new AiRequestLedgerEntry("request_01", "fingerprint_01", "batch_01", "style_01", "Queued", null, now, now);
+
+        var first = await store.RecordRequestAsync(entry, CancellationToken.None);
+        var duplicate = await store.RecordRequestAsync(entry with { UpdatedAt = now.AddMinutes(1) }, CancellationToken.None);
+        Assert.Equal(first, duplicate);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
+            entry with { RequestId = "request_02" }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AiSessionRoundTripsStateAndCacheUsageAcrossRestart()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var session = AiAnalysisSession.Create(
+                "session_01", "batch_01", "style_01", "snapshot_01", "analysis_key_01",
+                ["frame_01"], ["asset_01", "asset_02"])
+            .AdvanceTo(AiAnalysisSessionStatus.Uploading)
+            .AdvanceTo(AiAnalysisSessionStatus.Analysing)
+            .AdvanceTo(AiAnalysisSessionStatus.Validated)
+            .LockSelection("frame_01", "asset_02", 0);
+        await using (var first = new SqliteDesktopStore(options))
+        {
+            await first.InitializeAsync();
+            await first.SaveSessionAsync(session, CancellationToken.None);
+            await first.SaveCacheReferenceAsync(new AiCacheReference(
+                "cache_key_01", "results/session_01.json", "consent_01", "model/proposed", "usage_01", DateTimeOffset.UtcNow), CancellationToken.None);
+            await first.RecordUsageAsync(new AiUsageEventRecord(
+                "usage_01", "request_01", "model/proposed", 10, 5, false, 0, null, null, DateTimeOffset.UtcNow), CancellationToken.None);
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var loaded = await reopened.LoadSessionAsync("session_01", CancellationToken.None);
+        Assert.NotNull(loaded);
+        Assert.Equal(AiAnalysisSessionStatus.ManualReview, loaded!.Status);
+        Assert.Equal(1, loaded.SelectionRevision);
+        Assert.Equal("asset_02", loaded.LockedSelections["frame_01"].AssetId);
+        Assert.Contains("asset_01", loaded.AllowedAssetIds);
+        Assert.True(loaded.HasVerifiedResult);
+        Assert.Equal("results/session_01.json", (await reopened.FindCacheReferenceAsync("cache_key_01", CancellationToken.None))!.ResultReference);
+        Assert.Single(await reopened.LoadUsageAsync("request_01", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CorruptAiSessionRecordIsRejectedOnRecovery()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO ai_analysis_sessions(session_id,batch_id,style_id,template_snapshot_id,analysis_key,status,selection_revision,allowed_requirement_ids_json,allowed_asset_ids_json,locked_selections_json,has_verified_result,updated_at) VALUES('session_bad','batch_01','style_01','snapshot_01','key_01','AiResultUnknown',0,'not-json','[]','[]',0,'2026-08-29T00:00:00Z');";
+            await command.ExecuteNonQueryAsync();
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => reopened.LoadSessionAsync("session_bad", CancellationToken.None));
+        Assert.Equal("AI_SESSION_RECORD_CORRUPT", exception.Message);
+    }
+
+    [Fact]
+    public async Task CacheReferenceRejectsAbsolutePaths()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
+            new AiCacheReference("cache_key", @"C:\\secret.json", "consent", "model", "usage", DateTimeOffset.UtcNow),
+            CancellationToken.None));
     }
 
     [Fact]

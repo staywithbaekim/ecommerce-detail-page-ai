@@ -1,5 +1,6 @@
 using System.Globalization;
 using Desktop.Application.Diagnostics;
+using Desktop.Application.Ai;
 using Desktop.Application.Tasks;
 using Desktop.Domain.Tasks;
 using Microsoft.Data.Sqlite;
@@ -10,6 +11,7 @@ public sealed partial class SqliteDesktopStore :
     ITaskEventStore,
     ICheckpointStore,
     IAppInstanceStore,
+    IAiAnalysisStore,
     IAsyncDisposable
 {
     private readonly string _connectionString;

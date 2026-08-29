@@ -239,6 +239,60 @@ public sealed partial class SqliteDesktopStore
                 ON input_styles(batch_id, order_index);
             CREATE INDEX IF NOT EXISTS IX_input_assets_batch_style
                 ON input_assets(batch_id, style_id);
+            """),
+        new(6, "desktop-v6-ai-analysis-schema-001", """
+            CREATE TABLE IF NOT EXISTS ai_analysis_sessions (
+                session_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                template_snapshot_id TEXT NOT NULL,
+                analysis_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                selection_revision INTEGER NOT NULL CHECK(selection_revision >= 0),
+                allowed_requirement_ids_json TEXT NOT NULL,
+                allowed_asset_ids_json TEXT NOT NULL,
+                locked_selections_json TEXT NOT NULL,
+                has_verified_result INTEGER NOT NULL CHECK(has_verified_result IN (0, 1)),
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_request_ledger (
+                request_id TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL UNIQUE,
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result_reference TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_cache_references (
+                cache_key TEXT PRIMARY KEY,
+                result_reference TEXT NOT NULL,
+                consent_id TEXT NOT NULL,
+                model_config_version TEXT NOT NULL,
+                usage_event_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_usage_events (
+                usage_event_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                model_config_version TEXT NOT NULL,
+                input_units INTEGER NOT NULL CHECK(input_units >= 0),
+                output_units INTEGER NOT NULL CHECK(output_units >= 0),
+                cache_hit INTEGER NOT NULL CHECK(cache_hit IN (0, 1)),
+                retry_count INTEGER NOT NULL CHECK(retry_count >= 0),
+                provider_cost_amount REAL NULL CHECK(provider_cost_amount IS NULL OR provider_cost_amount >= 0),
+                provider_cost_currency TEXT NULL,
+                recorded_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_ai_request_ledger_fingerprint
+                ON ai_request_ledger(fingerprint);
+            CREATE INDEX IF NOT EXISTS IX_ai_usage_events_request
+                ON ai_usage_events(request_id);
             """)
     ];
 

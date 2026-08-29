@@ -86,6 +86,74 @@ public sealed record AiAnalysisSession
             Identifiers(allowedAssetIds, "AI_ASSETS_INVALID"),
             false);
 
+    public static AiAnalysisSession Restore(
+        string sessionId,
+        string batchId,
+        string styleId,
+        string templateSnapshotId,
+        string analysisKey,
+        AiAnalysisSessionStatus status,
+        long selectionRevision,
+        IEnumerable<AiLockedSelection> lockedSelections,
+        IEnumerable<string> allowedRequirementIds,
+        IEnumerable<string> allowedAssetIds,
+        bool hasVerifiedResult)
+    {
+        if (selectionRevision < 0)
+        {
+            throw new InvalidOperationException("AI_SELECTION_REVISION_INVALID");
+        }
+
+        var requirements = Identifiers(allowedRequirementIds, "AI_REQUIREMENTS_INVALID");
+        var assets = Identifiers(allowedAssetIds, "AI_ASSETS_INVALID");
+        var lockList = (lockedSelections ?? throw new ArgumentNullException(nameof(lockedSelections))).ToArray();
+        var locks = lockList
+            .Select(selection =>
+            {
+                var requirementId = Identifier(selection.RequirementId, "AI_REQUIREMENT_ID_INVALID");
+                var assetId = Identifier(selection.AssetId, "AI_ASSET_ID_INVALID");
+                if (!requirements.Contains(requirementId) || !assets.Contains(assetId)
+                    || selection.SelectionRevision <= 0
+                    || selection.SelectionRevision > selectionRevision)
+                {
+                    throw new InvalidOperationException("AI_SELECTION_REFERENCE_INVALID");
+                }
+
+                return new AiLockedSelection(requirementId, assetId, selection.SelectionRevision);
+            })
+            .ToImmutableDictionary(selection => selection.RequirementId, StringComparer.Ordinal);
+
+        if (locks.Count != lockList.Length)
+        {
+            throw new InvalidOperationException("AI_SELECTION_DUPLICATE_REQUIREMENT");
+        }
+
+        if (status is (AiAnalysisSessionStatus.Validated or AiAnalysisSessionStatus.ManualReview
+                or AiAnalysisSessionStatus.PlanClosed)
+            && !hasVerifiedResult)
+        {
+            throw new InvalidOperationException("AI_VERIFIED_RESULT_REQUIRED");
+        }
+
+        if (status == AiAnalysisSessionStatus.AiResultUnknown && hasVerifiedResult)
+        {
+            throw new InvalidOperationException("AI_UNKNOWN_RESULT_INVARIANT_INVALID");
+        }
+
+        return new AiAnalysisSession(
+            Identifier(sessionId, "AI_SESSION_ID_INVALID"),
+            Identifier(batchId, "AI_BATCH_ID_INVALID"),
+            Identifier(styleId, "AI_STYLE_ID_INVALID"),
+            Identifier(templateSnapshotId, "AI_SNAPSHOT_ID_INVALID"),
+            Identifier(analysisKey, "AI_ANALYSIS_KEY_INVALID"),
+            status,
+            selectionRevision,
+            locks,
+            requirements,
+            assets,
+            hasVerifiedResult);
+    }
+
     public AiAnalysisSession AdvanceTo(AiAnalysisSessionStatus next)
     {
         if (Status is AiAnalysisSessionStatus.Cancelled or AiAnalysisSessionStatus.PlanClosed
