@@ -45,6 +45,7 @@ public static class DesktopServices
         services.AddSingleton<ITemplateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IBatchSnapshotRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IAiAnalysisStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<IAiAnalysisSchedulingStateStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IAiAnalysisCheckpointDatabase>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IAiAnalysisStateManifestStore, AiAnalysisStateManifestStore>();
         services.AddSingleton<IAiAnalysisCheckpointPort, AiAnalysisCheckpointCoordinator>();

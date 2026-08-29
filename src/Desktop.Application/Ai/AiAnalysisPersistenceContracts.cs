@@ -47,8 +47,10 @@ public interface IAiAnalysisStore
         CancellationToken cancellationToken);
     Task<AiAnalysisSession?> LoadSessionAsync(string sessionId, CancellationToken cancellationToken);
     Task SaveCacheReferenceAsync(AiCacheReference reference, CancellationToken cancellationToken);
+    Task<bool> InvalidateCacheReferenceAsync(string cacheKey, CancellationToken cancellationToken);
     Task<AiCacheReference?> FindCacheReferenceAsync(string cacheKey, CancellationToken cancellationToken);
     Task RecordUsageAsync(AiUsageEventRecord usage, CancellationToken cancellationToken);
+    Task<AiUsageEventRecord?> FindUsageEventAsync(string usageEventId, CancellationToken cancellationToken);
     Task<IReadOnlyList<AiUsageEventRecord>> LoadUsageAsync(string requestId, CancellationToken cancellationToken);
 }
 

@@ -336,6 +336,19 @@ public sealed partial class SqliteDesktopStore
                 WHERE state = 'Pending';
             CREATE INDEX IF NOT EXISTS IX_ai_checkpoint_batch_created
                 ON ai_analysis_checkpoint_journal(batch_id, created_at DESC);
+            """),
+        new(8, "desktop-v8-ai-scheduler-state-001", """
+            CREATE TABLE IF NOT EXISTS ai_analysis_scheduler_state (
+                state_key TEXT PRIMARY KEY,
+                pending_items_json TEXT NOT NULL,
+                request_count INTEGER NOT NULL CHECK(request_count >= 0),
+                input_tokens INTEGER NOT NULL CHECK(input_tokens >= 0),
+                output_tokens INTEGER NOT NULL CHECK(output_tokens >= 0),
+                estimated_cost_text TEXT NOT NULL,
+                warning_reached INTEGER NOT NULL CHECK(warning_reached IN (0, 1)),
+                hard_stopped INTEGER NOT NULL CHECK(hard_stopped IN (0, 1)),
+                updated_at TEXT NOT NULL
+            );
             """)
     ];
 

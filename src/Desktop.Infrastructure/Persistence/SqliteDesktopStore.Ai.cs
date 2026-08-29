@@ -352,6 +352,53 @@ public sealed partial class SqliteDesktopStore
         return reference;
     }
 
+    public Task<bool> InvalidateCacheReferenceAsync(
+        string cacheKey,
+        CancellationToken cancellationToken) => _writer.ExecuteAsync(
+        async (connection, token) =>
+        {
+            ValidateDigest(cacheKey, "AI_CACHE_KEY_INVALID");
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+            var existing = await FindCacheReferenceForWriteAsync(
+                connection,
+                cacheKey,
+                token,
+                transaction).ConfigureAwait(false);
+            if (existing is null)
+            {
+                await transaction.RollbackAsync(token).ConfigureAwait(false);
+                return false;
+            }
+
+            var usage = await FindUsageByIdForWriteAsync(
+                connection,
+                existing.UsageEventId,
+                token,
+                transaction).ConfigureAwait(false)
+                ?? throw new InvalidDataException("AI_CACHE_USAGE_NOT_FOUND");
+            var ledger = await FindLedgerByRequestIdAsync(
+                connection,
+                transaction,
+                usage.RequestId,
+                token).ConfigureAwait(false)
+                ?? throw new InvalidDataException("AI_CACHE_REQUEST_NOT_FOUND");
+            ValidateStoredUsageLedgerClosure(usage, ledger);
+            if (ledger.ResultReference is null
+                || !string.Equals(ledger.ResultReference, existing.ResultReference, StringComparison.Ordinal)
+                || !string.Equals(usage.ModelConfigVersion, existing.ModelConfigVersion, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("AI_CACHE_CLOSURE_INVALID");
+            }
+
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "DELETE FROM ai_cache_references WHERE cache_key = $cache_key;";
+            command.Parameters.AddWithValue("$cache_key", cacheKey);
+            var removed = await command.ExecuteNonQueryAsync(token).ConfigureAwait(false) == 1;
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return removed;
+        }, cancellationToken);
+
     public Task RecordUsageAsync(AiUsageEventRecord usage, CancellationToken cancellationToken) => _writer.ExecuteAsync(
         async (connection, token) =>
         {
@@ -424,6 +471,24 @@ public sealed partial class SqliteDesktopStore
         }
 
         return events;
+    }
+
+    public async Task<AiUsageEventRecord?> FindUsageEventAsync(
+        string usageEventId,
+        CancellationToken cancellationToken)
+    {
+        ValidateIdentifier(usageEventId, "AI_USAGE_ID_INVALID");
+        await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var usage = await FindUsageByIdForWriteAsync(connection, usageEventId, cancellationToken).ConfigureAwait(false);
+        if (usage is null)
+        {
+            return null;
+        }
+
+        var ledger = await FindLedgerByRequestIdAsync(connection, null, usage.RequestId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("AI_USAGE_REQUEST_NOT_FOUND");
+        ValidateStoredUsageLedgerClosure(usage, ledger);
+        return usage;
     }
 
     private static AiRequestLedgerEntry ReadLedger(SqliteDataReader reader)

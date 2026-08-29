@@ -2,6 +2,7 @@ using System.Globalization;
 using Desktop.Application.Ai;
 using Desktop.Application.Files;
 using Desktop.Application.Tasks;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Ai;
 using Desktop.Domain.Tasks;
 using Desktop.Infrastructure.Persistence;
@@ -97,7 +98,7 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(7, migrationVersion);
+        Assert.Equal(8, migrationVersion);
     }
 
     [Fact]
@@ -118,6 +119,115 @@ public sealed class SqliteDesktopStoreTests
         Assert.Equal("request_01", sameFingerprint.RequestId);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
             entry with { RequestId = "request_03", BatchId = "batch_02" }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AiSchedulerStatePersistsAndRestoresAfterStoreRestart()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var request = new AiAnalysisRequestV1(
+            AiAnalysisProtocol.RequestSchemaVersion,
+            "request",
+            "request_01",
+            "correlation_01",
+            "product_01",
+            "batch_01",
+            "style_01",
+            "snapshot_01",
+            "revision_01",
+            AiAnalysisKind.ProductJointUnderstanding,
+            "model/proposed",
+            "prompt/v1",
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "compression/v1",
+            "consent_01",
+            "sha256:" + new string('a', 64),
+            [new AiAssetInputV1(
+                "asset_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copies/asset_01")],
+            [new AiRequirementInputV1("frame_01", "商品图", "居中", true)]);
+        var item = new AiAnalysisWorkItem(
+            "request_01-productjointunderstanding", request,
+            AiAnalysisWorkStage.ProductJointUnderstanding, 0, now);
+        var state = new AiAnalysisSchedulingState(
+            [item], new AiAnalysisBudgetSnapshot(1, 12, 8, 0.0005m, false, false), now);
+
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.RecordRequestAsync(
+                new AiRequestLedgerEntry(
+                    request.RequestId,
+                    AiAnalysisCacheKeyFactory.Create(request),
+                    request.BatchId,
+                    request.StyleId,
+                    "Queued",
+                    null,
+                    now,
+                    now),
+                CancellationToken.None);
+            await store.SaveSchedulingStateAsync("ai-s3-default", state, CancellationToken.None);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveSchedulingStateAsync(
+                "ai-s3-default", state with { UpdatedAt = now.AddTicks(-1) }, CancellationToken.None));
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var restored = await reopened.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+
+        Assert.NotNull(restored);
+        Assert.Equal(state.Budget, restored!.Budget);
+        var restoredItem = Assert.Single(restored.PendingItems);
+        Assert.Equal(item.WorkItemId, restoredItem.WorkItemId);
+        Assert.Equal(item.Request.RequestId, restoredItem.Request.RequestId);
+    }
+
+    [Fact]
+    public async Task AiSchedulerStateRejectsCorruptJson()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            var request = new AiAnalysisRequestV1(
+                AiAnalysisProtocol.RequestSchemaVersion, "request", "request_01", "correlation_01",
+                "product_01", "batch_01", "style_01", "snapshot_01", "revision_01",
+                AiAnalysisKind.ProductJointUnderstanding, "model/proposed", "prompt/v1",
+                AiAnalysisProtocol.ResultSchemaVersion, "compression/v1", "consent_01",
+                "sha256:" + new string('a', 64),
+                [new AiAssetInputV1("asset_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copies/asset_01")],
+                [new AiRequirementInputV1("frame_01", "商品图", "居中", true)]);
+            var item = new AiAnalysisWorkItem(
+                "request_01-productjointunderstanding", request,
+                AiAnalysisWorkStage.ProductJointUnderstanding, 0, now);
+            await store.RecordRequestAsync(
+                new AiRequestLedgerEntry(request.RequestId, AiAnalysisCacheKeyFactory.Create(request), request.BatchId,
+                    request.StyleId, "Queued", null, now, now), CancellationToken.None);
+            await store.SaveSchedulingStateAsync(
+                "ai-s3-default",
+                new AiAnalysisSchedulingState([item], new AiAnalysisBudgetSnapshot(1, 0, 0, 0m, false, false), now),
+                CancellationToken.None);
+        }
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = options.DatabasePath,
+            Pooling = false
+        }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ai_analysis_scheduler_state SET pending_items_json = '{';";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        await Assert.ThrowsAsync<InvalidDataException>(() => reopened.LoadSchedulingStateAsync(
+            "ai-s3-default", CancellationToken.None));
     }
 
     [Fact]
@@ -555,7 +665,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V5DataUpgradesSuccessfullyThroughV7AndPreservesSentinel()
+    public async Task V5DataUpgradesSuccessfullyThroughV8AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -568,7 +678,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version>=6; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=6; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -587,7 +697,7 @@ public sealed class SqliteDesktopStoreTests
         tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
         await using var columnCommand = verify.CreateCommand();
         columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
-        Assert.Equal(7L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal(8L, (long)(await versionCommand.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
         Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
         Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
@@ -607,7 +717,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version>=6; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=6; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -627,7 +737,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V6DataUpgradesSuccessfullyToV7AndPreservesSentinel()
+    public async Task V6DataUpgradesSuccessfullyToV8AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -640,7 +750,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE IF EXISTS ai_analysis_scheduler_state; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -657,7 +767,7 @@ public sealed class SqliteDesktopStoreTests
         sentinel.CommandText = "SELECT value FROM v6_sentinel;";
         await using var tables = verify.CreateCommand();
         tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
-        Assert.Equal(7L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(8L, (long)(await version.ExecuteScalarAsync())!);
         Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
         Assert.Equal(2L, (long)(await tables.ExecuteScalarAsync())!);
     }
@@ -676,7 +786,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6'); CREATE TRIGGER fail_v7 BEFORE INSERT ON schema_migrations WHEN NEW.version=7 BEGIN SELECT RAISE(ABORT, 'TEST_V7_FAILURE'); END;";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=7; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6'); CREATE TRIGGER fail_v7 BEFORE INSERT ON schema_migrations WHEN NEW.version=7 BEGIN SELECT RAISE(ABORT, 'TEST_V7_FAILURE'); END;";
             await command.ExecuteNonQueryAsync();
         }
 
