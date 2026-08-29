@@ -76,7 +76,9 @@ public sealed record AiAnalysisStateManifestInspection(
     string BatchId,
     string? CommittedManifestReference,
     string? CommittedManifestDigest,
-    StagedAiAnalysisStateManifest? StagedManifest)
+    AiAnalysisStateManifestV1? CommittedManifest,
+    StagedAiAnalysisStateManifest? StagedManifest,
+    AiAnalysisStateManifestV1? StagedStateManifest)
 {
     public bool IsStaged => StagedManifest is not null;
     public bool IsCommitted => CommittedManifestReference is not null;

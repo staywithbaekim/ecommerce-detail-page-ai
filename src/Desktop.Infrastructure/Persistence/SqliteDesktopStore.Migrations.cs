@@ -293,6 +293,49 @@ public sealed partial class SqliteDesktopStore
                 ON ai_request_ledger(fingerprint);
             CREATE INDEX IF NOT EXISTS IX_ai_usage_events_request
                 ON ai_usage_events(request_id);
+            """),
+        new(7, "desktop-v7-ai-checkpoint-journal-001", """
+            CREATE TABLE IF NOT EXISTS ai_analysis_checkpoint_journal (
+                checkpoint_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                manifest_id TEXT NOT NULL,
+                stage_token TEXT NOT NULL,
+                manifest_reference TEXT NOT NULL,
+                manifest_digest TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('Pending', 'Committed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_analysis_checkpoint_items (
+                checkpoint_id TEXT NOT NULL,
+                order_index INTEGER NOT NULL CHECK(order_index >= 0),
+                request_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                usage_event_id TEXT NULL,
+                cache_key TEXT NULL,
+                expected_request_status TEXT NOT NULL,
+                expected_session_status TEXT NOT NULL,
+                expected_selection_revision INTEGER NOT NULL CHECK(expected_selection_revision >= 0),
+                PRIMARY KEY(checkpoint_id, request_id),
+                UNIQUE(checkpoint_id, order_index),
+                UNIQUE(checkpoint_id, session_id),
+                UNIQUE(checkpoint_id, usage_event_id),
+                UNIQUE(checkpoint_id, cache_key),
+                CHECK(cache_key IS NULL OR usage_event_id IS NOT NULL),
+                FOREIGN KEY(checkpoint_id) REFERENCES ai_analysis_checkpoint_journal(checkpoint_id) ON DELETE CASCADE,
+                FOREIGN KEY(request_id) REFERENCES ai_request_ledger(request_id),
+                FOREIGN KEY(session_id) REFERENCES ai_analysis_sessions(session_id),
+                FOREIGN KEY(usage_event_id) REFERENCES ai_usage_events(usage_event_id),
+                FOREIGN KEY(cache_key) REFERENCES ai_cache_references(cache_key)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_ai_checkpoint_pending_batch
+                ON ai_analysis_checkpoint_journal(batch_id)
+                WHERE state = 'Pending';
+            CREATE INDEX IF NOT EXISTS IX_ai_checkpoint_batch_created
+                ON ai_analysis_checkpoint_journal(batch_id, created_at DESC);
             """)
     ];
 

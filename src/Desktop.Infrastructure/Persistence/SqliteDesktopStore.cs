@@ -12,6 +12,7 @@ public sealed partial class SqliteDesktopStore :
     ICheckpointStore,
     IAppInstanceStore,
     IAiAnalysisStore,
+    IAiAnalysisCheckpointDatabase,
     IAsyncDisposable
 {
     private readonly string _connectionString;

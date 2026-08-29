@@ -97,7 +97,7 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(6, migrationVersion);
+        Assert.Equal(7, migrationVersion);
     }
 
     [Fact]
@@ -555,7 +555,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V5DataUpgradesSuccessfullyToV6AndPreservesSentinel()
+    public async Task V5DataUpgradesSuccessfullyThroughV7AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -568,7 +568,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version=6; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=6; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -587,7 +587,7 @@ public sealed class SqliteDesktopStoreTests
         tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
         await using var columnCommand = verify.CreateCommand();
         columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
-        Assert.Equal(6L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal(7L, (long)(await versionCommand.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
         Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
         Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
@@ -607,7 +607,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version=6; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=6; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -624,6 +624,78 @@ public sealed class SqliteDesktopStoreTests
         sentinel.CommandText = "SELECT value FROM v5_sentinel;";
         Assert.Equal(5L, (long)(await version.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinel.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task V6DataUpgradesSuccessfullyToV7AndPreservesSentinel()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM schema_migrations WHERE version=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var upgraded = new SqliteDesktopStore(options))
+        {
+            await upgraded.InitializeAsync();
+        }
+
+        await using var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await verify.OpenAsync();
+        await using var version = verify.CreateCommand();
+        version.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        await using var sentinel = verify.CreateCommand();
+        sentinel.CommandText = "SELECT value FROM v6_sentinel;";
+        await using var tables = verify.CreateCommand();
+        tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
+        Assert.Equal(7L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
+        Assert.Equal(2L, (long)(await tables.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task V7MigrationFailureRollsBackAndLeavesV6Readable()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+        }
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM schema_migrations WHERE version=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6'); CREATE TRIGGER fail_v7 BEFORE INSERT ON schema_migrations WHEN NEW.version=7 BEGIN SELECT RAISE(ABORT, 'TEST_V7_FAILURE'); END;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var failed = new SqliteDesktopStore(options))
+        {
+            await Assert.ThrowsAsync<SqliteException>(() => failed.InitializeAsync());
+        }
+
+        await using var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await verify.OpenAsync();
+        await using var version = verify.CreateCommand();
+        version.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        await using var sentinel = verify.CreateCommand();
+        sentinel.CommandText = "SELECT value FROM v6_sentinel;";
+        await using var tables = verify.CreateCommand();
+        tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
+        Assert.Equal(6L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
+        Assert.Equal(0L, (long)(await tables.ExecuteScalarAsync())!);
     }
 
     [Fact]

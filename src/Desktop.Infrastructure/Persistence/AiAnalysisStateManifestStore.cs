@@ -80,12 +80,15 @@ public sealed class AiAnalysisStateManifestStore(
         ValidateMarker(stagedMarker, stagedManifest.BatchId, "staged");
         EnsureStagedMatches(stagedMarker, stagedManifest);
         var stageReference = StageReference(stagedManifest.BatchId, stagedManifest.StageToken);
-        var content = await ReadValidatedManifestAsync(
+        var validatedStage = await ReadValidatedManifestAsync(
             stageReference,
             stagedManifest.ManifestDigest,
             stagedManifest.BatchId,
             cancellationToken).ConfigureAwait(false);
-        await files.WriteAtomicallyAsync(stagedManifest.ManifestReference, content, cancellationToken).ConfigureAwait(false);
+        await files.WriteAtomicallyAsync(
+            stagedManifest.ManifestReference,
+            validatedStage.Content,
+            cancellationToken).ConfigureAwait(false);
         await EnsureDigestAsync(stagedManifest.ManifestReference, stagedManifest.ManifestDigest, cancellationToken).ConfigureAwait(false);
         await files.WriteAtomicallyAsync(
             CommittedMarkerReference(stagedManifest.BatchId),
@@ -134,25 +137,27 @@ public sealed class AiAnalysisStateManifestStore(
             return null;
         }
 
+        AiAnalysisStateManifestV1? committedManifest = null;
         if (committed is not null)
         {
             ValidateMarker(committed, batchId, "committed");
-            _ = await ReadValidatedManifestAsync(
+            committedManifest = (await ReadValidatedManifestAsync(
                 committed.ManifestReference,
                 committed.ManifestDigest,
                 batchId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false)).Manifest;
         }
 
         StagedAiAnalysisStateManifest? stagedManifest = null;
+        AiAnalysisStateManifestV1? stagedStateManifest = null;
         if (staged is not null)
         {
             ValidateMarker(staged, batchId, "staged");
-            _ = await ReadValidatedManifestAsync(
+            stagedStateManifest = (await ReadValidatedManifestAsync(
                 StageReference(batchId, staged.StageToken),
                 staged.ManifestDigest,
                 batchId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false)).Manifest;
             stagedManifest = new StagedAiAnalysisStateManifest(
                 staged.BatchId,
                 staged.ManifestReference,
@@ -164,7 +169,9 @@ public sealed class AiAnalysisStateManifestStore(
             batchId,
             committed?.ManifestReference,
             committed?.ManifestDigest,
-            stagedManifest);
+            committedManifest,
+            stagedManifest,
+            stagedStateManifest);
     }
 
     private async Task<Marker?> ReadMarkerAsync(string path, CancellationToken cancellationToken)
@@ -200,7 +207,7 @@ public sealed class AiAnalysisStateManifestStore(
         catch (UnauthorizedAccessException) { }
     }
 
-    private async Task<byte[]> ReadValidatedManifestAsync(
+    private async Task<ValidatedManifest> ReadValidatedManifestAsync(
         string path,
         string expectedDigest,
         string expectedBatchId,
@@ -230,7 +237,7 @@ public sealed class AiAnalysisStateManifestStore(
             throw new InvalidDataException("AI_STATE_MANIFEST_BATCH_MISMATCH");
         }
 
-        return content;
+        return new ValidatedManifest(content, manifest);
     }
 
     private async Task DeleteStagedMarkerIfMatchesAsync(
@@ -388,4 +395,8 @@ public sealed class AiAnalysisStateManifestStore(
         public static Marker From(StagedAiAnalysisStateManifest staged, string state) =>
             new(staged.BatchId, staged.ManifestReference, staged.ManifestDigest, staged.StageToken, state, DateTimeOffset.UtcNow);
     }
+
+    private sealed record ValidatedManifest(
+        byte[] Content,
+        AiAnalysisStateManifestV1 Manifest);
 }

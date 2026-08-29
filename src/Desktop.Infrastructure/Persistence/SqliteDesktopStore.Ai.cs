@@ -527,9 +527,11 @@ public sealed partial class SqliteDesktopStore
     private static async Task<AiAnalysisSession?> LoadSessionForWriteAsync(
         SqliteConnection connection,
         string sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT session_id, batch_id, style_id, template_snapshot_id, analysis_key, status, selection_revision, allowed_requirement_ids_json, allowed_asset_ids_json, locked_selections_json, has_verified_result FROM ai_analysis_sessions WHERE session_id = $session_id;";
         command.Parameters.AddWithValue("$session_id", sessionId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
