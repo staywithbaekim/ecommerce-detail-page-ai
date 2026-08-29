@@ -1,0 +1,233 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using Desktop.Application.Ai;
+using Desktop.Contracts.Ai;
+using Desktop.Contracts.Validation;
+using Desktop.Infrastructure.Ai;
+
+namespace Desktop.Infrastructure.Tests;
+
+public sealed class VolcArkAiAdapterTests
+{
+    [Fact]
+    public async Task MapsCompletedResponsesAndRedactsProviderDetails()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                SuccessBody(),
+                Encoding.UTF8,
+                "application/json")
+        });
+        var copies = new FakeCopySource();
+        var adapter = CreateAdapter(handler, copies);
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.True(execution.IsSuccess);
+        Assert.Equal(AiProviderOutcome.Completed, execution.Outcome);
+        Assert.Equal("request_01", execution.Result!.RequestId);
+        Assert.Equal(3, execution.Usage!.InputTokens);
+        Assert.Equal(4, execution.Usage.OutputTokens);
+        Assert.Equal("copy_01", Assert.Single(copies.Released));
+        Assert.Equal("Bearer test-key", handler.Authorization?.ToString());
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, AiProviderOutcome.TerminalError, "AI_PROVIDER_BAD_REQUEST")]
+    [InlineData(HttpStatusCode.Unauthorized, AiProviderOutcome.TerminalError, "AI_PROVIDER_AUTH_FAILED")]
+    [InlineData((HttpStatusCode)429, AiProviderOutcome.RetryableError, "AI_PROVIDER_RATE_LIMITED")]
+    [InlineData(HttpStatusCode.BadGateway, AiProviderOutcome.RetryableError, "AI_PROVIDER_TEMPORARY_FAILURE")]
+    public async Task MapsHttpFailuresToStableOutcomes(
+        HttpStatusCode statusCode,
+        AiProviderOutcome outcome,
+        string errorCode)
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(statusCode));
+        var adapter = CreateAdapter(handler, new FakeCopySource());
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(outcome, execution.Outcome);
+        Assert.Equal(errorCode, execution.Error!.Code);
+        Assert.DoesNotContain("test-key", execution.Error.UserAction, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MissingCredentialDoesNotSendRequest()
+    {
+        var handler = new StubHandler((Func<CancellationToken, HttpResponseMessage>)(_ =>
+            throw new InvalidOperationException("should not send")));
+        var adapter = CreateAdapter(handler, new FakeCopySource(), credential: null);
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_CREDENTIAL_MISSING", execution.Error!.Code);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task CancellationAndTimeoutAreSeparatedFromUnknownResult()
+    {
+        var handler = new StubHandler(async cancellationToken =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        var adapter = CreateAdapter(
+            handler,
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(RequestTimeout: TimeSpan.FromMilliseconds(25)));
+
+        var timeout = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.AiResultUnknown, timeout.Outcome);
+        Assert.Equal("AI_PROVIDER_TIMEOUT", timeout.Error!.Code);
+
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var cancellation = await adapter.AnalyzeAsync(Request(), cancelled.Token);
+        Assert.Equal(AiProviderOutcome.Cancelled, cancellation.Outcome);
+    }
+
+    [Fact]
+    public async Task RejectsMalformedOrMismatchedStructuredResults()
+    {
+        var malformed = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\":\"completed\",\"output_text\":\"not-json\"}")
+        });
+        var adapter = CreateAdapter(malformed, new FakeCopySource());
+        var invalid = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.TerminalError, invalid.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_INVALID", invalid.Error!.Code);
+
+        var pending = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\":\"in_progress\"}")
+        });
+        var pendingAdapter = CreateAdapter(pending, new FakeCopySource());
+        var unknown = await pendingAdapter.AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.AiResultUnknown, unknown.Outcome);
+        Assert.Equal("AI_PROVIDER_RESULT_PENDING", unknown.Error!.Code);
+    }
+
+    private static VolcArkAiAdapter CreateAdapter(
+        HttpMessageHandler handler,
+        FakeCopySource copies,
+        string? credential = "test-key",
+        VolcArkAiOptions? options = null) => new(
+        new HttpClient(handler),
+        new FakeCredentialSource(credential),
+        copies,
+        new JsonSchemaContractValidator(),
+        options);
+
+    private static AiAnalysisRequestV1 Request() => new(
+        AiAnalysisProtocol.RequestSchemaVersion,
+        "request",
+        "request_01",
+        "correlation_01",
+        "product_01",
+        "batch_01",
+        "style_01",
+        "snapshot_01",
+        "revision_01",
+        AiAnalysisKind.ProductJointUnderstanding,
+        "model/proposed",
+        "prompt/v1",
+        AiAnalysisProtocol.ResultSchemaVersion,
+        "compression/proposed",
+        "consent_01",
+        "sha256:" + new string('a', 64),
+        [new AiAssetInputV1("asset_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copy_01")],
+        [new AiRequirementInputV1("frame_01", "主图", "居中", true)]);
+
+    private static string SuccessBody()
+    {
+        var result = new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [],
+            [],
+            [],
+            null,
+            [],
+            new AiUsageSummaryV1("usage_request_01", 3, 4, 1, null, null));
+        return JsonSerializer.Serialize(new
+        {
+            id = "resp_test_01",
+            status = "completed",
+            output = new[]
+            {
+                new
+                {
+                    type = "message",
+                    content = new[] { new { type = "output_text", text = JsonSerializer.Serialize(result) } }
+                }
+            },
+            usage = new { input_tokens = 3, output_tokens = 4, total_tokens = 7 }
+        });
+    }
+
+    private sealed class FakeCredentialSource(string? credential) : IAiCredentialSource
+    {
+        public ValueTask<string?> GetCredentialAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(credential);
+        }
+    }
+
+    private sealed class FakeCopySource : IAiAnalysisCopySource
+    {
+        public List<string> Released { get; } = [];
+
+        public Task<AiAnalysisCopy> OpenAsync(string analysisCopyReference, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new AiAnalysisCopy(
+                analysisCopyReference,
+                "image/jpeg",
+                10,
+                10,
+                new byte[] { 1, 2, 3 }));
+        }
+
+        public Task ReleaseAsync(string analysisCopyReference, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Released.Add(analysisCopyReference);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class StubHandler(
+        Func<CancellationToken, Task<HttpResponseMessage>> responder) : HttpMessageHandler
+    {
+        private readonly Func<CancellationToken, Task<HttpResponseMessage>> _responder = responder;
+
+        public StubHandler(Func<CancellationToken, HttpResponseMessage> responder)
+            : this(token => Task.FromResult(responder(token)))
+        {
+        }
+
+        public int CallCount { get; private set; }
+
+        public AuthenticationHeaderValue? Authorization { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            Authorization = request.Headers.Authorization;
+            return await _responder(cancellationToken).ConfigureAwait(false);
+        }
+    }
+}

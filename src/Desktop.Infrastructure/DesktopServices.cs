@@ -81,8 +81,17 @@ public static class DesktopServices
 
         services.AddSingleton<IBridgeClient, MockBridgeClient>();
         services.AddSingleton<IAiAnalyzer, MockAiAnalyzer>();
-        services.AddSingleton<IAiCredentialSource, NullAiCredentialSource>();
+        services.AddSingleton<IAiCredentialSource, WindowsCredentialSource>();
         services.AddSingleton<IAiUsageRecorder, InMemoryAiUsageRecorder>();
+        services.AddSingleton<IAiAnalysisCopySource>(provider =>
+            new FileAiAnalysisCopySource(provider.GetRequiredService<IPathPolicy>()));
+        services.AddSingleton<VolcArkAiOptions>();
+        services.AddSingleton<IAiServicePort>(provider => new VolcArkAiAdapter(
+            new HttpClient(),
+            provider.GetRequiredService<IAiCredentialSource>(),
+            provider.GetRequiredService<IAiAnalysisCopySource>(),
+            provider.GetRequiredService<IJsonContractValidator>(),
+            provider.GetRequiredService<VolcArkAiOptions>()));
         return services;
     }
 }
