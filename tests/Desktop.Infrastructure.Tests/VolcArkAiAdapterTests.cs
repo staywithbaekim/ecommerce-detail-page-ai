@@ -1,12 +1,17 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Desktop.Application.Ai;
+using Desktop.Application.Inputs;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
+using Desktop.Domain.Inputs;
 using Desktop.Infrastructure.Ai;
+using Desktop.Infrastructure.Files;
+using Desktop.Infrastructure.Inputs;
 
 namespace Desktop.Infrastructure.Tests;
 
@@ -15,43 +20,173 @@ public sealed class VolcArkAiAdapterTests
     [RealProbeFact]
     public async Task RealProbeThroughFormalAdapter()
     {
-        var copyPath = Environment.GetEnvironmentVariable("AI01_PROBE_COPY_PATH");
-        if (string.IsNullOrWhiteSpace(copyPath) || !File.Exists(copyPath)) return;
+        var inputRoot = Environment.GetEnvironmentVariable("AI01_PROBE_INPUT_ROOT");
+        var runtimeRoot = Environment.GetEnvironmentVariable("AI01_PROBE_RUNTIME_ROOT");
+        if (string.IsNullOrWhiteSpace(inputRoot)
+            || string.IsNullOrWhiteSpace(runtimeRoot)
+            || !Directory.Exists(inputRoot)) return;
 
-        var handler = new HttpClientHandler();
-        var diagnostics = new List<AiResponseShapeDiagnostic>();
-        var adapter = new VolcArkAiAdapter(
-            new HttpClient(handler),
-            new WindowsCredentialSource(),
-            new ProbeCopySource(copyPath),
-            new JsonSchemaContractValidator(),
-            new VolcArkAiOptions(ResponseShapeDiagnosticSink: diagnostics.Add));
-        var result = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
-        var usage = result.Usage;
-        foreach (var diagnostic in diagnostics)
+        var sourcePaths = Directory.EnumerateFiles(inputRoot, "*", SearchOption.TopDirectoryOnly)
+            .Where(InputImageRules.IsSupportedExtension)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var expectedAssetCount = int.TryParse(
+            Environment.GetEnvironmentVariable("AI01_PROBE_EXPECTED_ASSET_COUNT"),
+            out var parsedCount)
+            ? parsedCount
+            : sourcePaths.Length;
+        Assert.InRange(expectedAssetCount, 1, 3);
+        Assert.Equal(expectedAssetCount, sourcePaths.Length);
+
+        var encodingOptions = new AiAnalysisCopyEncodingOptions();
+        var policy = new LocalAppPathPolicy(runtimeRoot);
+        using var preparer = new FileAiAnalysisCopyPreparer(policy, new AtomicFileStore(policy), encodingOptions);
+        var copySource = new FileAiAnalysisCopySource(policy);
+        var metadataReader = new StreamingAssetMetadataReader();
+        var preparedAssets = new List<ProbePreparedAsset>(sourcePaths.Length);
+        try
         {
-            Console.WriteLine($"REAL_PROBE_RESPONSE_SHAPE {JsonSerializer.Serialize(diagnostic)}");
+            for (var index = 0; index < sourcePaths.Length; index++)
+            {
+                var sourcePath = sourcePaths[index];
+                var sourceInfo = new FileInfo(sourcePath);
+                if (sourceInfo.Length is <= 0 || sourceInfo.Length > encodingOptions.MaxSourceBytes)
+                {
+                    throw new InvalidDataException("AI_COPY_SOURCE_TOO_LARGE");
+                }
+
+                var relativePath = Path.GetFileName(sourcePath);
+                var read = await metadataReader.ReadAsync(inputRoot, relativePath, CancellationToken.None);
+                Assert.True(read.IsSuccess, read.Failure?.Code ?? "PROBE_SOURCE_METADATA_INVALID");
+                var source = read.Metadata!;
+                var assetId = $"asset_{index + 1:D2}";
+                var copyReference = $"probe_copy_{index + 1:D2}";
+                var sourceAsset = SourceAssetMetadata.CreateReadable(
+                    assetId,
+                    "style_01",
+                    relativePath,
+                    relativePath,
+                    source.Length,
+                    source.Sha256,
+                    source.PixelWidth,
+                    source.PixelHeight,
+                    source.Format,
+                    source.MimeType);
+                var copy = await preparer.PrepareAsync(
+                    new AiAnalysisCopyPreparationRequest(
+                        copyReference,
+                        inputRoot,
+                        sourceAsset,
+                        encodingOptions.CompressionProfileVersion),
+                    CancellationToken.None);
+                preparedAssets.Add(new ProbePreparedAsset(source, copy));
+            }
+
+            foreach (var (asset, index) in preparedAssets.Select((asset, index) => (asset, index)))
+            {
+                Console.WriteLine(
+                    $"REAL_PROBE_ASSET index={index + 1} source_mime={asset.Source.MimeType} "
+                    + $"source_dimensions={asset.Source.PixelWidth}x{asset.Source.PixelHeight} source_bytes={asset.Source.Length} "
+                    + $"copy_mime={asset.Copy.MimeType} copy_dimensions={asset.Copy.PixelWidth}x{asset.Copy.PixelHeight} "
+                    + $"copy_bytes={asset.Copy.ByteLength} profile={asset.Copy.CompressionProfileVersion}");
+            }
+
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("AI01_PROBE_PREFLIGHT_ONLY"),
+                    "1",
+                    StringComparison.Ordinal))
+            {
+                Console.WriteLine(
+                    $"REAL_PROBE_PREFLIGHT outcome=prepared http_requests=0 asset_count={preparedAssets.Count} "
+                    + $"source_bytes={preparedAssets.Sum(asset => asset.Source.Length)} "
+                    + $"copy_bytes={preparedAssets.Sum(asset => asset.Copy.ByteLength)}");
+                return;
+            }
+
+            var requestAssets = preparedAssets.Select((asset, index) => new AiAssetInputV1(
+                $"asset_{index + 1:D2}",
+                "sha256:" + asset.Source.Sha256,
+                asset.Source.MimeType,
+                asset.Source.PixelWidth,
+                asset.Source.PixelHeight,
+                asset.Copy.Reference,
+                asset.Copy.Digest,
+                asset.Copy.ByteLength,
+                asset.Copy.MimeType,
+                asset.Copy.CompressionProfileVersion,
+                asset.Copy.LeaseId)).ToArray();
+            var request = Request() with
+            {
+                CompressionProfileVersion = encodingOptions.CompressionProfileVersion,
+                Assets = requestAssets
+            };
+            var diagnostics = new List<AiResponseShapeDiagnostic>();
+            using var handler = new ProbeCountingHandler();
+            using var httpClient = CreateRealProbeHttpClient(handler);
+            var adapter = new VolcArkAiAdapter(
+                httpClient,
+                new WindowsCredentialSource(),
+                copySource,
+                new JsonSchemaContractValidator(),
+                new VolcArkAiOptions(
+                    ReleaseCopiesAfterRequest: false,
+                    ResponseShapeDiagnosticSink: diagnostics.Add));
+            var result = await adapter.AnalyzeAsync(request, CancellationToken.None);
+            var usage = result.Usage;
+            var costEstimate = usage is null
+                ? "unknown"
+                : AiAnalysisProductionPolicy.BudgetV1.Pricing.Estimate(usage)
+                    .ToString("0.######", CultureInfo.InvariantCulture);
+            foreach (var diagnostic in diagnostics)
+            {
+                Console.WriteLine($"REAL_PROBE_RESPONSE_SHAPE {JsonSerializer.Serialize(diagnostic)}");
+            }
+            Console.WriteLine(
+                $"REAL_PROBE_METRICS outcome={result.Outcome} http_requests={handler.CallCount} "
+                + $"asset_count={preparedAssets.Count} duration_ms={result.Duration.TotalMilliseconds:F0} "
+                + $"source_bytes={preparedAssets.Sum(asset => asset.Source.Length)} "
+                + $"copy_bytes={preparedAssets.Sum(asset => asset.Copy.ByteLength)} "
+                + $"input_tokens={usage?.InputTokens ?? 0} output_tokens={usage?.OutputTokens ?? 0} "
+                + $"total_tokens={usage?.TotalTokens ?? 0} cache_hit={usage?.CacheHit ?? false} "
+                + $"error_code={result.Error?.Code ?? "none"} "
+                + $"cost_estimate_cny={costEstimate} cost_estimate_basis=official_list_price "
+                + "billing_status=not_observed");
+            if (result.Outcome != AiProviderOutcome.Completed || result.Result is null)
+            {
+                var shapeSummary = JsonSerializer.Serialize(diagnostics);
+                Assert.Fail(
+                    $"REAL_PROBE_FAILURE outcome={result.Outcome} error_code={result.Error?.Code ?? "none"} "
+                    + $"duration_ms={result.Duration.TotalMilliseconds:F0} diagnostics={shapeSummary}");
+            }
         }
-        Console.WriteLine(
-            $"REAL_PROBE_METRICS outcome={result.Outcome} duration_ms={result.Duration.TotalMilliseconds:F0} "
-            + $"input_bytes={new FileInfo(copyPath).Length} input_tokens={usage?.InputTokens ?? 0} "
-            + $"output_tokens={usage?.OutputTokens ?? 0} total_tokens={usage?.TotalTokens ?? 0} "
-            + $"cache_hit={usage?.CacheHit ?? false} error_code={result.Error?.Code ?? "none"}");
-        if (result.Outcome != AiProviderOutcome.Completed || result.Result is null)
+        finally
         {
-            var shapeSummary = JsonSerializer.Serialize(diagnostics);
-            Assert.Fail(
-                $"REAL_PROBE_FAILURE outcome={result.Outcome} error_code={result.Error?.Code ?? "none"} "
-                + $"duration_ms={result.Duration.TotalMilliseconds:F0} diagnostics={shapeSummary}");
+            foreach (var asset in preparedAssets)
+            {
+                await preparer.ReleaseAsync(asset.Copy.Reference, asset.Copy.LeaseId, CancellationToken.None);
+            }
         }
     }
+
+    [Fact]
+    public void RealProbeHttpClientLeavesTimeoutClassificationToFormalAdapter()
+    {
+        using var handler = new ProbeCountingHandler();
+        using var client = CreateRealProbeHttpClient(handler);
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
+    }
+
+    private static HttpClient CreateRealProbeHttpClient(HttpMessageHandler handler) =>
+        new(handler) { Timeout = Timeout.InfiniteTimeSpan };
 
     private sealed class RealProbeFactAttribute : FactAttribute
     {
         public RealProbeFactAttribute() => Skip = string.Equals(Environment.GetEnvironmentVariable("AI01_RUN_REAL_PROBE"), "1", StringComparison.Ordinal)
-            && File.Exists(Environment.GetEnvironmentVariable("AI01_PROBE_COPY_PATH") ?? string.Empty)
+            && Directory.Exists(Environment.GetEnvironmentVariable("AI01_PROBE_INPUT_ROOT") ?? string.Empty)
+            && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AI01_PROBE_RUNTIME_ROOT"))
             ? null
-            : "Opt-in real provider probe with approved temporary copy";
+            : "Opt-in real provider probe with formally prepared approved temporary copies";
     }
 
     [Fact]
@@ -348,6 +483,162 @@ public sealed class VolcArkAiAdapterTests
         Assert.Equal("AI_PROVIDER_RESPONSE_TOO_LARGE", execution.Error!.Code);
     }
 
+    [Fact]
+    public void DefaultsMatchApprovedRequestTransportLimits()
+    {
+        var options = new VolcArkAiOptions();
+
+        Assert.Equal(16 * 1024 * 1024, options.MaxRequestBytes);
+        Assert.Equal(24, options.MaxAssetsPerRequest);
+        Assert.Equal(TimeSpan.FromSeconds(180), options.EffectiveRequestTimeout);
+    }
+
+    [Fact]
+    public async Task RejectsMoreThanApprovedAssetsBeforeHttp()
+    {
+        var handler = new StubHandler(
+            (Func<CancellationToken, HttpResponseMessage>)(_ => throw new InvalidOperationException("should not send")));
+        var request = Request() with
+        {
+            Assets = Enumerable.Range(1, 25)
+                .Select(index => new AiAssetInputV1(
+                    $"asset_{index:D2}",
+                    "sha256:" + new string('b', 64),
+                    "image/jpeg",
+                    10,
+                    10,
+                    $"copy_{index:D2}"))
+                .ToArray()
+        };
+
+        var result = await CreateAdapter(handler, new FakeCopySource()).AnalyzeAsync(request, CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, result.Outcome);
+        Assert.Equal("AI_REQUEST_INVALID", result.Error!.Code);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public void ApprovedTransportLimitsCannotBeLoosenedByOverrides()
+    {
+        Assert.Throws<ArgumentException>(() => CreateAdapter(
+            new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)),
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(MaxAssetsPerRequest: 25)));
+        Assert.Throws<ArgumentException>(() => CreateAdapter(
+            new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)),
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(RequestTimeout: TimeSpan.FromSeconds(181))));
+        Assert.Throws<ArgumentException>(() => CreateAdapter(
+            new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)),
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(MaxRequestBytes: 16 * 1024 * 1024 + 1)));
+    }
+
+    [Fact]
+    public async Task AcceptsFormalAndCompatibleCandidateCopyProfiles()
+    {
+        foreach (var profile in new[]
+                 {
+                     AiAnalysisCopyProfiles.WicBoundedV1,
+                     AiAnalysisCopyProfiles.WicBoundedCandidateV1
+                 })
+        {
+            var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(SuccessBody(), Encoding.UTF8, "application/json")
+            });
+            var request = Request(profile);
+            var result = await CreateAdapter(
+                handler,
+                new FakeCopySource { CompressionProfile = profile }).AnalyzeAsync(request, CancellationToken.None);
+
+            Assert.Equal(AiProviderOutcome.Completed, result.Outcome);
+            Assert.Equal(1, handler.CallCount);
+        }
+    }
+
+    [Theory]
+    [InlineData(AiAnalysisCopyProfiles.BytePreservingProvisionalV1)]
+    [InlineData(AiAnalysisCopyProfiles.WicBoundedCandidateV1)]
+    public async Task RejectsActualCopyProfileSubstitutionBeforeHttp(string actualProfile)
+    {
+        var handler = new StubHandler(
+            (Func<CancellationToken, HttpResponseMessage>)(_ => throw new InvalidOperationException("should not send")));
+
+        var result = await CreateAdapter(
+            handler,
+            new FakeCopySource { CompressionProfile = actualProfile }).AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, result.Outcome);
+        Assert.Equal("AI_ANALYSIS_COPY_UNAVAILABLE", result.Error!.Code);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task RejectsMissingFormalCopyMetadataBeforeHttp()
+    {
+        var asset = Request().Assets[0];
+        var variants = new[]
+        {
+            asset with { AnalysisCopyDigest = null },
+            asset with { AnalysisCopyLength = null },
+            asset with { AnalysisCopyMimeType = null },
+            asset with { AnalysisCopyCompressionProfile = null }
+        };
+
+        foreach (var variant in variants)
+        {
+            var handler = new StubHandler(
+                (Func<CancellationToken, HttpResponseMessage>)(_ => throw new InvalidOperationException("should not send")));
+            var result = await CreateAdapter(handler, new FakeCopySource()).AnalyzeAsync(
+                Request() with { Assets = [variant] },
+                CancellationToken.None);
+
+            Assert.Equal(AiProviderOutcome.TerminalError, result.Outcome);
+            Assert.Equal("AI_REQUEST_INVALID", result.Error!.Code);
+            Assert.Equal(0, handler.CallCount);
+        }
+    }
+
+    [Fact]
+    public async Task RejectsActualCopyDigestOrLengthMismatchBeforeHttp()
+    {
+        var variants = new[]
+        {
+            new FakeCopySource { ContentDigest = "sha256:" + new string('0', 64) },
+            new FakeCopySource { ByteLength = 4 }
+        };
+        foreach (var copies in variants)
+        {
+            var handler = new StubHandler(
+                (Func<CancellationToken, HttpResponseMessage>)(_ => throw new InvalidOperationException("should not send")));
+            var result = await CreateAdapter(handler, copies).AnalyzeAsync(Request(), CancellationToken.None);
+
+            Assert.Equal(AiProviderOutcome.TerminalError, result.Outcome);
+            Assert.Equal("AI_ANALYSIS_COPY_UNAVAILABLE", result.Error!.Code);
+            Assert.Equal(0, handler.CallCount);
+        }
+    }
+
+    [Fact]
+    public async Task RejectsTiffCopyBeforeHttp()
+    {
+        var handler = new StubHandler(
+            (Func<CancellationToken, HttpResponseMessage>)(_ => throw new InvalidOperationException("should not send")));
+        var request = Request() with
+        {
+            Assets = [Request().Assets[0] with { AnalysisCopyMimeType = "image/tiff" }]
+        };
+
+        var result = await CreateAdapter(handler, new FakeCopySource { MimeType = "image/tiff" })
+            .AnalyzeAsync(request, CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, result.Outcome);
+        Assert.Equal("AI_REQUEST_INVALID", result.Error!.Code);
+        Assert.Equal(0, handler.CallCount);
+    }
+
     private static VolcArkAiAdapter CreateAdapter(
         HttpMessageHandler handler,
         FakeCopySource copies,
@@ -359,7 +650,8 @@ public sealed class VolcArkAiAdapterTests
         new JsonSchemaContractValidator(),
         options);
 
-    private static AiAnalysisRequestV1 Request() => new(
+    private static AiAnalysisRequestV1 Request(
+        string compressionProfile = AiAnalysisCopyProfiles.WicBoundedV1) => new(
         AiAnalysisProtocol.RequestSchemaVersion,
         "request",
         "request_01",
@@ -373,10 +665,20 @@ public sealed class VolcArkAiAdapterTests
         "model/proposed",
         "prompt/v1",
         AiAnalysisProtocol.ResultSchemaVersion,
-        "compression/proposed",
+        compressionProfile,
         "consent_01",
         "sha256:" + new string('a', 64),
-        [new AiAssetInputV1("asset_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copy_01")],
+        [new AiAssetInputV1(
+            "asset_01",
+            "sha256:" + new string('b', 64),
+            "image/jpeg",
+            10,
+            10,
+            "copy_01",
+            CopyDigest,
+            3,
+            "image/jpeg",
+            compressionProfile)],
         [new AiRequirementInputV1("frame_01", "主图", "居中", true)]);
 
     private static string SuccessBody()
@@ -423,6 +725,9 @@ public sealed class VolcArkAiAdapterTests
         public List<string> Released { get; } = [];
         public bool IncludeLease { get; set; }
         public string MimeType { get; set; } = "image/jpeg";
+        public string CompressionProfile { get; set; } = AiAnalysisCopyProfiles.WicBoundedV1;
+        public string ContentDigest { get; set; } = CopyDigest;
+        public long ByteLength { get; set; } = 3;
 
         public Task<AiAnalysisCopy> OpenAsync(string analysisCopyReference, CancellationToken cancellationToken)
         {
@@ -433,9 +738,9 @@ public sealed class VolcArkAiAdapterTests
                 10,
                 10,
                 new byte[] { 1, 2, 3 },
-                IncludeLease ? "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new byte[] { 1, 2, 3 })).ToLowerInvariant() : null,
-                3,
-                "analysis-copy/v1",
+                ContentDigest,
+                ByteLength,
+                CompressionProfile,
                 IncludeLease ? "lease-1" : null));
         }
 
@@ -447,17 +752,31 @@ public sealed class VolcArkAiAdapterTests
         }
     }
 
-    private sealed class ProbeCopySource(string path) : IAiAnalysisCopySource
+    private sealed record ProbePreparedAsset(
+        AssetFileMetadata Source,
+        AiAnalysisCopyMetadata Copy);
+
+    private sealed class ProbeCountingHandler : DelegatingHandler
     {
-        public async Task<AiAnalysisCopy> OpenAsync(string analysisCopyReference, CancellationToken cancellationToken)
+        private int _callCount;
+
+        public ProbeCountingHandler() : base(new HttpClientHandler())
         {
-            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-            var digest = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
-            return new AiAnalysisCopy(analysisCopyReference, "image/jpeg", 1, 1, bytes, digest, bytes.Length, "probe-temporary-v1", "probe-lease");
         }
 
-        public Task ReleaseAsync(string analysisCopyReference, CancellationToken cancellationToken) => Task.CompletedTask;
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _callCount);
+            return base.SendAsync(request, cancellationToken);
+        }
     }
+
+    private static readonly string CopyDigest = "sha256:" + Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(new byte[] { 1, 2, 3 })).ToLowerInvariant();
 
     private sealed class StubHandler(
         Func<CancellationToken, Task<HttpResponseMessage>> responder) : HttpMessageHandler

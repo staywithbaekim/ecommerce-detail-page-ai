@@ -12,7 +12,7 @@ public sealed record AiAnalysisCopyEncodingOptions(
     long MaxSourceBytes = 64L * 1024 * 1024,
     long MaxOutputBytes = 8L * 1024 * 1024,
     long MaxSourcePixels = 100_000_000,
-    string CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedCandidateV1)
+    string CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV1)
 {
     public void Validate()
     {
@@ -33,10 +33,14 @@ public sealed record AiAnalysisCopyEncodingOptions(
             throw new ArgumentException("AI_COPY_COMPRESSION_PROFILE_INVALID", nameof(CompressionProfileVersion));
         }
 
-        if (string.Equals(
-                CompressionProfileVersion,
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1,
-                StringComparison.Ordinal)
+        if ((string.Equals(
+                    CompressionProfileVersion,
+                    AiAnalysisCopyProfiles.WicBoundedV1,
+                    StringComparison.Ordinal)
+                || string.Equals(
+                    CompressionProfileVersion,
+                    AiAnalysisCopyProfiles.WicBoundedCandidateV1,
+                    StringComparison.Ordinal))
             && (MaxLongestEdge != 1600
                 || JpegQuality != 82
                 || MaxSourceBytes != 64L * 1024 * 1024

@@ -4,7 +4,7 @@
 
 本轮只验证 Windows 首发环境的应用自有分析副本重编码，不调用火山方舟、不产生账单、不进入 S4。实现使用 .NET WindowsDesktop framework 自带 WPF/WIC，没有新增 NuGet 图像包；Domain/Application/Contracts 和 renderer-neutral `RenderPlan` 不引用 WIC/WPF。
 
-`wic-bounded/max1600/jpeg-q82/png/v1-candidate` 是候选配置，不是生产冻结值：最长边 1600、JPEG quality 82、源文件 64 MiB、输出 8 MiB、源像素 100M。仍需逐次审批后的最少量正式 adapter probe 才能冻结或修订它，并为批量、并发、重试和费用门提供证据。
+`wic-bounded/max1600/jpeg-q82/png/v1` 已由产品负责人批准为 V1 正式分析副本配置：最长边 1600、JPEG quality 82、单源文件 64 MiB、单副本输出 8 MiB、源像素 100M。历史 `.../v1-candidate` 只保留为既有记录兼容；新副本默认使用正式版本。该配置只处理应用自有临时副本，用户原图/PSD 永不上传、改写或删除。
 
 ## 编码与安全策略
 
@@ -15,7 +15,7 @@
 | TIFF | JPEG | 只接受单帧；按 JPEG candidate 输出；不复制 TIFF 元数据 |
 
 - 在实际像素展开前检查格式、帧数、宽高和总像素；最长边按高质量 WIC 缩放。
-- compression profile 与最长边、JPEG quality、源/输出字节和像素门闭合；参数变化但沿用 `wic-bounded/max1600/jpeg-q82/png/v1-candidate` 时配置守卫直接拒绝，避免不同编码结果共享 cache fingerprint。
+- compression profile 与最长边、JPEG quality、源/输出字节和像素门闭合；正式 `.../v1` 或历史 candidate 名称发生参数漂移时配置守卫直接拒绝，避免不同编码结果共享 cache fingerprint。
 - 源长度和 INPUT-01 登记值闭合，编码前后重新计算 SHA-256；源文件以只读方式打开，应用从不写回、重命名或删除。
 - 输出编码使用 8 MiB candidate 硬上限流，越界立即中断；写入前后用真实输出重新检查 MIME、尺寸、digest 和长度。
 - 副本和 JSON sidecar 只写应用自有目录；源变化、取消、损坏内容、资源越界或原子 metadata 写入失败时清理本次应用文件，不触碰源。
@@ -39,6 +39,16 @@
 - `dotnet format EcommerceDetailPage.Desktop.slnx --no-restore --verify-no-changes --verbosity minimal` 与 `git diff --check`：通过。
 - reviewed diff 发现并修正“自定义编码参数仍复用默认 candidate 版本”的 cache fingerprint 风险；参数漂移现在必须提供新 profile version。opt-in 真实 probe 保持禁用，本轮没有联网或账单。
 
-## 未关闭门
+## 当前结论
 
-离线 WIC 证据只关闭“正式生产链存在真实重编码、方向/透明度/元数据/资源/回滚边界可复现”子项。候选 profile、单款请求上限、并发、重试、费用告警和硬停止尚未由真实用量冻结；S2/S3 和 AI-01 整体继续未通过。后续真实请求必须逐次取得用户审批，只使用官方演示图或明确批准的应用副本，不保存 Key、认证头、原始响应、response ID、媒体、本机路径或账单原文。
+离线 WIC 证据关闭“正式生产链存在真实重编码、方向/透明度/元数据/资源/回滚边界可复现”子项；随后正式单图请求取得 `2,745/248/2,993` tokens 的独立证据，三图请求由外部用量确认 `5,296/372/5,668` tokens，产品负责人据此批准 `.../v1`。单副本 8 MiB 与序列化 HTTP 请求体 16 MiB 是独立硬门，任一超限均在 HTTP 前拒绝。S2/S3 仅形成收口候选并等待 reviewed diff；AI-01 整体仍未通过，真实金标和 WPF 不在本记录范围。
+
+### reviewed diff 副本合同补正（2026-08-30）
+
+治理复核发现 adapter 曾允许缺失副本声明、TIFF 以及 request/profile 与实际 copy 不一致的字节进入正式请求。新候选在 HTTP 前要求 request、asset、sidecar/copy 的 profile、digest、length、MIME 全部闭合；只允许正式 `.../v1` 和参数相同的历史 `.../v1-candidate`。正式 request + candidate/provisional 偷换、缺失 digest/length/MIME/profile 及 TIFF 副本均 fail closed；新副本仍只生成正式 profile，candidate 仅用于既有恢复兼容。
+
+adapter 聚焦验证为 28 通过、1 个 opt-in real probe 跳过，覆盖正式/旧 candidate 正例及上述负例；完整 solution 320 通过、1 跳过、0 失败，build 0 警告/0 错误。本轮未联网，用户源图/PSD 未读取、改写、删除或提交。
+
+### 第二轮 reviewed diff 复核补充（2026-08-30）
+
+本轮修正只涉及 scheduler durable 状态机、options/预算构造上界和 opt-in probe client timeout，没有改变 WIC 编码字节、profile、源/输出资源门或副本三方闭合规则。容量 1 的 durable backlog 取消新增验证证明：即使 work item 尚未进入 channel，也会在当前进程完成 terminal transition 后立即释放应用 work lease；不会依赖 worker drain 或重启清理。完整 solution 为 328 通过、1 个 opt-in probe 跳过、0 失败，build 0 警告/0 错误；本轮未联网，也未读取、改写、删除或提交用户原图、PSD、数据库、缓存、日志、凭据或生成物。S2/S3 仍等待新候选 reviewed diff，不进入 S4。

@@ -100,7 +100,7 @@ public static class DesktopServices
                 provider.GetRequiredService<IJsonContractValidator>()));
         services.AddSingleton<VolcArkAiOptions>();
         services.AddSingleton<IAiServicePort>(provider => new VolcArkAiAdapter(
-            new HttpClient(),
+            new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
             provider.GetRequiredService<IAiCredentialSource>(),
             provider.GetRequiredService<IAiAnalysisCopySource>(),
             provider.GetRequiredService<IJsonContractValidator>(),

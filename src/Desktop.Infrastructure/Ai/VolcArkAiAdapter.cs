@@ -14,8 +14,9 @@ public sealed record VolcArkAiOptions(
     string ModelId = "doubao-seed-2-1-pro-260628",
     string Endpoint = "https://ark.cn-beijing.volces.com/api/v3/responses",
     TimeSpan? RequestTimeout = null,
-    int MaxRequestBytes = 8 * 1024 * 1024,
+    int MaxRequestBytes = 16 * 1024 * 1024,
     int MaxResponseBytes = 1 * 1024 * 1024,
+    int MaxAssetsPerRequest = 24,
     bool ReleaseCopiesAfterRequest = true,
     Action<AiResponseShapeDiagnostic>? ResponseShapeDiagnosticSink = null)
 {
@@ -76,7 +77,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            ValidateRequest(request);
+            ValidateRequest(request, _options.MaxAssetsPerRequest);
             cancellationToken.ThrowIfCancellationRequested();
 
             var credential = await _credentialSource.GetCredentialAsync(cancellationToken).ConfigureAwait(false);
@@ -128,7 +129,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                             throw new InvalidDataException("AI 分析副本为空。");
                         }
 
-                        ValidateCopy(asset, copy);
+                        ValidateCopy(request, asset, copy);
 
                         images.Add(copy);
                     }
@@ -270,28 +271,37 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         return output.ToArray();
     }
 
-    private static void ValidateCopy(AiAssetInputV1 asset, AiAnalysisCopy copy)
+    private static void ValidateCopy(
+        AiAnalysisRequestV1 request,
+        AiAssetInputV1 asset,
+        AiAnalysisCopy copy)
     {
         if (!string.Equals(copy.Reference, asset.AnalysisCopyReference, StringComparison.Ordinal)
             || !IsSupportedMime(copy.MimeType)
             || copy.PixelWidth <= 0 || copy.PixelHeight <= 0)
             throw new InvalidDataException("AI_ANALYSIS_COPY_METADATA_INVALID");
         var digest = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(copy.Content.Span)).ToLowerInvariant();
-        if (copy.ContentDigest is not null && !string.Equals(copy.ContentDigest, digest, StringComparison.Ordinal))
+        if (copy.ContentDigest is null
+            || !string.Equals(copy.ContentDigest, digest, StringComparison.Ordinal))
             throw new InvalidDataException("AI_ANALYSIS_COPY_DIGEST_MISMATCH");
-        if (copy.ByteLength is not null && copy.ByteLength != copy.Content.Length)
+        if (copy.ByteLength is null || copy.ByteLength != copy.Content.Length)
             throw new InvalidDataException("AI_ANALYSIS_COPY_LENGTH_MISMATCH");
-        if (asset.AnalysisCopyDigest is not null && !string.Equals(asset.AnalysisCopyDigest, digest, StringComparison.Ordinal))
+        if (asset.AnalysisCopyDigest is null
+            || !string.Equals(asset.AnalysisCopyDigest, digest, StringComparison.Ordinal))
             throw new InvalidDataException("AI_ANALYSIS_COPY_DIGEST_MISMATCH");
-        if (asset.AnalysisCopyLength is not null && asset.AnalysisCopyLength != copy.Content.Length)
+        if (asset.AnalysisCopyLength is null || asset.AnalysisCopyLength != copy.Content.Length)
             throw new InvalidDataException("AI_ANALYSIS_COPY_LENGTH_MISMATCH");
-        if (asset.AnalysisCopyMimeType is not null && !string.Equals(asset.AnalysisCopyMimeType, copy.MimeType, StringComparison.OrdinalIgnoreCase))
+        if (asset.AnalysisCopyMimeType is null
+            || !string.Equals(asset.AnalysisCopyMimeType, copy.MimeType, StringComparison.Ordinal))
             throw new InvalidDataException("AI_ANALYSIS_COPY_MIME_MISMATCH");
-        if (asset.AnalysisCopyCompressionProfile is not null && !string.Equals(asset.AnalysisCopyCompressionProfile, copy.CompressionProfileVersion, StringComparison.Ordinal))
+        if (asset.AnalysisCopyCompressionProfile is null
+            || copy.CompressionProfileVersion is null
+            || !string.Equals(request.CompressionProfileVersion, asset.AnalysisCopyCompressionProfile, StringComparison.Ordinal)
+            || !string.Equals(asset.AnalysisCopyCompressionProfile, copy.CompressionProfileVersion, StringComparison.Ordinal))
             throw new InvalidDataException("AI_ANALYSIS_COPY_PROFILE_MISMATCH");
     }
 
-    private static bool IsSupportedMime(string value) => value is "image/jpeg" or "image/png" or "image/tiff";
+    private static bool IsSupportedMime(string value) => value is "image/jpeg" or "image/png";
 
     private static long EstimatePayloadBytes(AiAnalysisRequestV1 request, List<AiAnalysisCopy> images)
     {
@@ -309,7 +319,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
 
     private bool HasSafeRequestBudget(AiAnalysisRequestV1 request)
     {
-        if (request.Assets.Count is 0 or > 256)
+        if (request.Assets.Count is 0 or > 24)
         {
             return false;
         }
@@ -925,23 +935,39 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             || !Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint)
             || endpoint.Scheme != Uri.UriSchemeHttps
             || options.EffectiveRequestTimeout <= TimeSpan.Zero
-            || options.EffectiveRequestTimeout > TimeSpan.FromMinutes(5)
+            || options.EffectiveRequestTimeout > TimeSpan.FromSeconds(180)
             || options.MaxRequestBytes is < 1024 or > 16 * 1024 * 1024
-            || options.MaxResponseBytes is < 1024 or > 16 * 1024 * 1024)
+            || options.MaxResponseBytes is < 1024 or > 16 * 1024 * 1024
+            || options.MaxAssetsPerRequest is < 1 or > 24)
         {
             throw new ArgumentException("火山方舟配置不符合已批准的安全边界。", nameof(options));
         }
     }
 
-    private static void ValidateRequest(AiAnalysisRequestV1 request)
+    private static void ValidateRequest(AiAnalysisRequestV1 request, int maxAssetsPerRequest)
     {
         if (!string.Equals(request.SchemaVersion, AiAnalysisProtocol.RequestSchemaVersion, StringComparison.Ordinal)
             || !string.Equals(request.DocumentKind, "request", StringComparison.Ordinal)
             || string.IsNullOrWhiteSpace(request.RequestId)
             || request.Assets.Count == 0
+            || request.Assets.Count > maxAssetsPerRequest
+            || !IsApprovedCompressionProfile(request.CompressionProfileVersion)
+            || request.Assets.Any(asset =>
+                asset.AnalysisCopyDigest is null
+                || asset.AnalysisCopyLength is null or <= 0
+                || asset.AnalysisCopyMimeType is null
+                || !IsSupportedMime(asset.AnalysisCopyMimeType)
+                || asset.AnalysisCopyCompressionProfile is null
+                || !string.Equals(
+                    request.CompressionProfileVersion,
+                    asset.AnalysisCopyCompressionProfile,
+                    StringComparison.Ordinal))
             || request.Requirements.Count == 0)
         {
             throw new InvalidOperationException("AI_ANALYSIS_REQUEST_INVALID");
         }
     }
+
+    private static bool IsApprovedCompressionProfile(string value) => value is
+        AiAnalysisCopyProfiles.WicBoundedV1 or AiAnalysisCopyProfiles.WicBoundedCandidateV1;
 }

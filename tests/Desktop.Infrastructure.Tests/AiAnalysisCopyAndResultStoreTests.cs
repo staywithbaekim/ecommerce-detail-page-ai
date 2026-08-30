@@ -41,12 +41,12 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                 "copy_01",
                 input,
                 Asset("asset_01", "photo.jpg", sourceBytes, 2400, 1200, SourceImageFormat.Jpeg),
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1), CancellationToken.None);
+                AiAnalysisCopyProfiles.WicBoundedV1), CancellationToken.None);
 
             Assert.Equal("image/jpeg", metadata.MimeType);
             Assert.Equal(1600, metadata.PixelWidth);
             Assert.Equal(800, metadata.PixelHeight);
-            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedCandidateV1, metadata.CompressionProfileVersion);
+            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedV1, metadata.CompressionProfileVersion);
             Assert.True(metadata.ByteLength < sourceBytes.Length);
             Assert.NotEqual("sha256:" + sourceDigest, metadata.Digest);
             Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(source));
@@ -89,7 +89,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                 "copy_format",
                 input,
                 Asset("asset_format", sourceName, sourceBytes, 1800, 900, sourceFormat),
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1), CancellationToken.None);
+                AiAnalysisCopyProfiles.WicBoundedV1), CancellationToken.None);
 
             Assert.Equal(expectedMime, metadata.MimeType);
             Assert.Equal(1600, metadata.PixelWidth);
@@ -129,7 +129,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                 "copy_rotated",
                 input,
                 Asset("asset_rotated", "rotated.jpg", sourceBytes, 120, 80, SourceImageFormat.Jpeg),
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1), CancellationToken.None);
+                AiAnalysisCopyProfiles.WicBoundedV1), CancellationToken.None);
 
             Assert.Equal(expectedWidth, metadata.PixelWidth);
             Assert.Equal(expectedHeight, metadata.PixelHeight);
@@ -157,7 +157,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                 "copy_alpha",
                 input,
                 Asset("asset_alpha", "alpha.png", sourceBytes, 200, 100, SourceImageFormat.Png),
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1), CancellationToken.None);
+                AiAnalysisCopyProfiles.WicBoundedV1), CancellationToken.None);
 
             var output = await File.ReadAllBytesAsync(policy.ResolveOwnedPath("ai-analysis/copies/copy_alpha.bin"));
             var alphaValues = ReadAlpha(output);
@@ -185,7 +185,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                 "copy_metadata",
                 input,
                 Asset("asset_metadata", "metadata.jpg", sourceBytes, 120, 80, SourceImageFormat.Jpeg),
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1), CancellationToken.None);
+                AiAnalysisCopyProfiles.WicBoundedV1), CancellationToken.None);
 
             var output = await File.ReadAllBytesAsync(policy.ResolveOwnedPath("ai-analysis/copies/copy_metadata.bin"));
             using var stream = new MemoryStream(output, writable: false);
@@ -216,7 +216,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                 "copy_tampered",
                 input,
                 Asset("asset_tampered", "photo.jpg", sourceBytes, 320, 160, SourceImageFormat.Jpeg),
-                AiAnalysisCopyProfiles.WicBoundedCandidateV1), CancellationToken.None);
+                AiAnalysisCopyProfiles.WicBoundedV1), CancellationToken.None);
             var metadataPath = policy.ResolveOwnedPath("ai-analysis/copies/copy_tampered.json");
             await File.WriteAllBytesAsync(
                 metadataPath,
@@ -341,7 +341,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                     "copy_dimension_mismatch",
                     input,
                     Asset("asset_dimension_mismatch", "photo.jpg", sourceBytes, 321, 180, SourceImageFormat.Jpeg),
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 CancellationToken.None));
 
             Assert.False(File.Exists(policy.ResolveOwnedPath("ai-analysis/copies/copy_dimension_mismatch.bin")));
@@ -372,14 +372,14 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                     "copy_corrupt",
                     input,
                     Asset("asset_corrupt", "corrupt.jpg", corrupt, 64, 32, SourceImageFormat.Jpeg),
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 CancellationToken.None));
             await Assert.ThrowsAsync<InvalidDataException>(() => preparer.PrepareAsync(
                 new AiAnalysisCopyPreparationRequest(
                     "copy_mismatch",
                     input,
                     Asset("asset_mismatch", "actually.png", png, 64, 32, SourceImageFormat.Jpeg),
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 CancellationToken.None));
 
             Assert.False(File.Exists(policy.ResolveOwnedPath("ai-analysis/copies/copy_corrupt.bin")));
@@ -409,7 +409,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                     "copy_cancelled",
                     input,
                     Asset("asset_cancelled", "photo.jpg", sourceBytes, 320, 180, SourceImageFormat.Jpeg),
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 cancellation.Token));
 
             Assert.False(File.Exists(policy.ResolveOwnedPath("ai-analysis/copies/copy_cancelled.bin")));
@@ -439,7 +439,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                     "copy_write_failure",
                     input,
                     Asset("asset_write_failure", "photo.jpg", sourceBytes, 320, 180, SourceImageFormat.Jpeg),
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 CancellationToken.None));
 
             Assert.False(File.Exists(policy.ResolveOwnedPath("ai-analysis/copies/copy_write_failure.bin")));
@@ -491,7 +491,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                     "copy_shared",
                     Path.Combine(root, "input"),
                     sourceMetadata,
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 CancellationToken.None);
             using var restarted = new FileAiAnalysisCopyPreparer(policy, files);
             await restarted.AcquireAsync("copy_shared", "lease-second", CancellationToken.None);
@@ -526,7 +526,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
                     "copy_changed",
                     input,
                     Asset("asset_01", "photo.jpg", original, 320, 180, SourceImageFormat.Jpeg),
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1),
+                    AiAnalysisCopyProfiles.WicBoundedV1),
                 CancellationToken.None));
 
             Assert.False(File.Exists(policy.ResolveOwnedPath("ai-analysis/copies/copy_changed.bin")));

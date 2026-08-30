@@ -60,18 +60,38 @@ public sealed record AiAnalysisScheduleResult(
     string? ErrorCode,
     int Attempt);
 
-public sealed record AiAnalysisQueueOptions(int Capacity = 32, int MaxAttempts = 2)
+public sealed record AiAnalysisQueueOptions(
+    int Capacity = 32,
+    int MaxAttempts = 2,
+    int MaxConcurrentRequests = 8,
+    int MaxAssetsPerRequest = 24,
+    int MaxLogicalRequestsPerStyle = 3)
 {
     public void Validate()
     {
-        if (Capacity is < 1 or > 10_000)
+        if (Capacity is < 1 or > AiAnalysisProductionPolicy.MaxQueueCapacity)
         {
             throw new ArgumentOutOfRangeException(nameof(Capacity));
         }
 
-        if (MaxAttempts is < 1 or > 10)
+        if (MaxAttempts is < 1 or > AiAnalysisProductionPolicy.MaxAttemptsPerRequest)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxAttempts));
+        }
+
+        if (MaxConcurrentRequests is < 1 or > AiAnalysisProductionPolicy.MaxConcurrentRequests)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxConcurrentRequests));
+        }
+
+        if (MaxAssetsPerRequest is < 1 or > AiAnalysisProductionPolicy.MaxAssetsPerRequest)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxAssetsPerRequest));
+        }
+
+        if (MaxLogicalRequestsPerStyle is < 1 or > AiAnalysisProductionPolicy.MaxLogicalRequestsPerStyle)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxLogicalRequestsPerStyle));
         }
     }
 }
@@ -83,12 +103,13 @@ public sealed record AiAnalysisPricing(
 {
     public void Validate()
     {
-        if (InputPerThousandTokens < 0 || OutputPerThousandTokens < 0
-            || string.IsNullOrWhiteSpace(Currency)
-            || Currency.Length != 3
-            || Currency.Any(character => character is < 'A' or > 'Z'))
+        if (!string.Equals(Currency, AiAnalysisProductionPolicy.PricingCurrency, StringComparison.Ordinal)
+            || InputPerThousandTokens < AiAnalysisProductionPolicy.MinimumInputPricePerThousandTokens
+            || OutputPerThousandTokens < AiAnalysisProductionPolicy.MinimumOutputPricePerThousandTokens)
         {
-            throw new ArgumentException("AI 价格配置无效。", nameof(InputPerThousandTokens));
+            throw new ArgumentOutOfRangeException(
+                nameof(InputPerThousandTokens),
+                "AI 价格必须使用 CNY，且不得低于 V1 冻结刊例价。");
         }
     }
 
@@ -117,9 +138,54 @@ public sealed record AiAnalysisBudgetPolicy(
             throw new ArgumentException("AI 预算配置必须为正数且告警线不得超过硬停止线。", nameof(MaxRequests));
         }
 
+        if (MaxRequests > AiAnalysisProductionPolicy.MaxRequestsPerBatch
+            || MaxInputTokens > AiAnalysisProductionPolicy.MaxInputTokensPerBatch
+            || MaxOutputTokens > AiAnalysisProductionPolicy.MaxOutputTokensPerBatch
+            || MaxEstimatedCost > AiAnalysisProductionPolicy.MaxEstimatedCostPerBatch
+            || WarningThreshold > AiAnalysisProductionPolicy.MaxWarningThresholdPerBatch)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxRequests), "AI 预算不得放宽 V1 批次硬门。");
+        }
+
         ArgumentNullException.ThrowIfNull(Pricing);
         Pricing.Validate();
     }
+}
+
+public static class AiAnalysisProductionPolicy
+{
+    public const int MaxStylesPerBatch = 200;
+    public const int MaxQueueCapacity = 32;
+    public const int MaxAttemptsPerRequest = 2;
+    public const int MaxConcurrentRequests = 8;
+    public const int MaxAssetsPerRequest = 24;
+    public const int MaxLogicalRequestsPerStyle = 3;
+    public const int MaxRequestsPerBatch = 1_200;
+    public const int MaxInputTokensPerBatch = 10_000_000;
+    public const int MaxOutputTokensPerBatch = 2_000_000;
+    public const decimal MaxWarningThresholdPerBatch = 10m;
+    public const decimal MaxEstimatedCostPerBatch = 100m;
+    public const string PricingCurrency = "CNY";
+    public const decimal MinimumInputPricePerThousandTokens = 0.006m;
+    public const decimal MinimumOutputPricePerThousandTokens = 0.030m;
+
+    public static AiAnalysisQueueOptions QueueV1 => new(
+        Capacity: MaxQueueCapacity,
+        MaxAttempts: MaxAttemptsPerRequest,
+        MaxConcurrentRequests: MaxConcurrentRequests,
+        MaxAssetsPerRequest: MaxAssetsPerRequest,
+        MaxLogicalRequestsPerStyle: MaxLogicalRequestsPerStyle);
+
+    public static AiAnalysisBudgetPolicy BudgetV1 => new(
+        MaxRequests: MaxRequestsPerBatch,
+        MaxInputTokens: MaxInputTokensPerBatch,
+        MaxOutputTokens: MaxOutputTokensPerBatch,
+        MaxEstimatedCost: MaxEstimatedCostPerBatch,
+        WarningThreshold: MaxWarningThresholdPerBatch,
+        Pricing: new AiAnalysisPricing(
+            InputPerThousandTokens: MinimumInputPricePerThousandTokens,
+            OutputPerThousandTokens: MinimumOutputPricePerThousandTokens,
+            Currency: PricingCurrency));
 }
 
 public sealed record AiAnalysisBudgetSnapshot(
