@@ -143,10 +143,18 @@ public sealed class AiAnalysisScheduler : IDisposable
             {
                 request = await PrepareCopiesAsync(batch, style, request, projectionOptions.CompressionProfileVersion, cancellationToken).ConfigureAwait(false);
             }
-            results.Add(await EnqueueAsync(
-                request,
-                AiAnalysisWorkStage.ProductJointUnderstanding,
-                cancellationToken).ConfigureAwait(false));
+            try
+            {
+                results.Add(await EnqueueAsync(
+                    request,
+                    AiAnalysisWorkStage.ProductJointUnderstanding,
+                    cancellationToken).ConfigureAwait(false));
+            }
+            catch
+            {
+                await ReleasePreparedLeaseIdsAsync(request, CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
         }
 
         return new(
@@ -166,26 +174,34 @@ public sealed class AiAnalysisScheduler : IDisposable
         CancellationToken cancellationToken)
     {
         var sourceById = batch.Assets.ToDictionary(asset => asset.AssetId, StringComparer.Ordinal);
-        var prepared = new AiAssetInputV1[request.Assets.Count];
-        for (var index = 0; index < request.Assets.Count; index++)
+        var prepared = new List<AiAssetInputV1>(request.Assets.Count);
+        try
         {
-            var asset = request.Assets[index];
-            if (!sourceById.TryGetValue(asset.AssetId, out var source)
-                || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal))
-                throw new InvalidOperationException("AI_INPUT_ASSET_NOT_FOUND");
-            var metadata = await _copyPreparer!.PrepareAsync(
-                new AiAnalysisCopyPreparationRequest(asset.AnalysisCopyReference, batch.InputRoot, source, compressionProfileVersion),
-                cancellationToken).ConfigureAwait(false);
-            prepared[index] = asset with
+            foreach (var asset in request.Assets)
             {
-                AnalysisCopyDigest = metadata.Digest,
-                AnalysisCopyLength = metadata.ByteLength,
-                AnalysisCopyMimeType = metadata.MimeType,
-                AnalysisCopyCompressionProfile = metadata.CompressionProfileVersion,
-                AnalysisCopyLeaseId = metadata.LeaseId
-            };
+                if (!sourceById.TryGetValue(asset.AssetId, out var source)
+                    || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal))
+                    throw new InvalidOperationException("AI_INPUT_ASSET_NOT_FOUND");
+                var metadata = await _copyPreparer!.PrepareAsync(
+                    new AiAnalysisCopyPreparationRequest(asset.AnalysisCopyReference, batch.InputRoot, source, compressionProfileVersion),
+                    cancellationToken).ConfigureAwait(false);
+                prepared.Add(asset with
+                {
+                    AnalysisCopyDigest = metadata.Digest,
+                    AnalysisCopyLength = metadata.ByteLength,
+                    AnalysisCopyMimeType = metadata.MimeType,
+                    AnalysisCopyCompressionProfile = metadata.CompressionProfileVersion,
+                    AnalysisCopyLeaseId = metadata.LeaseId
+                });
+            }
+            return request with { Assets = prepared };
         }
-        return request with { Assets = prepared };
+        catch
+        {
+            await ReleasePreparedLeaseIdsAsync(
+                request with { Assets = prepared }, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
     }
 
     public async Task RequestPauseAsync(
@@ -504,14 +520,27 @@ public sealed class AiAnalysisScheduler : IDisposable
     {
         ValidateStage(request, stage);
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_pendingGate)
-        {
-            _historicalRequests[request.RequestId] = request;
-        }
         var controlState = ControlState;
         if (controlState == AiAnalysisSchedulingControlState.Cancelled)
         {
+            await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
             return new(AiAnalysisWorkDisposition.Cancelled, request.RequestId, null, "AI_SCHEDULER_CANCELLED", 0);
+        }
+        var batchScopeConflict = false;
+        lock (_pendingGate)
+        {
+            batchScopeConflict = _checkpointPort is not null
+                && _historicalRequests.Values.Any(existingRequest =>
+                    !string.Equals(existingRequest.BatchId, request.BatchId, StringComparison.Ordinal));
+            if (!batchScopeConflict)
+            {
+                _historicalRequests[request.RequestId] = request;
+            }
+        }
+        if (batchScopeConflict)
+        {
+            await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("AI_CHECKPOINT_BATCH_SCOPE_INVALID");
         }
         var now = _timeProvider.GetUtcNow();
         var fingerprint = AiAnalysisCacheKeyFactory.Create(request);
@@ -595,8 +624,7 @@ public sealed class AiAnalysisScheduler : IDisposable
             {
                 if (await IsCacheReusableAsync(existingCache, request, cancellationToken).ConfigureAwait(false))
                 {
-                    await AcquireRequestLeasesAsync(request, stage, cancellationToken).ConfigureAwait(false);
-                    await ReleaseRequestLeasesAsync(request, stage, cancellationToken).ConfigureAwait(false);
+                    await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
                     return new(AiAnalysisWorkDisposition.CacheHit, existing.RequestId, existingCache.ResultReference, null, 0);
                 }
                 await _store.InvalidateCacheReferenceAsync(existingCache.CacheKey, cancellationToken).ConfigureAwait(false);
@@ -609,6 +637,7 @@ public sealed class AiAnalysisScheduler : IDisposable
                     0);
             }
 
+            await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
             return new(AiAnalysisWorkDisposition.Duplicate, existing.RequestId, existing.ResultReference, null, 0);
         }
 
@@ -644,8 +673,7 @@ public sealed class AiAnalysisScheduler : IDisposable
                 await AcquireRequestLeasesAsync(request, stage, cancellationToken).ConfigureAwait(false);
                 await TransitionToAsync(request, AiAnalysisSessionStatus.Uploading, cancellationToken).ConfigureAwait(false);
                 await TransitionToAsync(request, AiAnalysisSessionStatus.Analysing, cancellationToken).ConfigureAwait(false);
-                await RecordCacheUsageAsync(request, cache, cancellationToken).ConfigureAwait(false);
-                await CompleteValidatedAsync(request, cache.ResultReference, cancellationToken).ConfigureAwait(false);
+                await CompleteCacheHitAsync(request, cache, cancellationToken).ConfigureAwait(false);
                 if (stage != AiAnalysisWorkStage.ProductJointUnderstanding)
                 {
                     await ReleaseRequestLeasesAsync(request, stage, cancellationToken).ConfigureAwait(false);
@@ -668,20 +696,23 @@ public sealed class AiAnalysisScheduler : IDisposable
             now);
         if (_queue.IsActive(item.WorkItemId))
         {
+            await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
             return new(AiAnalysisWorkDisposition.Duplicate, request.RequestId, null, null, 0);
         }
 
+        var pendingDuplicate = false;
         lock (_pendingGate)
         {
-            if (_pendingItems.ContainsKey(item.WorkItemId)
+            pendingDuplicate = _pendingItems.ContainsKey(item.WorkItemId)
                 || _pendingItems.Values.Any(pending =>
                     string.Equals(pending.Request.RequestId, request.RequestId, StringComparison.Ordinal)
-                    && pending.Stage == stage))
-            {
-                return new(AiAnalysisWorkDisposition.Duplicate, request.RequestId, null, null, 0);
-            }
-
-            _pendingItems[item.WorkItemId] = item;
+                    && pending.Stage == stage);
+            if (!pendingDuplicate) _pendingItems[item.WorkItemId] = item;
+        }
+        if (pendingDuplicate)
+        {
+            await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
+            return new(AiAnalysisWorkDisposition.Duplicate, request.RequestId, null, null, 0);
         }
 
         try
@@ -1157,6 +1188,52 @@ public sealed class AiAnalysisScheduler : IDisposable
             NextTimestamp(ledger.UpdatedAt),
             cancellationToken).ConfigureAwait(false);
         await TransitionSessionOnlyAsync(request, AiAnalysisSessionStatus.Validated, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task CompleteCacheHitAsync(
+        AiAnalysisRequestV1 request,
+        AiCacheReference cache,
+        CancellationToken cancellationToken)
+    {
+        if (_checkpointPort is null)
+        {
+            await RecordCacheUsageAsync(request, cache, cancellationToken).ConfigureAwait(false);
+            await CompleteValidatedAsync(request, cache.ResultReference, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var ledger = await _store.FindRequestByFingerprintAsync(
+            AiAnalysisCacheKeyFactory.Create(request), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_REQUEST_LEDGER_MISSING");
+        var session = await _store.LoadSessionAsync(SessionId(request), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_SESSION_NOT_FOUND");
+        var cacheOriginUsage = await _store.FindUsageEventAsync(
+            cache.UsageEventId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("AI_CACHE_USAGE_NOT_FOUND");
+        if (ledger.Status != AiAnalysisSessionStatus.Analysing.ToString()
+            || session.Status != AiAnalysisSessionStatus.Analysing
+            || !string.Equals(cacheOriginUsage.RequestId, request.RequestId, StringComparison.Ordinal)
+            || !string.Equals(cacheOriginUsage.ModelConfigVersion, request.ModelConfigVersion, StringComparison.Ordinal)
+            || !string.Equals(cache.ModelConfigVersion, request.ModelConfigVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("AI_CACHE_CHECKPOINT_CLOSURE_INVALID");
+        }
+
+        await CommitGraphAsync(
+            request,
+            ledger with
+            {
+                Status = AiAnalysisSessionStatus.Validated.ToString(),
+                ResultReference = cache.ResultReference,
+                UpdatedAt = NextTimestamp(ledger.UpdatedAt)
+            },
+            ledger.Status,
+            session.AdvanceTo(AiAnalysisSessionStatus.Validated),
+            session.Status,
+            session.SelectionRevision,
+            cacheOriginUsage,
+            cache,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RecordCacheUsageAsync(
