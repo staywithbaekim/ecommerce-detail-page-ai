@@ -310,6 +310,40 @@ public sealed class AiAnalysisSchedulerTests
     }
 
     [Fact]
+    public async Task FormalDifferentRequestFingerprintHitReturnsCacheOwnerWithoutCreatingNewGraphOrUsage()
+    {
+        var store = new MemoryStore();
+        var results = new RecordingResultStore();
+        var checkpoints = new RecordingCheckpointPort(store);
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
+            Result("request_01"), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            resultStore: results,
+            checkpointPort: checkpoints);
+        await scheduler.EnqueueAsync(
+            Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Completed,
+            (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+        var commandsBeforeHit = checkpoints.Commands.Count;
+        var equivalent = Request() with { RequestId = "request_02" };
+
+        var hit = await scheduler.EnqueueAsync(
+            equivalent, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.CacheHit, hit.Disposition);
+        Assert.Equal("request_01", hit.RequestId);
+        Assert.Equal(commandsBeforeHit, checkpoints.Commands.Count);
+        Assert.Null(await store.LoadSessionAsync("session-request_02", CancellationToken.None));
+        Assert.Empty(await store.LoadUsageAsync("request_02", CancellationToken.None));
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
     public async Task RepeatedReadyBatchReleasesFreshPreparedLeasesWhenWorkIsAlreadyPending()
     {
         var store = new MemoryStore();

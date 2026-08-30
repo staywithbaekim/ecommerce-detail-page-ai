@@ -1195,6 +1195,11 @@ public sealed class AiAnalysisScheduler : IDisposable
         AiCacheReference cache,
         CancellationToken cancellationToken)
     {
+        // A different request ID with the same fingerprint is handled earlier
+        // as an idempotent reference to the cache owner and never reaches this
+        // method.  A graph committed here therefore must retain same-request
+        // usage ownership; provider usage from another request is never
+        // attached to the current request.
         if (_checkpointPort is null)
         {
             await RecordCacheUsageAsync(request, cache, cancellationToken).ConfigureAwait(false);
