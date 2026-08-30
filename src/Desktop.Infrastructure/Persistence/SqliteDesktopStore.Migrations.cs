@@ -357,6 +357,12 @@ public sealed partial class SqliteDesktopStore
                 ADD COLUMN scheduler_state_digest TEXT NULL;
             ALTER TABLE ai_analysis_checkpoint_journal
                 ADD COLUMN scheduler_state_json TEXT NULL;
+            """),
+        new(10, "desktop-v10-ai-scheduler-control-001", """
+            ALTER TABLE ai_analysis_scheduler_state
+                ADD COLUMN control_state TEXT NOT NULL DEFAULT 'Running';
+            ALTER TABLE ai_analysis_scheduler_state
+                ADD COLUMN control_reason TEXT NULL;
             """)
     ];
 

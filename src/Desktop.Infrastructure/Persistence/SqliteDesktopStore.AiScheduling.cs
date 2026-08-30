@@ -17,7 +17,8 @@ public sealed partial class SqliteDesktopStore
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT pending_items_json, request_count, input_tokens, output_tokens,
-                   estimated_cost_text, warning_reached, hard_stopped, updated_at
+                   estimated_cost_text, warning_reached, hard_stopped, updated_at,
+                   control_state, control_reason
             FROM ai_analysis_scheduler_state
             WHERE state_key = $state_key;
             """;
@@ -71,7 +72,8 @@ public sealed partial class SqliteDesktopStore
             existingCommand.Transaction = transaction;
             existingCommand.CommandText = """
                 SELECT pending_items_json, request_count, input_tokens, output_tokens,
-                       estimated_cost_text, warning_reached, hard_stopped, updated_at
+                       estimated_cost_text, warning_reached, hard_stopped, updated_at,
+                       control_state, control_reason
                 FROM ai_analysis_scheduler_state WHERE state_key = $state_key;
                 """;
             existingCommand.Parameters.AddWithValue("$state_key", stateKey);
@@ -83,6 +85,19 @@ public sealed partial class SqliteDesktopStore
                     || (state.UpdatedAt == existing.UpdatedAt && !SchedulingStateEquals(existing, state)))
                 {
                     throw new InvalidOperationException("AI_SCHEDULER_STATE_STALE_WRITE");
+                }
+
+                if (existing.ControlState == AiAnalysisSchedulingControlState.Cancelled
+                    && state.ControlState != AiAnalysisSchedulingControlState.Cancelled)
+                {
+                    throw new InvalidOperationException("AI_SCHEDULER_CONTROL_STATE_ROLLBACK");
+                }
+
+                if (existing.ControlState == AiAnalysisSchedulingControlState.CancelRequested
+                    && state.ControlState is not (AiAnalysisSchedulingControlState.CancelRequested
+                        or AiAnalysisSchedulingControlState.Cancelled))
+                {
+                    throw new InvalidOperationException("AI_SCHEDULER_CONTROL_STATE_ROLLBACK");
                 }
 
                 if (SchedulingStateEquals(existing, state))
@@ -98,11 +113,11 @@ public sealed partial class SqliteDesktopStore
             INSERT INTO ai_analysis_scheduler_state(
                 state_key, pending_items_json, request_count, input_tokens,
                 output_tokens, estimated_cost_text, warning_reached,
-                hard_stopped, updated_at)
+                hard_stopped, updated_at, control_state, control_reason)
             VALUES(
                 $state_key, $pending_items_json, $request_count, $input_tokens,
                 $output_tokens, $estimated_cost_text, $warning_reached,
-                $hard_stopped, $updated_at)
+                $hard_stopped, $updated_at, $control_state, $control_reason)
             ON CONFLICT(state_key) DO UPDATE SET
                 pending_items_json = excluded.pending_items_json,
                 request_count = excluded.request_count,
@@ -111,7 +126,9 @@ public sealed partial class SqliteDesktopStore
                 estimated_cost_text = excluded.estimated_cost_text,
                 warning_reached = excluded.warning_reached,
                 hard_stopped = excluded.hard_stopped,
-                updated_at = excluded.updated_at;
+                updated_at = excluded.updated_at,
+                control_state = excluded.control_state,
+                control_reason = excluded.control_reason;
             """;
         command.Parameters.AddWithValue("$state_key", stateKey);
         command.Parameters.AddWithValue("$pending_items_json", JsonSerializer.Serialize(state.PendingItems, AiJsonOptions));
@@ -122,6 +139,8 @@ public sealed partial class SqliteDesktopStore
         command.Parameters.AddWithValue("$warning_reached", state.Budget.WarningReached ? 1 : 0);
         command.Parameters.AddWithValue("$hard_stopped", state.Budget.HardStopped ? 1 : 0);
         command.Parameters.AddWithValue("$updated_at", state.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$control_state", state.ControlState.ToString());
+        command.Parameters.AddWithValue("$control_reason", (object?)state.ControlReason ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -136,7 +155,24 @@ public sealed partial class SqliteDesktopStore
                 decimal.Parse(reader.GetString(4), NumberStyles.Number, CultureInfo.InvariantCulture),
                 ReadBoolean(reader.GetInt32(5), "AI_SCHEDULER_STATE_CORRUPT"),
                 ReadBoolean(reader.GetInt32(6), "AI_SCHEDULER_STATE_CORRUPT"));
-            var state = new AiAnalysisSchedulingState(items, budget, ParseTime(reader.GetString(7)));
+            var controlState = Enum.Parse<AiAnalysisSchedulingControlState>(reader.GetString(8), false);
+            if (!Enum.IsDefined(controlState))
+            {
+                throw new InvalidDataException("AI_SCHEDULER_CONTROL_STATE_CORRUPT");
+            }
+
+            var controlReason = reader.IsDBNull(9) ? null : reader.GetString(9);
+            if (controlReason is not null && (controlReason.Length > 512 || controlReason.Contains('\0')))
+            {
+                throw new InvalidDataException("AI_SCHEDULER_CONTROL_REASON_CORRUPT");
+            }
+
+            var state = new AiAnalysisSchedulingState(
+                items,
+                budget,
+                ParseTime(reader.GetString(7)),
+                controlState,
+                controlReason);
             ValidateSchedulingState(state);
             return state;
         }
@@ -154,6 +190,8 @@ public sealed partial class SqliteDesktopStore
     private static bool SchedulingStateEquals(AiAnalysisSchedulingState left, AiAnalysisSchedulingState right) =>
         left.UpdatedAt == right.UpdatedAt
         && left.Budget == right.Budget
+        && left.ControlState == right.ControlState
+        && string.Equals(left.ControlReason, right.ControlReason, StringComparison.Ordinal)
         && JsonSerializer.Serialize(left.PendingItems, AiJsonOptions) == JsonSerializer.Serialize(right.PendingItems, AiJsonOptions);
 
     private static async Task<AiAnalysisSchedulingState?> LoadSchedulingStateForWriteAsync(
@@ -166,7 +204,8 @@ public sealed partial class SqliteDesktopStore
         command.Transaction = transaction;
         command.CommandText = """
             SELECT pending_items_json, request_count, input_tokens, output_tokens,
-                   estimated_cost_text, warning_reached, hard_stopped, updated_at
+                   estimated_cost_text, warning_reached, hard_stopped, updated_at,
+                   control_state, control_reason
             FROM ai_analysis_scheduler_state WHERE state_key = $state_key;
             """;
         command.Parameters.AddWithValue("$state_key", stateKey);
@@ -182,6 +221,13 @@ public sealed partial class SqliteDesktopStore
         if (state.UpdatedAt == default)
         {
             throw new InvalidOperationException("AI_SCHEDULER_STATE_TIME_INVALID");
+        }
+
+        if (!Enum.IsDefined(state.ControlState)
+            || (state.ControlReason is not null
+                && (state.ControlReason.Length > 512 || state.ControlReason.Contains('\0'))))
+        {
+            throw new InvalidOperationException("AI_SCHEDULER_CONTROL_STATE_INVALID");
         }
 
         var budget = state.Budget;

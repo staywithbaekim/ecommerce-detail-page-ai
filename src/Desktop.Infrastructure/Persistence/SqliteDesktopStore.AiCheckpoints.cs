@@ -102,6 +102,7 @@ public sealed partial class SqliteDesktopStore
             if (latestCommitted is not null)
             {
                 EnsurePriorGraphRetained(command, latestCommitted);
+                EnsurePriorSchedulerStateRetained(command, latestCommitted);
             }
 
             foreach (var graph in command.Graphs.OrderBy(item => item.Request.RequestId, StringComparer.Ordinal))
@@ -1052,6 +1053,77 @@ public sealed partial class SqliteDesktopStore
                 && !string.Equals(graph.Cache?.CacheKey, item.CacheKey, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_CACHE_OMITTED");
+            }
+        }
+    }
+
+    private static void EnsurePriorSchedulerStateRetained(
+        AiAnalysisCheckpointCommand command,
+        AiAnalysisCheckpointJournal prior)
+    {
+        var previous = prior.SchedulerState;
+        if (previous is null)
+        {
+            return;
+        }
+
+        if (command.SchedulerState is null
+            || !string.Equals(command.SchedulerStateKey, prior.SchedulerStateKey, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_OMITTED");
+        }
+
+        var next = command.SchedulerState;
+        if (next.Budget.RequestCount < previous.Budget.RequestCount
+            || next.Budget.InputTokens < previous.Budget.InputTokens
+            || next.Budget.OutputTokens < previous.Budget.OutputTokens
+            || next.Budget.EstimatedCost < previous.Budget.EstimatedCost)
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_BUDGET_ROLLBACK");
+        }
+
+        if (previous.ControlState == AiAnalysisSchedulingControlState.Cancelled
+            && next.ControlState != AiAnalysisSchedulingControlState.Cancelled)
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_CONTROL_ROLLBACK");
+        }
+
+        if (previous.ControlState == AiAnalysisSchedulingControlState.CancelRequested
+            && next.ControlState is not (AiAnalysisSchedulingControlState.CancelRequested
+                or AiAnalysisSchedulingControlState.Cancelled))
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_CONTROL_ROLLBACK");
+        }
+
+        var graphs = command.Graphs.ToDictionary(
+            graph => graph.Request.RequestId,
+            StringComparer.Ordinal);
+        foreach (var previousItem in previous.PendingItems)
+        {
+            if (!graphs.TryGetValue(previousItem.Request.RequestId, out var graph))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_PENDING_OMITTED");
+            }
+
+            // A pending work item may disappear only when its graph advances
+            // to an explicit terminal/settled status.  Queued and retryable
+            // work must remain represented in the new full-batch snapshot.
+            if (graph.Request.Status is not ("Queued" or "RetryableError"))
+            {
+                continue;
+            }
+
+            var retained = next.PendingItems.Any(item =>
+                string.Equals(item.Request.RequestId, previousItem.Request.RequestId, StringComparison.Ordinal)
+                && item.Stage == previousItem.Stage
+                && string.Equals(
+                    AiAnalysisCacheKeyFactory.Create(item.Request),
+                    AiAnalysisCacheKeyFactory.Create(previousItem.Request),
+                    StringComparison.Ordinal)
+                && item.Attempt >= previousItem.Attempt);
+            if (!retained)
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_PENDING_OMITTED");
             }
         }
     }

@@ -98,7 +98,7 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(9, migrationVersion);
+        Assert.Equal(10, migrationVersion);
     }
 
     [Fact]
@@ -228,6 +228,34 @@ public sealed class SqliteDesktopStoreTests
         await reopened.InitializeAsync();
         await Assert.ThrowsAsync<InvalidDataException>(() => reopened.LoadSchedulingStateAsync(
             "ai-s3-default", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AiSchedulerControlStatePersistsAcrossRestart()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveSchedulingStateAsync(
+                "ai-s3-default",
+                new AiAnalysisSchedulingState(
+                    [],
+                    AiAnalysisBudgetSnapshot.Empty,
+                    now,
+                    AiAnalysisSchedulingControlState.WaitingForNetwork,
+                    "网络暂不可用"),
+                CancellationToken.None);
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var state = await reopened.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+        Assert.NotNull(state);
+        Assert.Equal(AiAnalysisSchedulingControlState.WaitingForNetwork, state!.ControlState);
+        Assert.Equal("网络暂不可用", state.ControlReason);
     }
 
     [Fact]
@@ -665,7 +693,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V5DataUpgradesSuccessfullyThroughV9AndPreservesSentinel()
+    public async Task V5DataUpgradesSuccessfullyThroughV10AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -697,7 +725,7 @@ public sealed class SqliteDesktopStoreTests
         tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
         await using var columnCommand = verify.CreateCommand();
         columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
-        Assert.Equal(9L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal(10L, (long)(await versionCommand.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
         Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
         Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
@@ -737,7 +765,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V6DataUpgradesSuccessfullyToV9AndPreservesSentinel()
+    public async Task V6DataUpgradesSuccessfullyToV10AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -767,7 +795,7 @@ public sealed class SqliteDesktopStoreTests
         sentinel.CommandText = "SELECT value FROM v6_sentinel;";
         await using var tables = verify.CreateCommand();
         tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
-        Assert.Equal(9L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(10L, (long)(await version.ExecuteScalarAsync())!);
         Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
         Assert.Equal(2L, (long)(await tables.ExecuteScalarAsync())!);
     }

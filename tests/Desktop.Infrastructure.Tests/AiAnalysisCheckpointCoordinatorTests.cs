@@ -243,6 +243,65 @@ public sealed class AiAnalysisCheckpointCoordinatorTests
     }
 
     [Fact]
+    public async Task NewCheckpointCannotOmitPriorSchedulerOrRollBackBudget()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var now = Origin.AddSeconds(2);
+        var seeded = await SeedSchedulerQueuedAsync(store, "batch_01", "scheduler_history", now);
+        var item = new AiAnalysisWorkItem(
+            $"{seeded.Request.RequestId}-productjointunderstanding",
+            SchedulerRequest(seeded.Request.RequestId, seeded.Request.BatchId, seeded.Request.StyleId, now),
+            AiAnalysisWorkStage.ProductJointUnderstanding,
+            0,
+            now);
+        var firstState = new AiAnalysisSchedulingState(
+            [item],
+            new AiAnalysisBudgetSnapshot(2, 100, 20, 0.20m, true, false),
+            now);
+        var coordinator = Coordinator(store, directory.Path);
+        var first = CommandWithScheduler(
+            "checkpoint_scheduler_history",
+            [Graph(seeded)],
+            "ai-s3-default",
+            firstState);
+        Assert.Equal(AiAnalysisCheckpointOutcome.Committed,
+            (await coordinator.CommitAsync(first, CancellationToken.None)).Outcome);
+
+        var rolledBackBudget = firstState with
+        {
+            Budget = firstState.Budget with { RequestCount = 1, InputTokens = 10, EstimatedCost = 0.01m },
+            UpdatedAt = firstState.UpdatedAt.AddSeconds(1)
+        };
+        var stale = CommandWithScheduler(
+            "checkpoint_scheduler_budget_rollback",
+            [Graph(seeded)],
+            "ai-s3-default",
+            rolledBackBudget) with
+        {
+            CreatedAt = first.CreatedAt.AddSeconds(1)
+        };
+        stale = stale with { Manifest = stale.Manifest with { CreatedAt = stale.CreatedAt } };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CommitAsync(stale, CancellationToken.None));
+        Assert.Equal("AI_CHECKPOINT_PRIOR_SCHEDULER_BUDGET_ROLLBACK", exception.Message);
+
+        var omitted = Command("checkpoint_scheduler_omitted_history", [Graph(seeded)]) with
+        {
+            CreatedAt = first.CreatedAt.AddSeconds(2)
+        };
+        omitted = omitted with { Manifest = omitted.Manifest with { CreatedAt = omitted.CreatedAt } };
+        var omittedException = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CommitAsync(omitted, CancellationToken.None));
+        Assert.Equal("AI_CHECKPOINT_PRIOR_SCHEDULER_OMITTED", omittedException.Message);
+        Assert.Equal("checkpoint_scheduler_history",
+            (await store.FindLatestCommittedCheckpointAsync("batch_01", CancellationToken.None))!.CheckpointId);
+    }
+
+    [Fact]
     public async Task RejectsCacheWithoutUsageAndManifestMissingHistoricalGraph()
     {
         using var directory = new TestDirectory();

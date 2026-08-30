@@ -25,7 +25,24 @@ public enum AiAnalysisWorkDisposition
     Cancelled,
     BudgetStopped,
     TerminalError,
-    AlreadySettled
+    AlreadySettled,
+    Paused,
+    WaitingForNetwork
+}
+
+/// <summary>
+/// Durable batch-level control state.  It is deliberately separate from the
+/// per-request analysis state: a pause or offline condition must not rewrite a
+/// provider result or make an in-flight request look successful.
+/// </summary>
+public enum AiAnalysisSchedulingControlState
+{
+    Running = 0,
+    PauseRequested,
+    Paused,
+    WaitingForNetwork,
+    CancelRequested,
+    Cancelled
 }
 
 public sealed record AiAnalysisWorkItem(
@@ -124,7 +141,17 @@ public sealed record AiAnalysisBudgetSnapshot(
 public sealed record AiAnalysisSchedulingState(
     IReadOnlyList<AiAnalysisWorkItem> PendingItems,
     AiAnalysisBudgetSnapshot Budget,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    AiAnalysisSchedulingControlState ControlState = AiAnalysisSchedulingControlState.Running,
+    string? ControlReason = null);
+
+public sealed record AiAnalysisBatchScheduleResult(
+    string BatchId,
+    IReadOnlyList<AiAnalysisScheduleResult> StyleResults,
+    int EnqueuedCount,
+    int DuplicateCount,
+    int CacheHitCount,
+    int AlreadySettledCount);
 
 public interface IAiAnalysisSchedulingStateStore
 {

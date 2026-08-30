@@ -208,6 +208,11 @@ public static class AiAnalysisCheckpointRules
                 state.Budget.WarningReached,
                 state.Budget.HardStopped
             },
+            control = new
+            {
+                State = state.ControlState.ToString(),
+                state.ControlReason
+            },
             UpdatedAt = state.UpdatedAt.ToString("O")
         };
         var bytes = JsonSerializer.SerializeToUtf8Bytes(canonical, JsonOptions);
@@ -372,11 +377,18 @@ public static class AiAnalysisCheckpointRules
             throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_STATE_INVALID");
         }
 
+        if (!Enum.IsDefined(schedulerState.ControlState)
+            || (schedulerState.ControlReason is not null
+                && (schedulerState.ControlReason.Length > 512 || schedulerState.ControlReason.Contains('\0'))))
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_CONTROL_INVALID");
+        }
+
         var graphs = command.Graphs.ToDictionary(graph => graph.Request.RequestId, StringComparer.Ordinal);
         var pendingIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in schedulerState.PendingItems)
         {
-            if (item is null || !pendingIds.Add(item.WorkItemId))
+            if (item is null || item.Request is null || !pendingIds.Add(item.WorkItemId))
             {
                 throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_ITEM_INVALID");
             }

@@ -2,6 +2,8 @@ using Desktop.Application.Ai;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Ai;
+using Desktop.Domain.Inputs;
+using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Tests;
 
@@ -103,6 +105,31 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, session!.Status);
         Assert.Equal(2, provider.Calls);
         Assert.Equal(0, queue.Count);
+    }
+
+    [Fact]
+    public async Task ObservedUsageIsRecordedForNonSuccessfulProviderOutcome()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => new AiAnalysisExecutionResult(
+            AiProviderOutcome.RetryableError,
+            null,
+            new AiProviderUsage(4, 2, 6, false),
+            new ContractError("RATE", true, "provider", "稍后重试"),
+            TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 2));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)));
+
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        var result = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.RetryScheduled, result.Disposition);
+        var usage = Assert.Single(await store.LoadUsageAsync("request_01", CancellationToken.None));
+        Assert.Equal(4, usage.InputUnits);
+        Assert.Equal(2, usage.OutputUnits);
+        Assert.Equal(0, usage.RetryCount);
     }
 
     [Fact]
@@ -257,6 +284,244 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Equal(1, reopenedScheduler.Budget.RequestCount);
         Assert.Single((await schedulingState.LoadSchedulingStateAsync(
             "ai-s3-default", CancellationToken.None))!.PendingItems);
+    }
+
+    [Fact]
+    public async Task ReadyBatchProducerQueuesOneJointRequestPerStyleAndPreservesOrder()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Failure(
+            AiProviderOutcome.AiResultUnknown,
+            new ContractError("UNKNOWN", false, "provider", "请人工确认"),
+            TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(4, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)));
+        var now = DateTimeOffset.UtcNow;
+        var revision = TestReadyRevision(now);
+        var snapshot = BatchTemplateSnapshot.Create("snapshot_batch", "batch_multi", revision, ["page_01"], now);
+        var batch = BatchDraft.Create("batch_multi", @"C:\\input", @"C:\\output", snapshot, BatchSelectionMode.Automatic, false, now)
+            .BeginScanning(now.AddSeconds(1))
+            .MarkScanReady(
+                BatchInputType.StyleDirectoryBatch,
+                [
+                    StyleDraft.Create("style_b", "SKU-B", "b", 1, ["asset_b"]),
+                    StyleDraft.Create("style_a", "SKU-A", "a", 0, ["asset_a"])
+                ],
+                [
+                    SourceAssetMetadata.CreateReadable("asset_b", "style_b", "b/2.jpg", "2.jpg", 10, new string('b', 64), 100, 100, SourceImageFormat.Jpeg, "image/jpeg"),
+                    SourceAssetMetadata.CreateReadable("asset_a", "style_a", "a/1.jpg", "1.jpg", 10, new string('a', 64), 100, 100, SourceImageFormat.Jpeg, "image/jpeg")
+                ],
+                "batches/batch_multi/asset-manifest/manifest.json",
+                "sha256:" + new string('f', 64),
+                now.AddSeconds(2));
+
+        var result = await scheduler.EnqueueBatchAsync(
+            batch,
+            revision,
+            new AiAnalysisProjectionOptions("corr_batch", "consent_batch", "model/proposed", "prompt/v1", "copy/v1"),
+            CancellationToken.None);
+
+        Assert.Equal("batch_multi", result.BatchId);
+        Assert.Equal(2, result.EnqueuedCount);
+        Assert.Equal(2, queue.Count);
+        var first = await queue.DequeueAsync(CancellationToken.None);
+        queue.Complete(first);
+        var second = await queue.DequeueAsync(CancellationToken.None);
+        queue.Complete(second);
+        Assert.Equal("style_a", first.Request.StyleId);
+        Assert.Equal("style_b", second.Request.StyleId);
+        Assert.All(new[] { first, second }, item => Assert.Equal(AiAnalysisKind.ProductJointUnderstanding, item.Request.AnalysisKind));
+    }
+
+    [Fact]
+    public async Task PauseWaitsWithoutProviderCallAndResumeRequeuesPendingWork()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
+            Result("request_01"), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero));
+        var stateStore = new MemorySchedulingStateStore();
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            stateStore: stateStore);
+
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        await scheduler.RequestPauseAsync("用户请求暂停", CancellationToken.None);
+        var paused = await scheduler.ProcessNextAsync(CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Paused, paused.Disposition);
+        Assert.Equal(0, provider.Calls);
+        Assert.Equal(AiAnalysisSchedulingControlState.Paused, scheduler.ControlState);
+        await scheduler.ResumeAsync(CancellationToken.None);
+        Assert.Equal(1, queue.Count);
+        var completed = await scheduler.ProcessNextAsync(CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Completed, completed.Disposition);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task CancelAsyncCancelsOnlyPendingLedgerAndPersistsTerminalControl()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(Result("request_01"), null, TimeSpan.Zero));
+        var stateStore = new MemorySchedulingStateStore();
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            stateStore: stateStore);
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        var cancelled = await scheduler.CancelAsync("batch_01", CancellationToken.None);
+        Assert.Equal(1, cancelled);
+        Assert.Equal(AiAnalysisSchedulingControlState.Cancelled, scheduler.ControlState);
+        var ledger = await store.FindRequestByFingerprintAsync(AiAnalysisCacheKeyFactory.Create(Request()), CancellationToken.None);
+        Assert.Equal("Cancelled", ledger!.Status);
+        var persisted = await stateStore.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+        Assert.Equal(AiAnalysisSchedulingControlState.Cancelled, persisted!.ControlState);
+        Assert.Empty(persisted.PendingItems);
+    }
+
+    [Fact]
+    public async Task RestoreCancelRequestedCompletesQueuedCancellationWithoutProviderCall()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(Result("request_01"), null, TimeSpan.Zero));
+        var stateStore = new MemorySchedulingStateStore();
+        var now = DateTimeOffset.UtcNow;
+        using (var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1)))
+        using (var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            timeProvider: new FixedTimeProvider(now),
+            stateStore: stateStore))
+        {
+            await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        }
+
+        var persisted = await stateStore.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+        Assert.NotNull(persisted);
+        await stateStore.SaveSchedulingStateAsync(
+            "ai-s3-default",
+            persisted! with
+            {
+                ControlState = AiAnalysisSchedulingControlState.CancelRequested,
+                ControlReason = "AI_CANCEL_REQUESTED",
+                UpdatedAt = now.AddSeconds(1)
+            },
+            CancellationToken.None);
+
+        using var reopenedQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var reopened = new AiAnalysisScheduler(
+            provider, store, reopenedQueue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            timeProvider: new FixedTimeProvider(now.AddSeconds(2)),
+            stateStore: stateStore);
+
+        var restored = await reopened.RestoreAsync(CancellationToken.None);
+
+        Assert.Equal(0, restored);
+        Assert.Equal(0, reopenedQueue.Count);
+        Assert.Equal(0, provider.Calls);
+        var ledger = await store.FindRequestByFingerprintAsync(
+            AiAnalysisCacheKeyFactory.Create(Request()), CancellationToken.None);
+        Assert.Equal("Cancelled", ledger!.Status);
+        var after = await stateStore.LoadSchedulingStateAsync("ai-s3-default", CancellationToken.None);
+        Assert.NotNull(after);
+        Assert.Empty(after!.PendingItems);
+    }
+
+    [Fact]
+    public async Task WaitingForNetworkBlocksNewWorkWithoutChangingLedger()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(Result("request_01"), null, TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)));
+        await scheduler.WaitForNetworkAsync("网络暂不可用", CancellationToken.None);
+        var result = await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.WaitingForNetwork, result.Disposition);
+        Assert.Equal(0, queue.Count);
+        Assert.Equal(0, provider.Calls);
+        Assert.Equal("Queued", (await store.FindRequestByFingerprintAsync(
+            AiAnalysisCacheKeyFactory.Create(Request()), CancellationToken.None))!.Status);
+    }
+
+    [Fact]
+    public async Task ProviderExceptionIsPersistedAsUnknownInsteadOfEscapingOrRetrying()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => throw new InvalidOperationException("TEST_PROVIDER_CRASH"));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 2));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)));
+
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        var result = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.ResultUnknown, result.Disposition);
+        Assert.Equal("AI_PROVIDER_EXCEPTION_UNKNOWN", result.ErrorCode);
+        Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown,
+            (await store.LoadSessionAsync("session-request_01", CancellationToken.None))!.Status);
+        Assert.Equal("AiResultUnknown",
+            (await store.FindRequestByFingerprintAsync(AiAnalysisCacheKeyFactory.Create(Request()), CancellationToken.None))!.Status);
+        Assert.Equal(0, queue.Count);
+    }
+
+    [Fact]
+    public async Task BatchScopedCancellationCannotAffectOtherPendingBatch()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Failure(
+            AiProviderOutcome.AiResultUnknown,
+            new ContractError("UNKNOWN", false, "provider", "请人工确认"),
+            TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(4, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(4, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)));
+
+        var other = Request() with
+        {
+            RequestId = "request_02",
+            BatchId = "batch_02",
+            StyleId = "style_02",
+            RequirementsDigest = "sha256:" + new string('d', 64)
+        };
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        await scheduler.EnqueueAsync(other, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            scheduler.CancelAsync("batch_01", CancellationToken.None));
+
+        Assert.Equal("AI_SCHEDULER_BATCH_SCOPE_CONFLICT", exception.Message);
+        Assert.Equal(AiAnalysisSchedulingControlState.Running, scheduler.ControlState);
+        Assert.Equal(2, queue.Count);
+    }
+
+    private static TemplateRevision TestReadyRevision(DateTimeOffset now)
+    {
+        var page = TemplatePage.Create("page_01", "revision_batch", 0, "页面", TemplatePageContentType.NormalComposition,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource_01");
+        var binding = FrameBinding.Create(
+            "frame_01", "page_01", LayerPath.Create([1]),
+            ExpectedLayerEvidence.Create(1, "frame", true, false, false, false, 255, "normal",
+                LayerStructureSignature.Create("sha256:" + new string('c', 64))), [],
+            SelectionRequirement.Create("商品图", [SelectionCriterion.Create("asset_id", "asset_a")]),
+            LayoutIntent.Create("主体完整", 1, 0, 0, TemplateRect.Create(0, 0, 100, 100)));
+        return TemplateRevision.Restore("revision_batch", "group_batch", 1, TemplateRevisionState.Committed,
+            "templates/revision_batch/manifest.json", "sha256:" + new string('d', 64), now, [page], [binding]);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset value) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => value;
     }
 
     private static AiAnalysisRequestV1 Request() => new(

@@ -1,5 +1,7 @@
 using Desktop.Contracts.Ai;
 using Desktop.Domain.Ai;
+using Desktop.Domain.Inputs;
+using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Ai;
 
@@ -22,6 +24,8 @@ public sealed class AiAnalysisScheduler : IDisposable
     private readonly Dictionary<string, AiAnalysisWorkItem> _pendingItems = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _statePersistenceGate = new(1, 1);
     private AiAnalysisBudgetSnapshot _budget = AiAnalysisBudgetSnapshot.Empty;
+    private AiAnalysisSchedulingControlState _controlState = AiAnalysisSchedulingControlState.Running;
+    private string? _controlReason;
 
     public AiAnalysisScheduler(
         IAiServicePort provider,
@@ -63,6 +67,221 @@ public sealed class AiAnalysisScheduler : IDisposable
         }
     }
 
+    public AiAnalysisSchedulingControlState ControlState
+    {
+        get
+        {
+            lock (_pendingGate)
+            {
+                return _controlState;
+            }
+        }
+    }
+
+    public string? ControlReason
+    {
+        get
+        {
+            lock (_pendingGate)
+            {
+                return _controlReason;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Consumes the ready INPUT-01 producer artifacts and creates one first-layer
+    /// joint-understanding request per style.  The projector remains the only
+    /// code that maps the existing BatchDraft/manifest metadata into the AI
+    /// contract; this method never creates a second input model or scans files.
+    /// </summary>
+    public async Task<AiAnalysisBatchScheduleResult> EnqueueBatchAsync(
+        BatchDraft batch,
+        TemplateRevision templateRevision,
+        AiAnalysisProjectionOptions projectionOptions,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        ArgumentNullException.ThrowIfNull(templateRevision);
+        ArgumentNullException.ThrowIfNull(projectionOptions);
+        if (batch.ScanStatus != BatchScanStatus.ScanReady
+            || batch.InputType is null
+            || batch.Styles.IsDefaultOrEmpty
+            || string.IsNullOrWhiteSpace(batch.ManifestReference)
+            || string.IsNullOrWhiteSpace(batch.ManifestDigest))
+        {
+            throw new InvalidOperationException("AI_INPUT_BATCH_NOT_READY");
+        }
+
+        var results = new List<AiAnalysisScheduleResult>(batch.Styles.Length);
+        foreach (var style in batch.Styles.OrderBy(style => style.Order))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var request = AiAnalysisInputProjector.Project(
+                batch,
+                templateRevision,
+                style.StyleId,
+                projectionOptions with { AnalysisKind = AiAnalysisKind.ProductJointUnderstanding });
+            results.Add(await EnqueueAsync(
+                request,
+                AiAnalysisWorkStage.ProductJointUnderstanding,
+                cancellationToken).ConfigureAwait(false));
+        }
+
+        return new(
+            batch.BatchId,
+            results,
+            results.Count(result => result.Disposition == AiAnalysisWorkDisposition.Enqueued),
+            results.Count(result => result.Disposition == AiAnalysisWorkDisposition.Duplicate),
+            results.Count(result => result.Disposition == AiAnalysisWorkDisposition.CacheHit),
+            results.Count(result => result.Disposition == AiAnalysisWorkDisposition.AlreadySettled));
+    }
+
+    public async Task RequestPauseAsync(
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        SetControlState(AiAnalysisSchedulingControlState.PauseRequested, reason);
+        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ResumeAsync(CancellationToken cancellationToken)
+    {
+        lock (_pendingGate)
+        {
+            if (_controlState == AiAnalysisSchedulingControlState.Cancelled)
+            {
+                throw new InvalidOperationException("AI_SCHEDULER_CANCELLED");
+            }
+
+            _controlState = AiAnalysisSchedulingControlState.Running;
+            _controlReason = null;
+        }
+
+        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+        AiAnalysisWorkItem[] pending;
+        lock (_pendingGate)
+        {
+            pending = _pendingItems.Values.ToArray();
+        }
+
+        foreach (var item in pending)
+        {
+            var ledger = await _store.FindRequestByFingerprintAsync(
+                AiAnalysisCacheKeyFactory.Create(item.Request),
+                cancellationToken).ConfigureAwait(false);
+            if (ledger?.Status is not ("Queued" or "RetryableError"))
+            {
+                continue;
+            }
+
+            if (!_queue.IsActive(item.WorkItemId) && !_queue.TryEnqueue(item))
+            {
+                throw new InvalidOperationException("AI_SCHEDULER_RESUME_QUEUE_FULL");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Cancels only work that has not reached the provider.  In-flight or
+    /// unknown provider outcomes remain auditable and are never silently
+    /// retried; a later explicit recovery command may cancel them.
+    /// </summary>
+    public async Task<int> CancelPendingAsync(
+        string? batchId,
+        CancellationToken cancellationToken)
+    {
+        if (batchId is not null && (string.IsNullOrWhiteSpace(batchId) || batchId.Length > 128))
+        {
+            throw new ArgumentException("AI 批次标识无效。", nameof(batchId));
+        }
+
+        AiAnalysisWorkItem[] pending;
+        lock (_pendingGate)
+        {
+            pending = _pendingItems.Values
+                .Where(item => batchId is null || string.Equals(item.Request.BatchId, batchId, StringComparison.Ordinal))
+                .ToArray();
+        }
+
+        var cancelled = 0;
+        foreach (var item in pending)
+        {
+            var ledger = await _store.FindRequestByFingerprintAsync(
+                AiAnalysisCacheKeyFactory.Create(item.Request),
+                cancellationToken).ConfigureAwait(false);
+            if (ledger is null || ledger.Status is not ("Queued" or "RetryableError"))
+            {
+                continue;
+            }
+
+            await TransitionToAsync(item.Request, AiAnalysisSessionStatus.Cancelled, cancellationToken)
+                .ConfigureAwait(false);
+            lock (_pendingGate)
+            {
+                _pendingItems.Remove(item.WorkItemId);
+            }
+
+            cancelled++;
+        }
+
+        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+        return cancelled;
+    }
+
+    public async Task<int> CancelAsync(
+        string? batchId,
+        CancellationToken cancellationToken)
+    {
+        if (batchId is not null && (string.IsNullOrWhiteSpace(batchId) || batchId.Length > 128))
+        {
+            throw new ArgumentException("AI 批次标识无效。", nameof(batchId));
+        }
+
+        // The persisted control state is scheduler-wide.  A batch-scoped
+        // cancellation must therefore not silently pause/cancel unrelated
+        // batches that happen to share the same scheduler state key.
+        if (batchId is not null)
+        {
+            lock (_pendingGate)
+            {
+                var hasMatching = _pendingItems.Values.Any(item =>
+                    string.Equals(item.Request.BatchId, batchId, StringComparison.Ordinal));
+                var hasOther = _pendingItems.Values.Any(item =>
+                    !string.Equals(item.Request.BatchId, batchId, StringComparison.Ordinal));
+                if (!hasMatching)
+                {
+                    return 0;
+                }
+
+                if (hasOther)
+                {
+                    throw new InvalidOperationException("AI_SCHEDULER_BATCH_SCOPE_CONFLICT");
+                }
+            }
+        }
+
+        SetControlState(AiAnalysisSchedulingControlState.CancelRequested, "AI_CANCEL_REQUESTED");
+        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+        var cancelled = await CancelPendingAsync(batchId, cancellationToken).ConfigureAwait(false);
+        SetControlState(AiAnalysisSchedulingControlState.Cancelled, "AI_CANCELLED_BY_USER");
+        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+        return cancelled;
+    }
+
+    /// <summary>
+    /// Records a network wait without changing a request ledger.  This is used
+    /// when connectivity is known to be unavailable before a request starts;
+    /// an in-flight response-unknown outcome remains AiResultUnknown instead.
+    /// </summary>
+    public async Task WaitForNetworkAsync(
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        SetControlState(AiAnalysisSchedulingControlState.WaitingForNetwork, reason);
+        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public Task<bool> InvalidateCacheAsync(
         string cacheKey,
         CancellationToken cancellationToken) =>
@@ -91,6 +310,16 @@ public sealed class AiAnalysisScheduler : IDisposable
         {
             _budget = NormalizeBudgetSnapshot(state.Budget);
         }
+        if (!Enum.IsDefined(state.ControlState))
+        {
+            throw new InvalidDataException("AI_SCHEDULER_CONTROL_STATE_CORRUPT");
+        }
+
+        lock (_pendingGate)
+        {
+            _controlState = state.ControlState;
+            _controlReason = string.IsNullOrWhiteSpace(state.ControlReason) ? null : state.ControlReason;
+        }
 
         var restored = 0;
         foreach (var item in state.PendingItems ?? [])
@@ -109,6 +338,34 @@ public sealed class AiAnalysisScheduler : IDisposable
                 lock (_pendingGate)
                 {
                     _pendingItems.Remove(item.WorkItemId);
+                }
+
+                continue;
+            }
+
+            if (state.ControlState is AiAnalysisSchedulingControlState.CancelRequested
+                or AiAnalysisSchedulingControlState.Cancelled)
+            {
+                // A crash can occur after cancellation is durably requested but
+                // before a queued item's ledger transition. Complete that
+                // explicit transition on restore and never re-enqueue it. An
+                // in-flight item remains as auditable recovery evidence; it is
+                // not guessed successful or silently discarded.
+                if (ledger.Status is "Queued" or "RetryableError")
+                {
+                    await TransitionToAsync(item.Request, AiAnalysisSessionStatus.Cancelled, cancellationToken)
+                        .ConfigureAwait(false);
+                    lock (_pendingGate)
+                    {
+                        _pendingItems.Remove(item.WorkItemId);
+                    }
+                }
+                else
+                {
+                    lock (_pendingGate)
+                    {
+                        _pendingItems[item.WorkItemId] = item;
+                    }
                 }
 
                 continue;
@@ -137,6 +394,22 @@ public sealed class AiAnalysisScheduler : IDisposable
                 _pendingItems[item.WorkItemId] = item;
             }
 
+            if (state.ControlState is AiAnalysisSchedulingControlState.Paused
+                or AiAnalysisSchedulingControlState.PauseRequested
+                or AiAnalysisSchedulingControlState.WaitingForNetwork
+                or AiAnalysisSchedulingControlState.Cancelled)
+            {
+                if (state.ControlState == AiAnalysisSchedulingControlState.Cancelled)
+                {
+                    lock (_pendingGate)
+                    {
+                        _pendingItems.Remove(item.WorkItemId);
+                    }
+                }
+
+                continue;
+            }
+
             if (!_queue.TryEnqueue(item))
             {
                 throw new InvalidOperationException("AI_SCHEDULER_RESTORE_QUEUE_FULL");
@@ -156,6 +429,11 @@ public sealed class AiAnalysisScheduler : IDisposable
     {
         ValidateStage(request, stage);
         cancellationToken.ThrowIfCancellationRequested();
+        var controlState = ControlState;
+        if (controlState == AiAnalysisSchedulingControlState.Cancelled)
+        {
+            return new(AiAnalysisWorkDisposition.Cancelled, request.RequestId, null, "AI_SCHEDULER_CANCELLED", 0);
+        }
         var now = _timeProvider.GetUtcNow();
         var fingerprint = AiAnalysisCacheKeyFactory.Create(request);
         AiRequestLedgerEntry existing;
@@ -265,6 +543,23 @@ public sealed class AiAnalysisScheduler : IDisposable
             throw;
         }
 
+        if (ControlState is AiAnalysisSchedulingControlState.Paused
+            or AiAnalysisSchedulingControlState.PauseRequested
+            or AiAnalysisSchedulingControlState.WaitingForNetwork
+            or AiAnalysisSchedulingControlState.CancelRequested)
+        {
+            return new(
+                ControlState == AiAnalysisSchedulingControlState.WaitingForNetwork
+                    ? AiAnalysisWorkDisposition.WaitingForNetwork
+                    : ControlState == AiAnalysisSchedulingControlState.CancelRequested
+                        ? AiAnalysisWorkDisposition.Cancelled
+                        : AiAnalysisWorkDisposition.Paused,
+                request.RequestId,
+                null,
+                ControlReason,
+                item.Attempt);
+        }
+
         if (!_queue.TryEnqueue(item))
         {
             lock (_pendingGate)
@@ -337,10 +632,63 @@ public sealed class AiAnalysisScheduler : IDisposable
         var item = await _queue.DequeueAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var controlState = ControlState;
+            if (controlState is AiAnalysisSchedulingControlState.Paused
+                or AiAnalysisSchedulingControlState.PauseRequested
+                or AiAnalysisSchedulingControlState.WaitingForNetwork
+                or AiAnalysisSchedulingControlState.CancelRequested)
+            {
+                if (controlState == AiAnalysisSchedulingControlState.PauseRequested)
+                {
+                    lock (_pendingGate)
+                    {
+                        _controlState = AiAnalysisSchedulingControlState.Paused;
+                    }
+
+                    await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                if (controlState == AiAnalysisSchedulingControlState.CancelRequested)
+                {
+                    var ledger = await _store.FindRequestByFingerprintAsync(
+                        AiAnalysisCacheKeyFactory.Create(item.Request),
+                        cancellationToken).ConfigureAwait(false);
+                    if (ledger?.Status is "Queued" or "RetryableError")
+                    {
+                        await TransitionToAsync(item.Request, AiAnalysisSessionStatus.Cancelled, cancellationToken)
+                            .ConfigureAwait(false);
+                        lock (_pendingGate)
+                        {
+                            _pendingItems.Remove(item.WorkItemId);
+                        }
+
+                        await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
+                    return new(
+                        AiAnalysisWorkDisposition.Cancelled,
+                        item.Request.RequestId,
+                        null,
+                        "AI_CANCEL_REQUESTED",
+                        item.Attempt);
+                }
+
+                return new(
+                    controlState == AiAnalysisSchedulingControlState.WaitingForNetwork
+                        ? AiAnalysisWorkDisposition.WaitingForNetwork
+                        : AiAnalysisWorkDisposition.Paused,
+                    item.Request.RequestId,
+                    null,
+                    ControlReason,
+                    item.Attempt);
+            }
+
             var result = await ProcessAsync(item, cancellationToken).ConfigureAwait(false);
             if (result.Disposition != AiAnalysisWorkDisposition.RetryScheduled
                 && result.Disposition != AiAnalysisWorkDisposition.BudgetStopped
-                && result.Disposition != AiAnalysisWorkDisposition.QueueFull)
+                && result.Disposition != AiAnalysisWorkDisposition.QueueFull
+                && result.Disposition != AiAnalysisWorkDisposition.Paused
+                && result.Disposition != AiAnalysisWorkDisposition.WaitingForNetwork)
             {
                 lock (_pendingGate)
                 {
@@ -416,32 +764,66 @@ public sealed class AiAnalysisScheduler : IDisposable
         {
             return await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.Cancelled, "AI_REQUEST_CANCELLED", AiAnalysisSessionStatus.Cancelled, CancellationToken.None).ConfigureAwait(false);
         }
+        catch (Exception)
+        {
+            // An adapter exception after the request boundary leaves the
+            // provider outcome unknown.  Fail closed and persist that fact;
+            // never turn an unclassified exception into a retry or success.
+            return await CompleteTerminalAsync(
+                item,
+                AiAnalysisWorkDisposition.ResultUnknown,
+                "AI_PROVIDER_EXCEPTION_UNKNOWN",
+                AiAnalysisSessionStatus.AiResultUnknown,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Once the provider has returned, cancellation of the caller must not
+        // discard an observed result or leave the ledger in Analysing.  The
+        // state transition is itself the durable boundary and is therefore
+        // completed with a non-cancelled token.
+        var persistenceToken = CancellationToken.None;
 
         if (execution.Usage is not null)
         {
-            await AddUsageAsync(execution.Usage, cancellationToken).ConfigureAwait(false);
+            await AddUsageAsync(execution.Usage, persistenceToken).ConfigureAwait(false);
+            if (execution.Outcome != AiProviderOutcome.Completed || execution.Result is null)
+            {
+                await RecordObservedUsageAsync(item, execution.Usage, persistenceToken).ConfigureAwait(false);
+            }
         }
 
         if (execution.Outcome == AiProviderOutcome.Completed && execution.Result is not null)
         {
-            return await CompleteResultAsync(item, execution, cancellationToken).ConfigureAwait(false);
+            return await CompleteResultAsync(item, execution, persistenceToken).ConfigureAwait(false);
         }
 
         if (execution.Outcome == AiProviderOutcome.RetryableError)
         {
             if (item.Attempt + 1 < _queueOptions.MaxAttempts)
             {
-                return await ScheduleRetryAsync(item, cancellationToken).ConfigureAwait(false);
+                return await ScheduleRetryAsync(item, persistenceToken).ConfigureAwait(false);
             }
 
-            return await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, "AI_PROVIDER_RETRY_EXHAUSTED", AiAnalysisSessionStatus.TerminalError, cancellationToken).ConfigureAwait(false);
+            return await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, "AI_PROVIDER_RETRY_EXHAUSTED", AiAnalysisSessionStatus.TerminalError, persistenceToken).ConfigureAwait(false);
+        }
+
+        if (string.Equals(execution.Error?.Code, "AI_PROVIDER_NETWORK_UNAVAILABLE", StringComparison.Ordinal))
+        {
+            SetControlState(AiAnalysisSchedulingControlState.WaitingForNetwork, execution.Error?.UserAction);
+            await PersistStateAsync(persistenceToken).ConfigureAwait(false);
+            return new(
+                AiAnalysisWorkDisposition.WaitingForNetwork,
+                item.Request.RequestId,
+                null,
+                execution.Error?.Code,
+                item.Attempt);
         }
 
         return execution.Outcome switch
         {
-            AiProviderOutcome.AiResultUnknown => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.ResultUnknown, "AI_PROVIDER_RESULT_UNKNOWN", AiAnalysisSessionStatus.AiResultUnknown, cancellationToken).ConfigureAwait(false),
-            AiProviderOutcome.Cancelled => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.Cancelled, "AI_REQUEST_CANCELLED", AiAnalysisSessionStatus.Cancelled, cancellationToken).ConfigureAwait(false),
-            _ => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, execution.Error?.Code ?? "AI_PROVIDER_ERROR", AiAnalysisSessionStatus.TerminalError, cancellationToken).ConfigureAwait(false)
+            AiProviderOutcome.AiResultUnknown => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.ResultUnknown, "AI_PROVIDER_RESULT_UNKNOWN", AiAnalysisSessionStatus.AiResultUnknown, persistenceToken).ConfigureAwait(false),
+            AiProviderOutcome.Cancelled => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.Cancelled, "AI_REQUEST_CANCELLED", AiAnalysisSessionStatus.Cancelled, persistenceToken).ConfigureAwait(false),
+            _ => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, execution.Error?.Code ?? "AI_PROVIDER_ERROR", AiAnalysisSessionStatus.TerminalError, persistenceToken).ConfigureAwait(false)
         };
     }
 
@@ -483,6 +865,23 @@ public sealed class AiAnalysisScheduler : IDisposable
         }
         return new(AiAnalysisWorkDisposition.Completed, item.Request.RequestId, resultReference, null, item.Attempt);
     }
+
+    private Task RecordObservedUsageAsync(
+        AiAnalysisWorkItem item,
+        AiProviderUsage usage,
+        CancellationToken cancellationToken) => _store.RecordUsageAsync(
+        new AiUsageEventRecord(
+            $"usage-{item.Request.RequestId}-{item.Attempt}",
+            item.Request.RequestId,
+            item.Request.ModelConfigVersion,
+            usage.InputTokens,
+            usage.OutputTokens,
+            usage.CacheHit,
+            item.Attempt,
+            null,
+            null,
+            _timeProvider.GetUtcNow()),
+        cancellationToken);
 
     private async Task CompleteValidatedAsync(
         AiAnalysisRequestV1 request,
@@ -724,26 +1123,37 @@ public sealed class AiAnalysisScheduler : IDisposable
             return;
         }
 
-        AiAnalysisWorkItem[] pending;
-        lock (_pendingGate)
-        {
-            pending = _pendingItems.Values
-                .OrderBy(item => item.WorkItemId, StringComparer.Ordinal)
-                .ToArray();
-        }
-
-        AiAnalysisBudgetSnapshot budget;
-        lock (_budgetGate)
-        {
-            budget = _budget;
-        }
-
         await _statePersistenceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Capture every field after acquiring the single persistence gate.
+            // Taking the snapshot before waiting allowed an older concurrent
+            // caller to write a newer timestamp with stale pending work.
+            AiAnalysisWorkItem[] pending;
+            lock (_pendingGate)
+            {
+                pending = _pendingItems.Values
+                    .OrderBy(item => item.WorkItemId, StringComparer.Ordinal)
+                    .ToArray();
+            }
+
+            AiAnalysisBudgetSnapshot budget;
+            lock (_budgetGate)
+            {
+                budget = _budget;
+            }
+
+            AiAnalysisSchedulingControlState controlState;
+            string? controlReason;
+            lock (_pendingGate)
+            {
+                controlState = _controlState;
+                controlReason = _controlReason;
+            }
+
             await _stateStore.SaveSchedulingStateAsync(
                 _stateKey,
-                new AiAnalysisSchedulingState(pending, budget, _timeProvider.GetUtcNow()),
+                new AiAnalysisSchedulingState(pending, budget, _timeProvider.GetUtcNow(), controlState, controlReason),
                 cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -786,6 +1196,31 @@ public sealed class AiAnalysisScheduler : IDisposable
             || snapshot.EstimatedCost < 0m)
         {
             throw new InvalidDataException("AI_SCHEDULER_BUDGET_CORRUPT");
+        }
+    }
+
+    private void SetControlState(AiAnalysisSchedulingControlState state, string? reason)
+    {
+        if (!Enum.IsDefined(state))
+        {
+            throw new ArgumentOutOfRangeException(nameof(state));
+        }
+
+        if (reason is not null && (reason.Length > 512 || reason.Contains('\0')))
+        {
+            throw new ArgumentException("AI 调度控制原因无效。", nameof(reason));
+        }
+
+        lock (_pendingGate)
+        {
+            if (_controlState == AiAnalysisSchedulingControlState.Cancelled
+                && state != AiAnalysisSchedulingControlState.Cancelled)
+            {
+                throw new InvalidOperationException("AI_SCHEDULER_CANCELLED");
+            }
+
+            _controlState = state;
+            _controlReason = string.IsNullOrWhiteSpace(reason) ? null : reason;
         }
     }
 
