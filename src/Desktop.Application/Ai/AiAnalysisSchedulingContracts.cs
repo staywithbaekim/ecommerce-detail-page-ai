@@ -143,7 +143,8 @@ public sealed record AiAnalysisSchedulingState(
     AiAnalysisBudgetSnapshot Budget,
     DateTimeOffset UpdatedAt,
     AiAnalysisSchedulingControlState ControlState = AiAnalysisSchedulingControlState.Running,
-    string? ControlReason = null);
+    string? ControlReason = null,
+    IReadOnlyList<AiAnalysisRequestV1>? HistoricalRequests = null);
 
 public sealed record AiAnalysisBatchScheduleResult(
     string BatchId,

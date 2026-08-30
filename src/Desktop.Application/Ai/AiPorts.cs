@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Inputs;
@@ -38,6 +39,11 @@ public sealed record AiAnalysisCopyPreparationRequest(
     SourceAssetMetadata SourceAsset,
     string CompressionProfileVersion);
 
+public static class AiAnalysisCopyProfiles
+{
+    public const string BytePreservingProvisionalV1 = "byte-preserving/provisional-v1";
+}
+
 public sealed record AiAnalysisCopyMetadata(
     string Reference,
     string Digest,
@@ -46,7 +52,18 @@ public sealed record AiAnalysisCopyMetadata(
     int PixelWidth,
     int PixelHeight,
     string CompressionProfileVersion,
-    string LeaseId);
+    string LeaseId,
+    IReadOnlyList<string>? LeaseIds = null)
+{
+    /// <summary>
+    /// LeaseIds is the durable ownership set.  LeaseId remains the original
+    /// v1 field for wire compatibility; readers normalize old sidecars to a
+    /// single-token set.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> EffectiveLeaseIds =>
+        LeaseIds is { Count: > 0 } ? LeaseIds : [LeaseId];
+}
 
 public interface IAiAnalysisCopyPreparer
 {

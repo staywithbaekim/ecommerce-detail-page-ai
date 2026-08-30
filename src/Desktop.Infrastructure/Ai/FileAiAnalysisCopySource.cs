@@ -70,9 +70,11 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
             || metadata.Digest.Length != 71
             || !metadata.Digest.StartsWith("sha256:", StringComparison.Ordinal)
             || metadata.Digest.Skip(7).Any(c => !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-            || string.IsNullOrWhiteSpace(metadata.LeaseId)
-            || metadata.LeaseId.Length > 128
-            || metadata.LeaseId.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '_' or '-')))
+            || metadata.EffectiveLeaseIds.Count == 0
+            || metadata.EffectiveLeaseIds.Any(lease =>
+                string.IsNullOrWhiteSpace(lease)
+                || lease.Length > 128
+                || lease.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '_' or '-'))))
             throw new InvalidDataException("AI 分析副本元数据不闭合。");
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
         var digest = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

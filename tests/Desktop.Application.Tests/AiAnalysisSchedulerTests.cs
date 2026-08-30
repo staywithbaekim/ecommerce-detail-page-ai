@@ -183,6 +183,75 @@ public sealed class AiAnalysisSchedulerTests
     }
 
     [Fact]
+    public async Task CacheHitWithMissingResultIsInvalidatedAndRequeued()
+    {
+        var store = new MemoryStore();
+        var results = new RecordingResultStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
+            Result("request_01"), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero));
+        var policy = new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(provider, store, queue, policy, resultStore: results);
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Completed, (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+        results.Remove("results/request_01");
+        var equivalent = Request() with { RequestId = "request_02" };
+        var requeued = await scheduler.EnqueueAsync(equivalent, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.TerminalError, requeued.Disposition);
+        Assert.Equal("AI_CACHE_RESULT_INVALID", requeued.ErrorCode);
+        Assert.Null(await results.LoadAsync("results/request_01", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SchedulerPersistsEnqueueAndTerminalBoundariesThroughCheckpointPort()
+    {
+        var store = new MemoryStore();
+        var checkpoints = new RecordingCheckpointPort(store);
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Failure(
+            AiProviderOutcome.AiResultUnknown,
+            new ContractError("UNKNOWN", false, "provider", "请人工确认"),
+            TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider, store, queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            checkpointPort: checkpoints);
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        await scheduler.ProcessNextAsync(CancellationToken.None);
+        Assert.True(checkpoints.Commands.Count >= 2);
+        Assert.Contains(checkpoints.Commands, command => command.Graphs.Any(graph => graph.Request.RequestId == "request_01"));
+        Assert.All(checkpoints.Commands, command => Assert.Contains("request_01", command.Manifest.RequestIds));
+    }
+
+    [Fact]
+    public async Task FormalCheckpointFlowWithoutResultStoreCannotMarkProviderSuccessValidated()
+    {
+        var store = new MemoryStore();
+        var checkpoints = new RecordingCheckpointPort(store);
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
+            Result("request_01"),
+            new AiProviderUsage(1, 1, 2, false),
+            TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            checkpointPort: checkpoints);
+
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        var processed = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.TerminalError, processed.Disposition);
+        Assert.Equal("AI_RESULT_STORE_REQUIRED", processed.ErrorCode);
+        Assert.Equal("TerminalError", (await store.FindRequestByFingerprintAsync(
+            AiAnalysisCacheKeyFactory.Create(Request()), CancellationToken.None))!.Status);
+        Assert.DoesNotContain(checkpoints.Commands, command =>
+            command.Graphs.Any(graph => graph.Request.Status == "Validated"));
+    }
+
+    [Fact]
     public async Task CacheInvalidationIsExplicitAndAllowsFreshWork()
     {
         var store = new MemoryStore();
@@ -723,6 +792,48 @@ public sealed class AiAnalysisSchedulerTests
         }
     }
 
+    private sealed class RecordingCheckpointPort(MemoryStore store) : IAiAnalysisCheckpointPort
+    {
+        public List<AiAnalysisCheckpointCommand> Commands { get; } = [];
+
+        public async Task<AiAnalysisCheckpointResult> CommitAsync(AiAnalysisCheckpointCommand command, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Commands.Add(command);
+            foreach (var graph in command.Graphs)
+            {
+                var existing = await store.FindRequestByFingerprintAsync(graph.Request.Fingerprint, cancellationToken);
+                if (existing is null)
+                {
+                    await store.RecordRequestAsync(graph.Request, cancellationToken);
+                }
+                else if (!Equals(existing, graph.Request))
+                {
+                    await store.UpdateRequestStatusAsync(
+                        graph.Request.RequestId,
+                        graph.ExpectedRequestStatus,
+                        graph.Request.Status,
+                        graph.Request.ResultReference,
+                        graph.Request.UpdatedAt,
+                        cancellationToken);
+                }
+
+                await store.SaveSessionAsync(graph.Session, cancellationToken, graph.ExpectedSelectionRevision);
+                if (graph.Usage is not null) await store.RecordUsageAsync(graph.Usage, cancellationToken);
+                if (graph.Cache is not null) await store.SaveCacheReferenceAsync(graph.Cache, cancellationToken);
+            }
+
+            return new AiAnalysisCheckpointResult(
+                command.CheckpointId,
+                command.Manifest.BatchId,
+                AiAnalysisCheckpointOutcome.Committed,
+                "TEST_COMMITTED");
+        }
+
+        public Task<AiAnalysisCheckpointResult> RecoverAsync(string batchId, CancellationToken cancellationToken) =>
+            Task.FromResult(new AiAnalysisCheckpointResult(null, batchId, AiAnalysisCheckpointOutcome.NothingToRecover, "TEST_NONE"));
+    }
+
     private sealed class RecordingResultStore : IAiAnalysisResultStore
     {
         private readonly Dictionary<string, AiAnalysisResultV1> _results = new(StringComparer.Ordinal);
@@ -738,5 +849,7 @@ public sealed class AiAnalysisSchedulerTests
             _results.TryGetValue(resultReference, out var result);
             return Task.FromResult(result);
         }
+
+        public void Remove(string resultReference) => _results.Remove(resultReference);
     }
 }

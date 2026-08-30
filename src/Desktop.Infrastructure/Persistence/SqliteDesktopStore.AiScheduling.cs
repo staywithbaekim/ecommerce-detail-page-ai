@@ -131,7 +131,8 @@ public sealed partial class SqliteDesktopStore
                 control_reason = excluded.control_reason;
             """;
         command.Parameters.AddWithValue("$state_key", stateKey);
-        command.Parameters.AddWithValue("$pending_items_json", JsonSerializer.Serialize(state.PendingItems, AiJsonOptions));
+        command.Parameters.AddWithValue("$pending_items_json", JsonSerializer.Serialize(
+            new PersistedSchedulerState(state.PendingItems, state.HistoricalRequests ?? []), AiJsonOptions));
         command.Parameters.AddWithValue("$request_count", state.Budget.RequestCount);
         command.Parameters.AddWithValue("$input_tokens", state.Budget.InputTokens);
         command.Parameters.AddWithValue("$output_tokens", state.Budget.OutputTokens);
@@ -148,11 +149,10 @@ public sealed partial class SqliteDesktopStore
     {
         try
         {
-            var items = JsonSerializer.Deserialize<AiAnalysisWorkItem[]>(reader.GetString(0), AiJsonOptions)
-                ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT");
+            var (items, historicalRequests) = DeserializeSchedulerPayload(reader.GetString(0));
             var budget = new AiAnalysisBudgetSnapshot(
                 reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3),
-                decimal.Parse(reader.GetString(4), NumberStyles.Number, CultureInfo.InvariantCulture),
+                decimal.Parse(reader.GetString(4), NumberStyles.Float, CultureInfo.InvariantCulture),
                 ReadBoolean(reader.GetInt32(5), "AI_SCHEDULER_STATE_CORRUPT"),
                 ReadBoolean(reader.GetInt32(6), "AI_SCHEDULER_STATE_CORRUPT"));
             var controlState = Enum.Parse<AiAnalysisSchedulingControlState>(reader.GetString(8), false);
@@ -172,7 +172,8 @@ public sealed partial class SqliteDesktopStore
                 budget,
                 ParseTime(reader.GetString(7)),
                 controlState,
-                controlReason);
+                controlReason,
+                historicalRequests);
             ValidateSchedulingState(state);
             return state;
         }
@@ -192,7 +193,24 @@ public sealed partial class SqliteDesktopStore
         && left.Budget == right.Budget
         && left.ControlState == right.ControlState
         && string.Equals(left.ControlReason, right.ControlReason, StringComparison.Ordinal)
-        && JsonSerializer.Serialize(left.PendingItems, AiJsonOptions) == JsonSerializer.Serialize(right.PendingItems, AiJsonOptions);
+        && JsonSerializer.Serialize(left.PendingItems, AiJsonOptions) == JsonSerializer.Serialize(right.PendingItems, AiJsonOptions)
+        && JsonSerializer.Serialize(left.HistoricalRequests ?? [], AiJsonOptions)
+            == JsonSerializer.Serialize(right.HistoricalRequests ?? [], AiJsonOptions);
+
+    private static (AiAnalysisWorkItem[] Items, AiAnalysisRequestV1[] HistoricalRequests) DeserializeSchedulerPayload(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            return (JsonSerializer.Deserialize<AiAnalysisWorkItem[]>(json, AiJsonOptions)
+                        ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT"), []);
+        }
+
+        var payload = JsonSerializer.Deserialize<PersistedSchedulerState>(json, AiJsonOptions)
+            ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT");
+        return (payload.PendingItems?.ToArray() ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT"),
+            payload.HistoricalRequests?.ToArray() ?? []);
+    }
 
     private static async Task<AiAnalysisSchedulingState?> LoadSchedulingStateForWriteAsync(
         SqliteConnection connection,
@@ -260,6 +278,25 @@ public sealed partial class SqliteDesktopStore
             {
                 throw new InvalidOperationException("AI_SCHEDULER_DUPLICATE_WORK_ITEM");
             }
+        }
+
+        var history = state.HistoricalRequests ?? [];
+        if (history.Count > 10_000)
+        {
+            throw new InvalidOperationException("AI_SCHEDULER_HISTORY_TOO_LARGE");
+        }
+
+        var historyIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var request in history)
+        {
+            if (request is null || !historyIds.Add(request.RequestId))
+            {
+                throw new InvalidOperationException("AI_SCHEDULER_HISTORY_INVALID");
+            }
+
+            ValidateIdentifier(request.RequestId, "AI_REQUEST_ID_INVALID");
+            ValidateIdentifier(request.BatchId, "AI_BATCH_ID_INVALID");
+            ValidateIdentifier(request.StyleId, "AI_STYLE_ID_INVALID");
         }
     }
 
@@ -336,6 +373,10 @@ public sealed partial class SqliteDesktopStore
             ValidateIdentifier(item.ParentRequestId, "AI_PARENT_REQUEST_ID_INVALID");
         }
     }
+
+    private sealed record PersistedSchedulerState(
+        IReadOnlyList<AiAnalysisWorkItem> PendingItems,
+        IReadOnlyList<AiAnalysisRequestV1> HistoricalRequests);
 
     private static bool ReadBoolean(int value, string code) => value switch
     {

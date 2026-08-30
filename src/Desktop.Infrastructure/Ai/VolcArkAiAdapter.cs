@@ -86,6 +86,16 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                     stopwatch);
             }
 
+            if (!HasSafeRequestBudget(request))
+            {
+                return Failure(
+                    AiProviderOutcome.TerminalError,
+                    "AI_PROVIDER_REQUEST_TOO_LARGE",
+                    retryable: false,
+                    "本次分析素材过大，请减少素材或稍后重试。",
+                    stopwatch);
+            }
+
             var images = new List<AiAnalysisCopy>(request.Assets.Count);
             try
             {
@@ -278,6 +288,40 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             if (total > int.MaxValue) return long.MaxValue;
         }
         return total;
+    }
+
+    private bool HasSafeRequestBudget(AiAnalysisRequestV1 request)
+    {
+        if (request.Assets.Count is 0 or > 256)
+        {
+            return false;
+        }
+
+        long estimate = 8_192;
+        foreach (var asset in request.Assets)
+        {
+            if (asset.AnalysisCopyLength is <= 0 or > 64 * 1024 * 1024)
+            {
+                if (asset.AnalysisCopyLength is not null) return false;
+                continue;
+            }
+
+            var declaredLength = asset.AnalysisCopyLength;
+            if (declaredLength is null) continue;
+            var length = declaredLength.Value;
+            if (length > (_options.MaxRequestBytes - estimate - 64) / 2)
+            {
+                return false;
+            }
+
+            estimate += 64 + ((length + 2) / 3) * 4;
+            if (estimate > _options.MaxRequestBytes)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private AiAnalysisExecutionResult ParseProviderResponse(
