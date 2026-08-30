@@ -16,10 +16,27 @@ public sealed record VolcArkAiOptions(
     TimeSpan? RequestTimeout = null,
     int MaxRequestBytes = 8 * 1024 * 1024,
     int MaxResponseBytes = 1 * 1024 * 1024,
-    bool ReleaseCopiesAfterRequest = true)
+    bool ReleaseCopiesAfterRequest = true,
+    Action<AiResponseShapeDiagnostic>? ResponseShapeDiagnosticSink = null)
 {
     public TimeSpan EffectiveRequestTimeout => RequestTimeout ?? TimeSpan.FromSeconds(180);
 }
+
+/// <summary>
+/// Bounded response-shape evidence for opt-in troubleshooting.  This record
+/// intentionally contains no response values, IDs, media, paths or secrets.
+/// </summary>
+public sealed record AiResponseShapeDiagnostic(
+    int ResponseBytes,
+    string RootType,
+    int TopLevelFieldCount,
+    IReadOnlyList<string> TopLevelFields,
+    string StatusClass,
+    bool HasOutputText,
+    IReadOnlyList<string> OutputBlockTypes,
+    string FailureStage,
+    string? FirstSchemaFailurePath,
+    string? FirstSchemaFailureKeyword);
 
 /// <summary>
 /// Supplier-neutral result contract used by the Application port. The
@@ -329,6 +346,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         byte[] body,
         Stopwatch stopwatch)
     {
+        var shape = new ResponseShapeCollector(body.Length);
         JsonDocument document;
         try
         {
@@ -336,24 +354,37 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         }
         catch (JsonException)
         {
+            EmitDiagnostic(shape.Build("json_parse"));
             return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商返回的数据无法校验，已进入待处理状态。", stopwatch);
         }
 
         using (document)
         {
             var root = document.RootElement;
+            shape.SetRoot(root);
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                EmitDiagnostic(shape.Build("root_type"));
+                return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商返回的数据无法校验，已进入待处理状态。", stopwatch);
+            }
+
             var status = root.TryGetProperty("status", out var statusElement)
+                && statusElement.ValueKind == JsonValueKind.String
                 ? statusElement.GetString()
                 : null;
+            shape.SetStatus(ClassifyStatus(status));
+            shape.SetOutputShape(root);
             if (string.Equals(status, "in_progress", StringComparison.Ordinal)
                 || string.Equals(status, "queued", StringComparison.Ordinal))
             {
+                EmitDiagnostic(shape.Build("status_pending"));
                 return Failure(AiProviderOutcome.AiResultUnknown, "AI_PROVIDER_RESULT_PENDING", false, "供应商仍在处理，当前结果未知，请稍后查询。", stopwatch);
             }
 
             var outputText = ExtractOutputText(root);
             if (string.IsNullOrWhiteSpace(outputText))
             {
+                EmitDiagnostic(shape.Build("missing_output_text"));
                 return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商未返回结构化分析结果。", stopwatch);
             }
 
@@ -363,8 +394,9 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                 resultObject = JsonNode.Parse(outputText)?.AsObject()
                     ?? throw new JsonException();
             }
-            catch (JsonException)
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException)
             {
+                EmitDiagnostic(shape.Build("output_json_parse"));
                 return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商返回的数据不是有效 JSON。", stopwatch);
             }
 
@@ -389,9 +421,24 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             }
 
             var serialized = resultObject.ToJsonString(JsonOptions);
-            var validation = _contractValidator.Validate(ContractDocumentKind.AiAnalysis, serialized);
+            ContractValidationResult validation;
+            string? firstSchemaFailurePath = null;
+            string? firstSchemaFailureKeyword = null;
+            if (_contractValidator is IJsonContractDiagnosticValidator diagnosticValidator)
+            {
+                var diagnostic = diagnosticValidator.ValidateWithDiagnostic(ContractDocumentKind.AiAnalysis, serialized);
+                validation = diagnostic.Validation;
+                firstSchemaFailurePath = diagnostic.FirstFailureInstancePath;
+                firstSchemaFailureKeyword = diagnostic.FirstFailureKeyword;
+            }
+            else
+            {
+                validation = _contractValidator.Validate(ContractDocumentKind.AiAnalysis, serialized);
+            }
+
             if (!validation.IsValid)
             {
+                EmitDiagnostic(shape.Build("schema", firstSchemaFailurePath, firstSchemaFailureKeyword));
                 return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商返回的数据不符合结构化合同。", stopwatch);
             }
 
@@ -403,17 +450,162 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             }
             catch (JsonException)
             {
+                EmitDiagnostic(shape.Build("result_deserialize"));
                 return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商返回的数据无法读取。", stopwatch);
             }
 
             if (!string.Equals(result.RequestId, request.RequestId, StringComparison.Ordinal)
                 || !string.Equals(result.ModelConfigVersion, request.ModelConfigVersion, StringComparison.Ordinal))
             {
+                EmitDiagnostic(shape.Build("reference_mismatch"));
                 return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", false, "供应商结果与当前分析请求不匹配。", stopwatch);
             }
 
+            EmitDiagnostic(shape.Build("none"));
             stopwatch.Stop();
             return AiAnalysisExecutionResult.Completed(result, usage, stopwatch.Elapsed);
+        }
+    }
+
+    private void EmitDiagnostic(AiResponseShapeDiagnostic diagnostic)
+    {
+        var sink = _options.ResponseShapeDiagnosticSink;
+        if (sink is null)
+        {
+            return;
+        }
+
+        try
+        {
+            sink(diagnostic);
+        }
+        catch
+        {
+            // Diagnostics are strictly best-effort and must never alter the
+            // provider outcome or expose callback failures to users.
+        }
+    }
+
+    private static string ClassifyStatus(string? status) => status switch
+    {
+        "completed" or "complete" => "completed",
+        "in_progress" or "queued" or "processing" => "pending",
+        "failed" or "cancelled" or "canceled" => "terminal",
+        null or "" => "missing",
+        _ => "other"
+    };
+
+    private sealed class ResponseShapeCollector(int responseBytes)
+    {
+        private string _rootType = "invalid";
+        private readonly List<string> _topLevelFields = [];
+        private int _topLevelFieldCount;
+        private string _statusClass = "missing";
+        private bool _hasOutputText;
+        private readonly List<string> _outputBlockTypes = [];
+
+        public void SetRoot(JsonElement root)
+        {
+            _rootType = root.ValueKind switch
+            {
+                JsonValueKind.Object => "object",
+                JsonValueKind.Array => "array",
+                JsonValueKind.String => "string",
+                JsonValueKind.Number => "number",
+                JsonValueKind.True or JsonValueKind.False => "boolean",
+                JsonValueKind.Null => "null",
+                _ => "other"
+            };
+
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in root.EnumerateObject())
+                {
+                    _topLevelFieldCount++;
+                    if (_topLevelFields.Count >= 64)
+                    {
+                        continue;
+                    }
+
+                    _topLevelFields.Add(SanitizeName(property.Name));
+                }
+            }
+        }
+
+        public void SetStatus(string statusClass) => _statusClass = statusClass;
+
+        public void SetOutputShape(JsonElement root)
+        {
+            _hasOutputText = root.TryGetProperty("output_text", out _);
+            if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array)
+            {
+                return;
+            }
+
+            foreach (var item in output.EnumerateArray())
+            {
+                if (_outputBlockTypes.Count >= 64)
+                {
+                    break;
+                }
+
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    _outputBlockTypes.Add("other");
+                    continue;
+                }
+
+                if (item.TryGetProperty("type", out var itemType) && itemType.ValueKind == JsonValueKind.String)
+                {
+                    _outputBlockTypes.Add(SanitizeName(itemType.GetString() ?? "other"));
+                }
+
+                if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (_outputBlockTypes.Count >= 64)
+                    {
+                        break;
+                    }
+
+                    if (part.ValueKind == JsonValueKind.Object
+                        && part.TryGetProperty("type", out var partType)
+                        && partType.ValueKind == JsonValueKind.String)
+                    {
+                        _outputBlockTypes.Add(SanitizeName(partType.GetString() ?? "other"));
+                    }
+                }
+            }
+        }
+
+        public AiResponseShapeDiagnostic Build(
+            string failureStage,
+            string? firstSchemaFailurePath = null,
+            string? firstSchemaFailureKeyword = null) => new(
+            responseBytes,
+            _rootType,
+            _topLevelFieldCount,
+            _topLevelFields.ToArray(),
+            _statusClass,
+            _hasOutputText,
+            _outputBlockTypes.ToArray(),
+            failureStage,
+            firstSchemaFailurePath,
+            firstSchemaFailureKeyword);
+
+        private static string SanitizeName(string value)
+        {
+            if (value.Length is 0 or > 64
+                || !value.All(character => character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-'))
+            {
+                return "other";
+            }
+
+            return value;
         }
     }
 
@@ -471,6 +663,11 @@ public sealed class VolcArkAiAdapter : IAiServicePort
 
         foreach (var item in output.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
             {
                 continue;
@@ -478,6 +675,11 @@ public sealed class VolcArkAiAdapter : IAiServicePort
 
             foreach (var part in content.EnumerateArray())
             {
+                if (part.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
                 if (part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
                 {
                     var type = part.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;

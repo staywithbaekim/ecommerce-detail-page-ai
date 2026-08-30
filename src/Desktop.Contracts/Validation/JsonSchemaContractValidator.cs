@@ -4,7 +4,7 @@ using Json.Schema;
 
 namespace Desktop.Contracts.Validation;
 
-public sealed class JsonSchemaContractValidator : IJsonContractValidator
+public sealed class JsonSchemaContractValidator : IJsonContractDiagnosticValidator
 {
     private static readonly Lazy<Dictionary<ContractDocumentKind, JsonSchema>> SchemaCache = new(CreateSchemas);
     private readonly Dictionary<ContractDocumentKind, JsonSchema> _schemas;
@@ -15,10 +15,13 @@ public sealed class JsonSchemaContractValidator : IJsonContractValidator
     }
 
     public ContractValidationResult Validate(ContractDocumentKind kind, string json)
+        => ValidateWithDiagnostic(kind, json).Validation;
+
+    public ContractValidationDiagnosticResult ValidateWithDiagnostic(ContractDocumentKind kind, string json)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return Failure("CONTRACT_EMPTY", "请选择有效的合同数据后重试。");
+            return DiagnosticFailure("CONTRACT_EMPTY", "请选择有效的合同数据后重试。", null, null);
         }
 
         try
@@ -28,19 +31,78 @@ public sealed class JsonSchemaContractValidator : IJsonContractValidator
 
             var result = _schemas[kind].Evaluate(instance, new EvaluationOptions
             {
-                OutputFormat = OutputFormat.Flag,
+                OutputFormat = OutputFormat.Hierarchical,
                 RequireFormatValidation = true
             });
 
-            return result.IsValid
-                ? ContractValidationResult.Success
-                : Failure("CONTRACT_SCHEMA_REJECTED", "合同结构不符合当前协议，请修正后重试。");
+            if (result.IsValid)
+            {
+                return new ContractValidationDiagnosticResult(ContractValidationResult.Success, null, null);
+            }
+
+            var firstFailure = FindFirstFailure(result);
+            return DiagnosticFailure(
+                "CONTRACT_SCHEMA_REJECTED",
+                "合同结构不符合当前协议，请修正后重试。",
+                firstFailure.Path,
+                firstFailure.Keyword);
         }
         catch (Exception exception) when (exception is JsonException or JsonSchemaException)
         {
-            return Failure("CONTRACT_INVALID_JSON", "合同数据无法解析，请修正后重试。");
+            return DiagnosticFailure("CONTRACT_INVALID_JSON", "合同数据无法解析，请修正后重试。", null, null);
         }
     }
+
+    private static (string? Path, string? Keyword) FindFirstFailure(EvaluationResults result)
+    {
+        // Hierarchical output may put the useful error on a child node. Walk
+        // depth-first and only expose the pointer/keyword, never the message.
+        foreach (var detail in result.Details ?? [])
+        {
+            var failure = FindFirstFailure(detail);
+            if (failure.Path is not null || failure.Keyword is not null)
+            {
+                return failure;
+            }
+        }
+
+        if (result.Errors is { Count: > 0 } && !result.IsValid)
+        {
+            return (SanitizePointer(result.InstanceLocation.ToString()),
+                SanitizeKeyword(result.Errors.Keys.FirstOrDefault()));
+        }
+
+        return !result.IsValid
+            ? (SanitizePointer(result.InstanceLocation.ToString()), null)
+            : (null, null);
+    }
+
+    private static string? SanitizePointer(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 256)
+        {
+            return null;
+        }
+
+        // Json Pointer locations are structural. Keep only the bounded ASCII
+        // form so an implementation-specific ToString cannot leak data.
+        foreach (var character in value)
+        {
+            if (!(character is '/' or '~' or >= '0' and <= '9' or >= 'A' and <= 'Z' or >= 'a' and <= 'z' or '_' or '-' or '.'))
+            {
+                return null;
+            }
+        }
+
+        return value;
+    }
+
+    private static string? SanitizeKeyword(string? value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.Length <= 64
+        && value.All(character => character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-')
+            ? value
+            : null;
 
     private static JsonSchema LoadSchema(string fileName)
     {
@@ -63,10 +125,14 @@ public sealed class JsonSchemaContractValidator : IJsonContractValidator
         [ContractDocumentKind.AiAnalysis] = LoadSchema("ai-analysis-v1.schema.json")
     };
 
-    private static ContractValidationResult Failure(string code, string userAction) =>
-        ContractValidationResult.Failure(new ContractError(
+    private static ContractValidationDiagnosticResult DiagnosticFailure(
+        string code,
+        string userAction,
+        string? path,
+        string? keyword) =>
+        new(ContractValidationResult.Failure(new ContractError(
             code,
             Retryable: false,
             Scope: "contract",
-            UserAction: userAction));
+            UserAction: userAction)), path, keyword);
 }

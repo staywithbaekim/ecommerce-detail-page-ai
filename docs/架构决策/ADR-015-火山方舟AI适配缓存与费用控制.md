@@ -47,6 +47,26 @@ V1 使用火山引擎/方舟 API，客户提供自己的 API Key，由项目方�
 - 产品负责人已确认 V1 当前源图业务范围：常见单图约 20–30MB，约 50MB 必须可用；接受每张源图 `64 MiB` 的本地读取上限，暂不向上兼容 67–100MB 单图。该上限按单文件计算，不是文件夹或批次总量；超限必须在读取/解码前明确拒绝，不能静默降质或改写源图。
 - 上述确认只冻结 V1 的单图源文件读取上限。`max1600`、JPEG q82、输出 8 MiB、源像素 100M、单款请求上限及 S3 并发/重试/费用参数仍需在逐次批准的最少量正式方舟探测中记录脱敏尺寸、字节、tokens、延迟和费用摘要后冻结或修订。
 
+### 2026-08-30 真实参数探测结果补充
+
+产品负责人批准使用三张本地图片进行最小探测；本轮仅选第 1 张 JPG，在应用自有临时副本上通过正式 `VolcArkAiAdapter` 执行 2 次单图请求。两次均返回 `TerminalError`，第 2 次稳定错误码为 `AI_PROVIDER_RESPONSE_INVALID`；输入 192,586 bytes，耗时约 11.5 s / 8.2 s，adapter 未解析到 tokens 或费用，临时副本和环境变量已清理。相同响应阻断连续两次后按任务规则停止 workaround 链，不把该结果解释为零费用或可用结构化结果。由于没有形成可校验的 `ai-analysis-result/v1`，本轮不冻结或修订模型、WIC compression profile、单款请求上限、并发、重试、告警线或硬停止线；这些参数继续保持 candidate/pending，待后续批准的技术修正和真实证据评估。
+
+### 响应形状脱敏诊断（2026-08-30）
+
+为定位 `AI_PROVIDER_RESPONSE_INVALID`，`VolcArkAiAdapter` 增加默认关闭的 `ResponseShapeDiagnosticSink`。启用时只允许记录响应字节数、JSON 根类型、受限顶层字段名/数量、状态分类、`output_text` 存在性、输出块类型、固定失败阶段及首个 Schema 失败实例路径/关键字；不记录任何响应值、response ID、媒体、本机路径、Key、认证头或账单原文。`JsonSchemaContractValidator` 通过可选诊断接口使用 Hierarchical evaluation 提供首个路径，正式 `IJsonContractValidator` 行为与 `ai-analysis-result/v1` 严格 Schema 保持不变；诊断回调异常不影响 provider 结果。
+
+已通过线程工具向产品负责人申请下一次仅 1 次真实请求（批准图片 #1、应用自有临时副本、约 192,586 bytes、图片必传、严格 Schema）；明确审批返回前不调用方舟。若获批，调用结束立即清理临时副本、环境变量和媒体；本轮费用事实仍为未知，所有生产参数继续 candidate/pending。
+
+### 获批执行的凭据前置阻断（2026-08-30）
+
+审批已通过，但正式 probe 在 HTTP 请求前由 `WindowsCredentialSource` 返回 `AI_PROVIDER_CREDENTIAL_MISSING`；`AI-01-VolcArk-Test` 目标当前不存在。故 provider 请求数为 0、未产生响应或费用证据，临时副本和环境变量已清理。补齐凭据后必须再次确认单次调用门；不允许以无图片请求或放宽 Schema 规避。
+
+### 2026-08-30 针对性 Schema 诊断请求
+
+凭据可读取后，产品负责人批准同一张批准 JPG 的应用自有临时副本，通过正式 adapter 发出唯一 1 次真实请求。请求保持图片必传和严格 `ai-analysis-result/v1`，调用后清理副本、环境变量和媒体。结果为 `TerminalError` / `AI_PROVIDER_RESPONSE_INVALID`，约 9.6 s，输入 192,586 bytes；usage/tokens/cache hit 和费用均未知。
+
+默认关闭的形状诊断给出首个失败阶段 `schema`、实例路径 `/requirement_matches/0/matched`，关键字未提供。该证据只证明 provider JSON 到达严格本地合同但字段形状不匹配，不授权放宽合同、删除图片输入或冻结任何费用/并发参数。后续必须先完成字段语义评审，再重新申请单次真实请求。
+
 ## 退出条件
 
 若方舟合同不能满足隐私、延迟、结构输出或费用门，保留 `IAiAnalyzer` 端口并由新 ADR 选择兼容供应商；不得把供应商响应直接暴露给 Domain，也不得降低 PRD 准确率和原图保护要求。

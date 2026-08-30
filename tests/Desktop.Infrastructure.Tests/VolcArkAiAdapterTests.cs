@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Desktop.Application.Ai;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
@@ -18,14 +19,31 @@ public sealed class VolcArkAiAdapterTests
         if (string.IsNullOrWhiteSpace(copyPath) || !File.Exists(copyPath)) return;
 
         var handler = new HttpClientHandler();
+        var diagnostics = new List<AiResponseShapeDiagnostic>();
         var adapter = new VolcArkAiAdapter(
             new HttpClient(handler),
             new WindowsCredentialSource(),
             new ProbeCopySource(copyPath),
-            new JsonSchemaContractValidator());
+            new JsonSchemaContractValidator(),
+            new VolcArkAiOptions(ResponseShapeDiagnosticSink: diagnostics.Add));
         var result = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
-        Assert.Equal(AiProviderOutcome.Completed, result.Outcome);
-        Assert.NotNull(result.Result);
+        var usage = result.Usage;
+        foreach (var diagnostic in diagnostics)
+        {
+            Console.WriteLine($"REAL_PROBE_RESPONSE_SHAPE {JsonSerializer.Serialize(diagnostic)}");
+        }
+        Console.WriteLine(
+            $"REAL_PROBE_METRICS outcome={result.Outcome} duration_ms={result.Duration.TotalMilliseconds:F0} "
+            + $"input_bytes={new FileInfo(copyPath).Length} input_tokens={usage?.InputTokens ?? 0} "
+            + $"output_tokens={usage?.OutputTokens ?? 0} total_tokens={usage?.TotalTokens ?? 0} "
+            + $"cache_hit={usage?.CacheHit ?? false} error_code={result.Error?.Code ?? "none"}");
+        if (result.Outcome != AiProviderOutcome.Completed || result.Result is null)
+        {
+            var shapeSummary = JsonSerializer.Serialize(diagnostics);
+            Assert.Fail(
+                $"REAL_PROBE_FAILURE outcome={result.Outcome} error_code={result.Error?.Code ?? "none"} "
+                + $"duration_ms={result.Duration.TotalMilliseconds:F0} diagnostics={shapeSummary}");
+        }
     }
 
     private sealed class RealProbeFactAttribute : FactAttribute
@@ -166,6 +184,99 @@ public sealed class VolcArkAiAdapterTests
         var unknown = await pendingAdapter.AnalyzeAsync(Request(), CancellationToken.None);
         Assert.Equal(AiProviderOutcome.AiResultUnknown, unknown.Outcome);
         Assert.Equal("AI_PROVIDER_RESULT_PENDING", unknown.Error!.Code);
+    }
+
+    [Fact]
+    public async Task EmitsSanitizedShapeForMalformedJsonOnlyWhenSinkEnabled()
+    {
+        AiResponseShapeDiagnostic? diagnostic = null;
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{not-json")
+        });
+        var adapter = CreateAdapter(
+            handler,
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(ResponseShapeDiagnosticSink: value => diagnostic = value));
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.NotNull(diagnostic);
+        Assert.Equal("invalid", diagnostic!.RootType);
+        Assert.Equal("json_parse", diagnostic.FailureStage);
+        Assert.Empty(diagnostic.TopLevelFields);
+        Assert.DoesNotContain("not-json", JsonSerializer.Serialize(diagnostic), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EmitsShapeForMissingOutputWithoutResponseValues()
+    {
+        AiResponseShapeDiagnostic? diagnostic = null;
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\":\"completed\",\"id\":\"secret-response-id\"}")
+        });
+        var adapter = CreateAdapter(
+            handler,
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(ResponseShapeDiagnosticSink: value => diagnostic = value));
+
+        await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.NotNull(diagnostic);
+        Assert.Equal("object", diagnostic!.RootType);
+        Assert.Equal("completed", diagnostic.StatusClass);
+        Assert.False(diagnostic.HasOutputText);
+        Assert.Equal("missing_output_text", diagnostic.FailureStage);
+        Assert.Contains("status", diagnostic.TopLevelFields);
+        Assert.Contains("id", diagnostic.TopLevelFields);
+        Assert.DoesNotContain("secret-response-id", JsonSerializer.Serialize(diagnostic), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EmitsFirstSchemaFailurePathAndKeywordWithoutResponseBody()
+    {
+        var response = JsonNode.Parse(SuccessBody())!.AsObject();
+        var structured = JsonNode.Parse(response["output"]![0]!["content"]![0]!["text"]!.GetValue<string>())!.AsObject();
+        structured.Remove("request_id");
+        response["output"]![0]!["content"]![0]!["text"] = structured.ToJsonString();
+
+        AiResponseShapeDiagnostic? diagnostic = null;
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(response.ToJsonString(), Encoding.UTF8, "application/json")
+        });
+        var adapter = CreateAdapter(
+            handler,
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(ResponseShapeDiagnosticSink: value => diagnostic = value));
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.NotNull(diagnostic);
+        Assert.Equal("schema", diagnostic!.FailureStage);
+        Assert.StartsWith("/", diagnostic.FirstSchemaFailurePath);
+        Assert.Matches("^[A-Za-z0-9_-]+$", diagnostic.FirstSchemaFailureKeyword!);
+        Assert.DoesNotContain("request_01", JsonSerializer.Serialize(diagnostic), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DiagnosticSinkFailureCannotChangeProviderOutcome()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(SuccessBody(), Encoding.UTF8, "application/json")
+        });
+        var adapter = CreateAdapter(
+            handler,
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(ResponseShapeDiagnosticSink: _ => throw new InvalidOperationException("diagnostic-only")));
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.Completed, execution.Outcome);
     }
 
     [Fact]

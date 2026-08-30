@@ -180,6 +180,34 @@ public sealed class JsonSchemaContractValidatorTests
             missingRequestId.ToJsonString()).IsValid);
     }
 
+    [Fact]
+    public void DiagnosticValidationReturnsBoundedFirstSchemaFailurePath()
+    {
+        var missingRequestId = JsonNode.Parse(LoadValidAiResult())!.AsObject();
+        missingRequestId.Remove("request_id");
+
+        var diagnostic = _validator.ValidateWithDiagnostic(
+            ContractDocumentKind.AiAnalysis,
+            missingRequestId.ToJsonString());
+
+        Assert.False(diagnostic.Validation.IsValid);
+        Assert.StartsWith("/", diagnostic.FirstFailureInstancePath);
+        Assert.Matches("^[A-Za-z0-9_-]+$", diagnostic.FirstFailureKeyword!);
+        Assert.DoesNotContain("request_0001", diagnostic.FirstFailureInstancePath, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DiagnosticValidationDoesNotExposeMalformedJson()
+    {
+        var diagnostic = _validator.ValidateWithDiagnostic(
+            ContractDocumentKind.AiAnalysis,
+            "{not-json");
+
+        Assert.False(diagnostic.Validation.IsValid);
+        Assert.Null(diagnostic.FirstFailureInstancePath);
+        Assert.Null(diagnostic.FirstFailureKeyword);
+    }
+
     [Theory]
     [InlineData("secret-field")]
     [InlineData("unsupported-analysis-kind")]
