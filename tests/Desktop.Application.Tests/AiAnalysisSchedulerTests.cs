@@ -495,7 +495,7 @@ public sealed class AiAnalysisSchedulerTests
     }
 
     [Fact]
-    public async Task CacheInvalidationIsExplicitAndAllowsFreshWork()
+    public async Task CacheInvalidationIsExplicitAndSameFingerprintRemainsFailClosed()
     {
         var store = new MemoryStore();
         var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
@@ -513,8 +513,276 @@ public sealed class AiAnalysisSchedulerTests
         var key = AiAnalysisCacheKeyFactory.Create(Request());
         Assert.Equal(AiAnalysisWorkDisposition.Completed, (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
         Assert.True(await scheduler.InvalidateCacheAsync(key, CancellationToken.None));
-        Assert.Null(await store.FindCacheReferenceAsync(key, CancellationToken.None));
+        Assert.False((await store.FindCacheReferenceAsync(key, CancellationToken.None))!.IsReusable);
         Assert.False(await scheduler.InvalidateCacheAsync(key, CancellationToken.None));
+        var sameFingerprint = await scheduler.EnqueueAsync(
+            Request() with { RequestId = "request_02" },
+            AiAnalysisWorkStage.ProductJointUnderstanding,
+            CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.TerminalError, sameFingerprint.Disposition);
+        Assert.Equal("AI_CACHE_INVALIDATED_REANALYSIS_VERSION_REQUIRED", sameFingerprint.ErrorCode);
+        Assert.Equal(1, provider.Calls);
+        Assert.Equal(0, queue.Count);
+    }
+
+    [Fact]
+    public async Task SameRequestInvalidCacheStopsBeforeQueueAndProvider()
+    {
+        var store = new MemoryStore();
+        var results = new RecordingResultStore();
+        var request = Request();
+        var now = DateTimeOffset.UtcNow;
+        await store.RecordRequestAsync(new AiRequestLedgerEntry(
+            request.RequestId,
+            AiAnalysisCacheKeyFactory.Create(request),
+            request.BatchId,
+            request.StyleId,
+            "Queued",
+            null,
+            now,
+            now), CancellationToken.None);
+        await store.SaveSessionAsync(
+            AiAnalysisSession.Create(
+                "session-request_01", request.BatchId, request.StyleId, request.TemplateSnapshotId,
+                "analysis-request_01", request.Requirements.Select(item => item.RequirementId), request.Assets.Select(item => item.AssetId)),
+            CancellationToken.None);
+        var usage = new AiUsageEventRecord(
+            "usage-invalid", request.RequestId, request.ModelConfigVersion,
+            1, 1, false, 0, null, null, now.AddTicks(1));
+        await store.RecordUsageAsync(usage, CancellationToken.None);
+        await store.SaveCacheReferenceAsync(new AiCacheReference(
+            AiAnalysisCacheKeyFactory.Create(request),
+            "results/request_01",
+            request.ConsentId,
+            request.ModelConfigVersion,
+            usage.UsageEventId,
+            now.AddTicks(2)), CancellationToken.None);
+        var provider = new SequenceProvider(_ => throw new InvalidOperationException("PROVIDER_NOT_EXPECTED"));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            resultStore: results);
+
+        var rejected = await scheduler.EnqueueAsync(
+            request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.TerminalError, rejected.Disposition);
+        Assert.Equal("AI_CACHE_RESULT_INVALID", rejected.ErrorCode);
+        Assert.Equal(0, provider.Calls);
+        Assert.Equal(0, queue.Count);
+        Assert.False((await store.FindCacheReferenceAsync(AiAnalysisCacheKeyFactory.Create(request), CancellationToken.None))!.IsReusable);
+    }
+
+    [Fact]
+    public async Task FormalCacheInvalidationCommitsLogicalTombstoneAndPreservesHistoricalGraph()
+    {
+        var store = new MemoryStore();
+        var results = new RecordingResultStore();
+        var checkpoints = new RecordingCheckpointPort(store);
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            new SequenceProvider(request => AiAnalysisExecutionResult.Completed(
+                Result(request.RequestId), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero)),
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            resultStore: results,
+            checkpointPort: checkpoints);
+        var request = Request();
+        await scheduler.EnqueueAsync(request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Completed,
+            (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+        var key = AiAnalysisCacheKeyFactory.Create(request);
+        var commandsBefore = checkpoints.Commands.Count;
+
+        Assert.True(await scheduler.InvalidateCacheAsync(key, CancellationToken.None));
+
+        var invalidated = await store.FindCacheReferenceAsync(key, CancellationToken.None);
+        Assert.NotNull(invalidated);
+        Assert.False(invalidated!.IsReusable);
+        Assert.Equal(commandsBefore + 1, checkpoints.Commands.Count);
+        var graph = Assert.Single(checkpoints.Commands[^1].Graphs);
+        Assert.Equal(key, graph.Cache!.CacheKey);
+        Assert.False(graph.Cache.IsReusable);
+        Assert.Equal("usage-request_01-0", graph.Usage!.UsageEventId);
+    }
+
+    [Fact]
+    public async Task FormalAutomaticInvalidationRetainsCorruptCacheAsNonReusableHistory()
+    {
+        var store = new MemoryStore();
+        var results = new RecordingResultStore();
+        var checkpoints = new RecordingCheckpointPort(store);
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            new SequenceProvider(request => AiAnalysisExecutionResult.Completed(
+                Result(request.RequestId), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero)),
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            resultStore: results,
+            checkpointPort: checkpoints);
+        var request = Request();
+        await scheduler.EnqueueAsync(request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        await scheduler.ProcessNextAsync(CancellationToken.None);
+        results.Remove("results/request_01");
+
+        var rejected = await scheduler.EnqueueAsync(
+            request with { RequestId = "request_02" },
+            AiAnalysisWorkStage.ProductJointUnderstanding,
+            CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.TerminalError, rejected.Disposition);
+        Assert.Equal("AI_CACHE_RESULT_INVALID", rejected.ErrorCode);
+        var cache = await store.FindCacheReferenceAsync(AiAnalysisCacheKeyFactory.Create(request), CancellationToken.None);
+        Assert.NotNull(cache);
+        Assert.False(cache!.IsReusable);
+        Assert.False(checkpoints.Commands[^1].Graphs.Single().Cache!.IsReusable);
+    }
+
+    [Fact]
+    public async Task FormalExistingLedgerWithoutSessionFailsClosedWithoutHalfGraphRepair()
+    {
+        var store = new MemoryStore();
+        var checkpoints = new RecordingCheckpointPort(store);
+        var request = Request();
+        var now = DateTimeOffset.UtcNow;
+        await store.RecordRequestAsync(new AiRequestLedgerEntry(
+            request.RequestId,
+            AiAnalysisCacheKeyFactory.Create(request),
+            request.BatchId,
+            request.StyleId,
+            "Queued",
+            null,
+            now,
+            now), CancellationToken.None);
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            new SequenceProvider(_ => throw new InvalidOperationException("PROVIDER_NOT_EXPECTED")),
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            checkpointPort: checkpoints);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => scheduler.EnqueueAsync(
+            request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None));
+
+        Assert.Equal("AI_CHECKPOINT_SESSION_MISSING", exception.Message);
+        Assert.Null(await store.LoadSessionAsync("session-request_01", CancellationToken.None));
+        Assert.Empty(checkpoints.Commands);
+    }
+
+    [Fact]
+    public async Task TerminalLeaseCleanupFailureIsRetriedFromHistoricalStateAfterRestart()
+    {
+        var store = new MemoryStore();
+        var stateStore = new MemorySchedulingStateStore();
+        var copies = new RecordingCopyPreparer();
+        var request = Request() with
+        {
+            Assets = Request().Assets
+                .Select(asset => asset with { AnalysisCopyLeaseId = "lease-prepared-" + asset.AssetId })
+                .ToArray()
+        };
+        foreach (var asset in request.Assets)
+        {
+            await copies.AcquireAsync(asset.AnalysisCopyReference, asset.AnalysisCopyLeaseId!, CancellationToken.None);
+        }
+
+        using (var firstQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1)))
+        using (var first = new AiAnalysisScheduler(
+            new SequenceProvider(_ => AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.TerminalError,
+                new ContractError("TERMINAL", false, "provider", "不可重试"),
+                TimeSpan.Zero)),
+            store,
+            firstQueue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            stateStore: stateStore,
+            copyLeaseManager: copies))
+        {
+            await first.EnqueueAsync(request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+            copies.FailNextRelease = true;
+            Assert.Equal(AiAnalysisWorkDisposition.TerminalError,
+                (await first.ProcessNextAsync(CancellationToken.None)).Disposition);
+            Assert.Contains(copies.Leases("copy_01"), lease => lease.StartsWith("lease-work-", StringComparison.Ordinal));
+        }
+
+        using var reopenedQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var reopened = new AiAnalysisScheduler(
+            new SequenceProvider(_ => throw new InvalidOperationException("PROVIDER_NOT_EXPECTED")),
+            store,
+            reopenedQueue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            stateStore: stateStore,
+            copyLeaseManager: copies);
+
+        Assert.Equal(0, await reopened.RestoreAsync(CancellationToken.None));
+        Assert.DoesNotContain(copies.Leases("copy_01"), lease => lease.StartsWith("lease-work-", StringComparison.Ordinal));
+        Assert.DoesNotContain(copies.Leases("copy_02"), lease => lease.StartsWith("lease-work-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PlanClosedFirstLayerLeaseIsReleasedAfterRestartWithoutRefinementChild()
+    {
+        var store = new MemoryStore();
+        var stateStore = new MemorySchedulingStateStore();
+        var copies = new RecordingCopyPreparer();
+        var results = new RecordingResultStore();
+        var request = Request() with
+        {
+            Assets = Request().Assets
+                .Select(asset => asset with { AnalysisCopyLeaseId = "lease-prepared-" + asset.AssetId })
+                .ToArray()
+        };
+        foreach (var asset in request.Assets)
+        {
+            await copies.AcquireAsync(asset.AnalysisCopyReference, asset.AnalysisCopyLeaseId!, CancellationToken.None);
+        }
+
+        using (var firstQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1)))
+        using (var first = new AiAnalysisScheduler(
+            new SequenceProvider(current => AiAnalysisExecutionResult.Completed(
+                Result(current.RequestId), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero)),
+            store,
+            firstQueue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            stateStore: stateStore,
+            resultStore: results,
+            copyLeaseManager: copies))
+        {
+            await first.EnqueueAsync(request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+            Assert.Equal(AiAnalysisWorkDisposition.Completed,
+                (await first.ProcessNextAsync(CancellationToken.None)).Disposition);
+        }
+
+        var fingerprint = AiAnalysisCacheKeyFactory.Create(request);
+        var ledger = (await store.FindRequestByFingerprintAsync(fingerprint, CancellationToken.None))!;
+        await store.UpdateRequestStatusAsync(
+            ledger.RequestId, "Validated", "PlanClosed", ledger.ResultReference,
+            ledger.UpdatedAt.AddTicks(1), CancellationToken.None);
+        var session = (await store.LoadSessionAsync("session-request_01", CancellationToken.None))!;
+        await store.SaveSessionAsync(
+            session.AdvanceTo(AiAnalysisSessionStatus.PlanClosed),
+            CancellationToken.None,
+            session.SelectionRevision);
+
+        using var reopenedQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var reopened = new AiAnalysisScheduler(
+            new SequenceProvider(_ => throw new InvalidOperationException("PROVIDER_NOT_EXPECTED")),
+            store,
+            reopenedQueue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+            stateStore: stateStore,
+            resultStore: results,
+            copyLeaseManager: copies);
+
+        Assert.Equal(0, await reopened.RestoreAsync(CancellationToken.None));
+        Assert.DoesNotContain(copies.Leases("copy_01"), lease => lease.StartsWith("lease-work-", StringComparison.Ordinal));
+        Assert.DoesNotContain(copies.Leases("copy_02"), lease => lease.StartsWith("lease-work-", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1033,7 +1301,13 @@ public sealed class AiAnalysisSchedulerTests
         public Task<bool> InvalidateCacheReferenceAsync(string cacheKey, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_caches.Remove(cacheKey));
+            if (!_caches.TryGetValue(cacheKey, out var cache) || !cache.IsReusable)
+            {
+                return Task.FromResult(false);
+            }
+
+            _caches[cacheKey] = cache with { IsReusable = false };
+            return Task.FromResult(true);
         }
 
         public Task<AiCacheReference?> FindCacheReferenceAsync(string cacheKey, CancellationToken cancellationToken)
@@ -1093,6 +1367,7 @@ public sealed class AiAnalysisSchedulerTests
         private int _leaseSequence;
 
         public int PrepareCalls { get; private set; }
+        public bool FailNextRelease { get; set; }
 
         public Task<AiAnalysisCopyMetadata> PrepareAsync(
             AiAnalysisCopyPreparationRequest request,
@@ -1138,6 +1413,12 @@ public sealed class AiAnalysisSchedulerTests
         public Task ReleaseAsync(string analysisCopyReference, string leaseId, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (FailNextRelease)
+            {
+                FailNextRelease = false;
+                throw new IOException("TEST_LEASE_RELEASE_FAILURE");
+            }
+
             if (_leases.TryGetValue(analysisCopyReference, out var leases)) leases.Remove(leaseId);
             return Task.CompletedTask;
         }

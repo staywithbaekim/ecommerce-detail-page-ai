@@ -272,6 +272,11 @@ public sealed partial class SqliteDesktopStore
         async (connection, token) =>
         {
             ValidateCacheReference(reference);
+            if (!reference.IsReusable)
+            {
+                throw new InvalidOperationException("AI_CACHE_INITIAL_STATE_INVALID");
+            }
+
             await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
             var usage = await FindUsageByIdForWriteAsync(connection, reference.UsageEventId, token, transaction).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("AI_CACHE_USAGE_NOT_FOUND");
@@ -306,13 +311,14 @@ public sealed partial class SqliteDesktopStore
 
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = "INSERT INTO ai_cache_references(cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at) VALUES($cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at);";
+            command.CommandText = "INSERT INTO ai_cache_references(cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at, is_reusable) VALUES($cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at, $is_reusable);";
             command.Parameters.AddWithValue("$cache_key", reference.CacheKey);
             command.Parameters.AddWithValue("$result_reference", reference.ResultReference);
             command.Parameters.AddWithValue("$consent_id", reference.ConsentId);
             command.Parameters.AddWithValue("$model_config_version", reference.ModelConfigVersion);
             command.Parameters.AddWithValue("$usage_event_id", reference.UsageEventId);
             command.Parameters.AddWithValue("$created_at", reference.CreatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$is_reusable", reference.IsReusable ? 1 : 0);
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
@@ -323,7 +329,7 @@ public sealed partial class SqliteDesktopStore
         ValidateDigest(cacheKey, "AI_CACHE_KEY_INVALID");
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at FROM ai_cache_references WHERE cache_key = $cache_key;";
+        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at, is_reusable FROM ai_cache_references WHERE cache_key = $cache_key;";
         command.Parameters.AddWithValue("$cache_key", cacheKey);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -390,13 +396,19 @@ public sealed partial class SqliteDesktopStore
                 throw new InvalidDataException("AI_CACHE_CLOSURE_INVALID");
             }
 
+            if (!existing.IsReusable)
+            {
+                await transaction.RollbackAsync(token).ConfigureAwait(false);
+                return false;
+            }
+
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = "DELETE FROM ai_cache_references WHERE cache_key = $cache_key;";
+            command.CommandText = "UPDATE ai_cache_references SET is_reusable = 0 WHERE cache_key = $cache_key AND is_reusable = 1;";
             command.Parameters.AddWithValue("$cache_key", cacheKey);
-            var removed = await command.ExecuteNonQueryAsync(token).ConfigureAwait(false) == 1;
+            var invalidated = await command.ExecuteNonQueryAsync(token).ConfigureAwait(false) == 1;
             await transaction.CommitAsync(token).ConfigureAwait(false);
-            return removed;
+            return invalidated;
         }, cancellationToken);
 
     public Task RecordUsageAsync(AiUsageEventRecord usage, CancellationToken cancellationToken) => _writer.ExecuteAsync(
@@ -527,7 +539,20 @@ public sealed partial class SqliteDesktopStore
     {
         try
         {
-            var reference = new AiCacheReference(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTime(reader.GetString(5)));
+            var reusableValue = reader.GetInt64(6);
+            if (reusableValue is not (0 or 1))
+            {
+                throw new InvalidDataException("AI_CACHE_RECORD_CORRUPT");
+            }
+
+            var reference = new AiCacheReference(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                ParseTime(reader.GetString(5)),
+                reusableValue == 1);
             ValidateCacheReference(reference);
             return reference;
         }
@@ -848,7 +873,7 @@ public sealed partial class SqliteDesktopStore
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at FROM ai_cache_references WHERE cache_key = $cache_key;";
+        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at, is_reusable FROM ai_cache_references WHERE cache_key = $cache_key;";
         command.Parameters.AddWithValue("$cache_key", cacheKey);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)

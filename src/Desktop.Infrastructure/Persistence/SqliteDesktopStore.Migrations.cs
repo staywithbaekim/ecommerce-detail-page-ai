@@ -363,6 +363,10 @@ public sealed partial class SqliteDesktopStore
                 ADD COLUMN control_state TEXT NOT NULL DEFAULT 'Running';
             ALTER TABLE ai_analysis_scheduler_state
                 ADD COLUMN control_reason TEXT NULL;
+            """),
+        new(11, "desktop-v11-ai-cache-logical-invalidation-001", """
+            ALTER TABLE ai_cache_references
+                ADD COLUMN is_reusable INTEGER NOT NULL DEFAULT 1 CHECK(is_reusable IN (0, 1));
             """)
     ];
 

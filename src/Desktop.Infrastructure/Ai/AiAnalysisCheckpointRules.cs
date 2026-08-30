@@ -87,7 +87,7 @@ public static class AiAnalysisCheckpointRules
                     expected_session_status = graph.ExpectedSessionStatus.ToString(),
                     graph.ExpectedSelectionRevision,
                     usage = graph.Usage,
-                    cache = graph.Cache
+                    cache = CachePayload(graph.Cache)
                 })
                 .ToArray(),
             created_at = command.CreatedAt.ToString("O")
@@ -460,6 +460,41 @@ public static class AiAnalysisCheckpointRules
             .ToArray(),
         session.HasVerifiedResult
     };
+
+    private static object? CachePayload(AiCacheReference? cache)
+    {
+        if (cache is null)
+        {
+            return null;
+        }
+
+        // Preserve the v7-v10 canonical payload for active references. Adding
+        // a default true field would change every committed payload digest on
+        // upgrade. Only a real S3 tombstone extends the canonical shape.
+        if (cache.IsReusable)
+        {
+            return new
+            {
+                cache.CacheKey,
+                cache.ResultReference,
+                cache.ConsentId,
+                cache.ModelConfigVersion,
+                cache.UsageEventId,
+                cache.CreatedAt
+            };
+        }
+
+        return new
+        {
+            cache.CacheKey,
+            cache.ResultReference,
+            cache.ConsentId,
+            cache.ModelConfigVersion,
+            cache.UsageEventId,
+            cache.CreatedAt,
+            cache.IsReusable
+        };
+    }
 
     private static bool TryStatus(string value, out AiAnalysisSessionStatus status) =>
         Enum.TryParse(value, false, out status) && Enum.IsDefined(status);

@@ -98,7 +98,45 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(10, migrationVersion);
+        Assert.Equal(11, migrationVersion);
+    }
+
+    [Fact]
+    public async Task V10CacheDataUpgradesToLogicalInvalidationAndDefaultsReusable()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var fingerprint = "sha256:" + new string('a', 64);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.RecordRequestAsync(new AiRequestLedgerEntry(
+                "request_v10", fingerprint, "batch_01", "style_01", "Queued", null, now, now), CancellationToken.None);
+            await store.UpdateRequestStatusAsync("request_v10", "Queued", "Uploading", null, now.AddTicks(1), CancellationToken.None);
+            await store.UpdateRequestStatusAsync("request_v10", "Uploading", "Analysing", null, now.AddTicks(2), CancellationToken.None);
+            await store.UpdateRequestStatusAsync(
+                "request_v10", "Analysing", "Validated", "results/request_v10", now.AddTicks(3), CancellationToken.None);
+            await store.RecordUsageAsync(new AiUsageEventRecord(
+                "usage_v10", "request_v10", "model/v10", 1, 1, false, 0, null, null, now.AddTicks(4)), CancellationToken.None);
+            await store.SaveCacheReferenceAsync(new AiCacheReference(
+                fingerprint, "results/request_v10", "consent_v10", "model/v10", "usage_v10", now.AddTicks(5)), CancellationToken.None);
+        }
+
+        await using (var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = options.DatabasePath, Pooling = false }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var downgrade = connection.CreateCommand();
+            downgrade.CommandText = "DELETE FROM schema_migrations WHERE version=11; ALTER TABLE ai_cache_references DROP COLUMN is_reusable;";
+            await downgrade.ExecuteNonQueryAsync();
+        }
+
+        await using var upgraded = new SqliteDesktopStore(options);
+        await upgraded.InitializeAsync();
+        var cache = await upgraded.FindCacheReferenceAsync(fingerprint, CancellationToken.None);
+        Assert.NotNull(cache);
+        Assert.True(cache!.IsReusable);
     }
 
     [Fact]
@@ -496,6 +534,8 @@ public sealed class SqliteDesktopStoreTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
             usage with { RecordedAt = requestTime.AddTicks(-1) }, CancellationToken.None));
         await store.RecordUsageAsync(usage, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
+            cache with { IsReusable = false }, CancellationToken.None));
         await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
         await store.SaveCacheReferenceAsync(cache, CancellationToken.None);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
@@ -524,6 +564,10 @@ public sealed class SqliteDesktopStoreTests
             usage with { RequestId = "request_02" }, CancellationToken.None));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveCacheReferenceAsync(
             cache with { CacheKey = "sha256:" + new string('e', 64), UsageEventId = "usage_missing" }, CancellationToken.None));
+        Assert.True(await store.InvalidateCacheReferenceAsync(cache.CacheKey, CancellationToken.None));
+        Assert.False((await store.FindCacheReferenceAsync(cache.CacheKey, CancellationToken.None))!.IsReusable);
+        Assert.NotNull(await store.FindUsageEventAsync(cache.UsageEventId, CancellationToken.None));
+        Assert.False(await store.InvalidateCacheReferenceAsync(cache.CacheKey, CancellationToken.None));
     }
 
     [Fact]
@@ -693,7 +737,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V5DataUpgradesSuccessfullyThroughV10AndPreservesSentinel()
+    public async Task V5DataUpgradesSuccessfullyThroughV11AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -725,7 +769,7 @@ public sealed class SqliteDesktopStoreTests
         tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
         await using var columnCommand = verify.CreateCommand();
         columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
-        Assert.Equal(10L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal(11L, (long)(await versionCommand.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
         Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
         Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
@@ -765,7 +809,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V6DataUpgradesSuccessfullyToV10AndPreservesSentinel()
+    public async Task V6DataUpgradesSuccessfullyToV11AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -778,7 +822,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM schema_migrations WHERE version>=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE IF EXISTS ai_analysis_scheduler_state; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
+            command.CommandText = "DELETE FROM schema_migrations WHERE version>=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE IF EXISTS ai_analysis_scheduler_state; ALTER TABLE ai_cache_references DROP COLUMN is_reusable; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -795,7 +839,7 @@ public sealed class SqliteDesktopStoreTests
         sentinel.CommandText = "SELECT value FROM v6_sentinel;";
         await using var tables = verify.CreateCommand();
         tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
-        Assert.Equal(10L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(11L, (long)(await version.ExecuteScalarAsync())!);
         Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
         Assert.Equal(2L, (long)(await tables.ExecuteScalarAsync())!);
     }

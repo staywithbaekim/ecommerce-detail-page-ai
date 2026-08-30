@@ -18,7 +18,7 @@ V1 使用火山引擎/方舟 API，客户提供自己的 API Key，由项目方�
 2. V1 adapter 固定使用项目批准的火山方舟服务配置；候选模型 `doubao-seed-2.1-pro-260628` 仅作为 AI-01 首轮验证候选，必须由真实金标、P95、费用和数据处理说明共同冻结后才可标为生产配置。
 3. Key 只从 Windows Credential Manager 按请求作用域取出，禁止写入领域对象、日志、缓存、模板包、诊断包或 RenderPlan。撤回上传授权后不得发起新请求。
 4. 上传只使用必要的压缩分析副本；不上传原始 PSD、高清源图、市场尺码图或本地路径。请求中使用内部 `analysis_copy_ref`，adapter 在内存/受控临时目录读取字节并在生命周期结束后清理。
-5. 缓存键为 `SHA-256(sorted asset content_hashes + analysis_kind + model_config_version + prompt_contract_version + response_schema_version + compression_profile_version + requirements_digest)`；人工选择、状态和本地路径不进入键。缓存值记录 consent、版本、用量和来源，活动任务引用受保护。
+5. 缓存键为 `SHA-256(sorted asset content_hashes + analysis_kind + model_config_version + prompt_contract_version + response_schema_version + compression_profile_version + requirements_digest)`；人工选择、状态和本地路径不进入键。缓存值记录 consent、版本、用量和来源，活动任务引用受保护。显式或自动失效只在业务 checkpoint 内把引用单向标为不可复用，保留历史 graph；同 fingerprint 不原地重算，只有内容/合同/配置变化形成新 fingerprint 才允许新请求，force-reanalysis generation 不在当前 S3 范围。
 6. 每次请求先写 request ledger 和 fingerprint；仅在官方合同确认未接受请求或明确安全的网络短断、429、临时 5xx 时有限重试。响应未知时标记 `AiResultUnknown`，不得盲目重发可能已计费请求。
 7. 响应进入 Domain 前必须校验 Schema、资源/需求引用、rank 唯一性、置信度范围、几何有限值、尺码结构和版本。非法结果进入红色/待处理路径，不以模型“看起来合理”代替校验。
 8. AI-01 记录请求数、缓存命中、重试、延迟、输入/输出计量和供应商费用摘要；客户端费用只作诊断，未来统一网关账单以服务端计量账本为权威。

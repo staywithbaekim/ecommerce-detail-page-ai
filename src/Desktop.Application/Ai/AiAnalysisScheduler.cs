@@ -348,10 +348,14 @@ public sealed class AiAnalysisScheduler : IDisposable
         await PersistStateAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<bool> InvalidateCacheAsync(
+    public async Task<bool> InvalidateCacheAsync(
         string cacheKey,
-        CancellationToken cancellationToken) =>
-        _store.InvalidateCacheReferenceAsync(cacheKey, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        var cache = await _store.FindCacheReferenceAsync(cacheKey, cancellationToken).ConfigureAwait(false);
+        return cache is not null
+            && await InvalidateCacheReferenceSafelyAsync(cache, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Restores durable pending work and the local budget snapshot after a
@@ -408,6 +412,10 @@ public sealed class AiAnalysisScheduler : IDisposable
             }
         }
         lock (_timestampGate) _lastPersistenceTimestamp = state.UpdatedAt;
+
+        await RetryTerminalLeaseCleanupAsync(
+            state.HistoricalRequests ?? [],
+            cancellationToken).ConfigureAwait(false);
 
         var restored = 0;
         foreach (var item in state.PendingItems ?? [])
@@ -627,13 +635,16 @@ public sealed class AiAnalysisScheduler : IDisposable
                     await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
                     return new(AiAnalysisWorkDisposition.CacheHit, existing.RequestId, existingCache.ResultReference, null, 0);
                 }
-                await _store.InvalidateCacheReferenceAsync(existingCache.CacheKey, cancellationToken).ConfigureAwait(false);
+                var invalidationError = existingCache.IsReusable
+                    ? "AI_CACHE_RESULT_INVALID"
+                    : "AI_CACHE_INVALIDATED_REANALYSIS_VERSION_REQUIRED";
+                await InvalidateCacheReferenceSafelyAsync(existingCache, cancellationToken).ConfigureAwait(false);
                 await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
                 return new(
                     AiAnalysisWorkDisposition.TerminalError,
                     existing.RequestId,
                     null,
-                    "AI_CACHE_RESULT_INVALID",
+                    invalidationError,
                     0);
             }
 
@@ -653,6 +664,12 @@ public sealed class AiAnalysisScheduler : IDisposable
         var sessionId = SessionId(request);
         if (await _store.LoadSessionAsync(sessionId, cancellationToken).ConfigureAwait(false) is null)
         {
+            if (_checkpointPort is not null)
+            {
+                await ReleasePreparedLeaseIdsAsync(request, CancellationToken.None).ConfigureAwait(false);
+                throw new InvalidOperationException("AI_CHECKPOINT_SESSION_MISSING");
+            }
+
             await _store.SaveSessionAsync(
                 AiAnalysisSession.Create(
                     sessionId,
@@ -683,9 +700,20 @@ public sealed class AiAnalysisScheduler : IDisposable
                 return new(AiAnalysisWorkDisposition.CacheHit, request.RequestId, cache.ResultReference, null, 0);
             }
 
-            // Missing, corrupt, or model-mismatched result references are
-            // explicitly invalidated before the request is re-queued.
-            await _store.InvalidateCacheReferenceAsync(cache.CacheKey, cancellationToken).ConfigureAwait(false);
+            var invalidationError = cache.IsReusable
+                ? "AI_CACHE_RESULT_INVALID"
+                : "AI_CACHE_INVALIDATED_REANALYSIS_VERSION_REQUIRED";
+            // Missing, corrupt, or model-mismatched result references become
+            // durable tombstones. The same fingerprint remains fail-closed;
+            // only a changed analysis input/configuration can create new work.
+            await InvalidateCacheReferenceSafelyAsync(cache, cancellationToken).ConfigureAwait(false);
+            await ReleasePreparedLeaseIdsAsync(request, cancellationToken).ConfigureAwait(false);
+            return new(
+                AiAnalysisWorkDisposition.TerminalError,
+                request.RequestId,
+                null,
+                invalidationError,
+                0);
         }
 
         var item = new AiAnalysisWorkItem(
@@ -1378,6 +1406,11 @@ public sealed class AiAnalysisScheduler : IDisposable
         AiAnalysisRequestV1 request,
         CancellationToken cancellationToken)
     {
+        if (!cache.IsReusable)
+        {
+            return false;
+        }
+
         var usage = await _store.FindUsageEventAsync(cache.UsageEventId, cancellationToken).ConfigureAwait(false);
         if (usage is null
             || !string.Equals(cache.ModelConfigVersion, request.ModelConfigVersion, StringComparison.Ordinal)
@@ -1409,6 +1442,53 @@ public sealed class AiAnalysisScheduler : IDisposable
         {
             return false;
         }
+    }
+
+    private async Task<bool> InvalidateCacheReferenceSafelyAsync(
+        AiCacheReference cache,
+        CancellationToken cancellationToken)
+    {
+        if (!cache.IsReusable)
+        {
+            return false;
+        }
+
+        if (_checkpointPort is null)
+        {
+            return await _store.InvalidateCacheReferenceAsync(cache.CacheKey, cancellationToken).ConfigureAwait(false);
+        }
+
+        var ledger = await _store.FindRequestByFingerprintAsync(cache.CacheKey, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_CACHE_INVALIDATION_REQUEST_MISSING");
+        var usage = await _store.FindUsageEventAsync(cache.UsageEventId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_CACHE_INVALIDATION_USAGE_MISSING");
+        AiAnalysisRequestV1? request;
+        lock (_pendingGate)
+        {
+            _historicalRequests.TryGetValue(ledger.RequestId, out request);
+        }
+
+        if (request is null
+            || !string.Equals(AiAnalysisCacheKeyFactory.Create(request), cache.CacheKey, StringComparison.Ordinal)
+            || !string.Equals(usage.RequestId, ledger.RequestId, StringComparison.Ordinal)
+            || !string.Equals(usage.ModelConfigVersion, cache.ModelConfigVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AI_CACHE_INVALIDATION_GRAPH_MISSING");
+        }
+
+        var session = await _store.LoadSessionAsync(SessionId(request), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_CHECKPOINT_SESSION_MISSING");
+        await CommitGraphAsync(
+            request,
+            ledger,
+            ledger.Status,
+            session,
+            session.Status,
+            session.SelectionRevision,
+            usage,
+            cache with { IsReusable = false },
+            cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     private async Task<(bool Allowed, string ErrorCode)> TryReserveRequestBudgetAsync(
@@ -1535,6 +1615,67 @@ public sealed class AiAnalysisScheduler : IDisposable
             }
         }
     }
+
+    private async Task RetryTerminalLeaseCleanupAsync(
+        IReadOnlyList<AiAnalysisRequestV1> historicalRequests,
+        CancellationToken cancellationToken)
+    {
+        if (_copyLeaseManager is null || historicalRequests.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var request in historicalRequests)
+        {
+            var ledger = await _store.FindRequestByFingerprintAsync(
+                AiAnalysisCacheKeyFactory.Create(request), cancellationToken).ConfigureAwait(false);
+            if (ledger is null || !ShouldRetryTerminalLeaseCleanup(request, ledger.Status, historicalRequests))
+            {
+                continue;
+            }
+
+            await ReleaseRequestLeasesAsync(
+                request,
+                StageForAnalysisKind(request.AnalysisKind),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static bool ShouldRetryTerminalLeaseCleanup(
+        AiAnalysisRequestV1 request,
+        string status,
+        IReadOnlyList<AiAnalysisRequestV1> historicalRequests)
+    {
+        if (status is not ("Validated" or "ManualReview" or "PlanClosed"
+            or "AiResultUnknown" or "Cancelled" or "TerminalError"))
+        {
+            return false;
+        }
+
+        if (request.AnalysisKind != AiAnalysisKind.ProductJointUnderstanding
+            || status is "PlanClosed" or "AiResultUnknown" or "Cancelled" or "TerminalError")
+        {
+            return true;
+        }
+
+        // A successful first-layer result retains its lease until at least one
+        // durable refinement request exists.  EnqueueRefinementAsync persists
+        // the child before releasing this token, so restart can distinguish a
+        // legitimate future refinement from a failed cleanup attempt.
+        return historicalRequests.Any(candidate =>
+            string.Equals(candidate.BatchId, request.BatchId, StringComparison.Ordinal)
+            && string.Equals(candidate.StyleId, request.StyleId, StringComparison.Ordinal)
+            && candidate.RequestId.StartsWith(request.RequestId + "-", StringComparison.Ordinal)
+            && candidate.AnalysisKind is AiAnalysisKind.SelectedAssetGeometry or AiAnalysisKind.SizeTableExtraction);
+    }
+
+    private static AiAnalysisWorkStage StageForAnalysisKind(string analysisKind) => analysisKind switch
+    {
+        AiAnalysisKind.ProductJointUnderstanding => AiAnalysisWorkStage.ProductJointUnderstanding,
+        AiAnalysisKind.SelectedAssetGeometry => AiAnalysisWorkStage.SelectedAssetGeometry,
+        AiAnalysisKind.SizeTableExtraction => AiAnalysisWorkStage.SizeTableExtraction,
+        _ => throw new InvalidDataException("AI_ANALYSIS_KIND_INVALID")
+    };
 
     private async Task ReleasePreparedLeaseIdsAsync(
         AiAnalysisRequestV1 request,

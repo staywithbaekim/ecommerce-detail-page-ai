@@ -19,7 +19,8 @@ public sealed record AiCacheReference(
     string ConsentId,
     string ModelConfigVersion,
     string UsageEventId,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    bool IsReusable = true);
 
 public sealed record AiUsageEventRecord(
     string UsageEventId,

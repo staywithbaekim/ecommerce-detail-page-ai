@@ -467,12 +467,33 @@ public sealed partial class SqliteDesktopStore
             connection, graph.Cache.CacheKey, cancellationToken, transaction).ConfigureAwait(false);
         if (existing is not null)
         {
-            if (!Equals(existing, graph.Cache))
+            if (Equals(existing, graph.Cache))
+            {
+                return;
+            }
+
+            if (!CachePayloadEqualsExceptReuse(existing, graph.Cache)
+                || !existing.IsReusable
+                || graph.Cache.IsReusable)
             {
                 throw new InvalidOperationException("AI_CACHE_KEY_CONFLICT");
             }
 
+            await using var invalidate = connection.CreateCommand();
+            invalidate.Transaction = transaction;
+            invalidate.CommandText = "UPDATE ai_cache_references SET is_reusable = 0 WHERE cache_key = $cache_key AND is_reusable = 1;";
+            invalidate.Parameters.AddWithValue("$cache_key", graph.Cache.CacheKey);
+            if (await invalidate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new InvalidOperationException("AI_CACHE_INVALIDATION_CAS_CONFLICT");
+            }
+
             return;
+        }
+
+        if (!graph.Cache.IsReusable)
+        {
+            throw new InvalidOperationException("AI_CACHE_TOMBSTONE_ORIGIN_MISSING");
         }
 
         var usageOwner = await FindCacheByUsageIdAsync(
@@ -486,9 +507,9 @@ public sealed partial class SqliteDesktopStore
         insert.Transaction = transaction;
         insert.CommandText = """
             INSERT INTO ai_cache_references(
-                cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at)
+                cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at, is_reusable)
             VALUES(
-                $cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at);
+                $cache_key, $result_reference, $consent_id, $model_config_version, $usage_event_id, $created_at, $is_reusable);
             """;
         insert.Parameters.AddWithValue("$cache_key", graph.Cache.CacheKey);
         insert.Parameters.AddWithValue("$result_reference", graph.Cache.ResultReference);
@@ -496,8 +517,17 @@ public sealed partial class SqliteDesktopStore
         insert.Parameters.AddWithValue("$model_config_version", graph.Cache.ModelConfigVersion);
         insert.Parameters.AddWithValue("$usage_event_id", graph.Cache.UsageEventId);
         insert.Parameters.AddWithValue("$created_at", graph.Cache.CreatedAt.ToString("O"));
+        insert.Parameters.AddWithValue("$is_reusable", graph.Cache.IsReusable ? 1 : 0);
         await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    private static bool CachePayloadEqualsExceptReuse(AiCacheReference left, AiCacheReference right) =>
+        string.Equals(left.CacheKey, right.CacheKey, StringComparison.Ordinal)
+        && string.Equals(left.ResultReference, right.ResultReference, StringComparison.Ordinal)
+        && string.Equals(left.ConsentId, right.ConsentId, StringComparison.Ordinal)
+        && string.Equals(left.ModelConfigVersion, right.ModelConfigVersion, StringComparison.Ordinal)
+        && string.Equals(left.UsageEventId, right.UsageEventId, StringComparison.Ordinal)
+        && left.CreatedAt == right.CreatedAt;
 
     private static async Task<AiAnalysisCheckpointCommand> RehydrateCheckpointCommandAsync(
         SqliteConnection connection,
@@ -965,7 +995,7 @@ public sealed partial class SqliteDesktopStore
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at FROM ai_cache_references WHERE usage_event_id = $usage_event_id LIMIT 1;";
+        command.CommandText = "SELECT cache_key, result_reference, consent_id, model_config_version, usage_event_id, created_at, is_reusable FROM ai_cache_references WHERE usage_event_id = $usage_event_id LIMIT 1;";
         command.Parameters.AddWithValue("$usage_event_id", usageEventId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadCacheReference(reader) : null;

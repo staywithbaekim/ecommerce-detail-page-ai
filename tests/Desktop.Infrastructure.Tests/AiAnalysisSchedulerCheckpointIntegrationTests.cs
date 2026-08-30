@@ -10,7 +10,7 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
 {
     [Fact]
-    public async Task SchedulerCommitsLedgerResultUsageCacheAndEmptyPendingSnapshotAsOneRecoverableCheckpoint()
+    public async Task SchedulerCommittedCheckpointRemainsRecoverableAcrossV10ToV11Upgrade()
     {
         var root = Path.Combine(Path.GetTempPath(), "ai01-scheduler-checkpoint-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -47,6 +47,19 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
                 Assert.True((await manifests.InspectAsync("batch_01", CancellationToken.None))!.IsCommitted);
             }
 
+            await using (var downgrade = new Microsoft.Data.Sqlite.SqliteConnection(
+                new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+                {
+                    DataSource = options.DatabasePath,
+                    Pooling = false
+                }.ToString()))
+            {
+                await downgrade.OpenAsync();
+                await using var command = downgrade.CreateCommand();
+                command.CommandText = "DELETE FROM schema_migrations WHERE version=11; ALTER TABLE ai_cache_references DROP COLUMN is_reusable;";
+                await command.ExecuteNonQueryAsync();
+            }
+
             await using var reopened = new SqliteDesktopStore(options);
             await reopened.InitializeAsync();
             var reopenedFiles = new AtomicFileStore(new LocalAppPathPolicy(root));
@@ -69,6 +82,93 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task CacheInvalidationSurvivesRestartAndNewFingerprintCommitsWithoutDroppingTombstoneHistory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ai01-cache-invalidation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var options = new DesktopDataOptions(root);
+        var firstRequest = Request();
+        var firstKey = AiAnalysisCacheKeyFactory.Create(firstRequest);
+        try
+        {
+            await using (var store = new SqliteDesktopStore(options))
+            {
+                await store.InitializeAsync();
+                var files = new AtomicFileStore(new LocalAppPathPolicy(root));
+                using var coordinator = new AiAnalysisCheckpointCoordinator(
+                    store, new AiAnalysisStateManifestStore(files), TimeProvider.System);
+                using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+                using var scheduler = Scheduler(store, files, coordinator, queue);
+                Assert.Equal(AiAnalysisWorkDisposition.Enqueued,
+                    (await scheduler.EnqueueAsync(firstRequest, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None)).Disposition);
+                Assert.Equal(AiAnalysisWorkDisposition.Completed,
+                    (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+
+                Assert.True(await scheduler.InvalidateCacheAsync(firstKey, CancellationToken.None));
+                var tombstone = await store.FindCacheReferenceAsync(firstKey, CancellationToken.None);
+                Assert.NotNull(tombstone);
+                Assert.False(tombstone!.IsReusable);
+                Assert.NotNull(await store.FindUsageEventAsync(tombstone.UsageEventId, CancellationToken.None));
+            }
+
+            await using (var reopened = new SqliteDesktopStore(options))
+            {
+                await reopened.InitializeAsync();
+                var files = new AtomicFileStore(new LocalAppPathPolicy(root));
+                var manifests = new AiAnalysisStateManifestStore(files);
+                using var coordinator = new AiAnalysisCheckpointCoordinator(reopened, manifests, TimeProvider.System);
+                using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+                using var scheduler = Scheduler(reopened, files, coordinator, queue);
+                Assert.Equal(0, await scheduler.RestoreAsync(CancellationToken.None));
+                Assert.False((await reopened.FindCacheReferenceAsync(firstKey, CancellationToken.None))!.IsReusable);
+
+                var sameFingerprint = await scheduler.EnqueueAsync(
+                    firstRequest with { RequestId = "request_same_fingerprint" },
+                    AiAnalysisWorkStage.ProductJointUnderstanding,
+                    CancellationToken.None);
+                Assert.Equal(AiAnalysisWorkDisposition.TerminalError, sameFingerprint.Disposition);
+                Assert.Equal("AI_CACHE_INVALIDATED_REANALYSIS_VERSION_REQUIRED", sameFingerprint.ErrorCode);
+                Assert.Equal(0, queue.Count);
+
+                var nextRequest = firstRequest with
+                {
+                    RequestId = "request_02",
+                    RequirementsDigest = "sha256:" + new string('c', 64)
+                };
+                var nextKey = AiAnalysisCacheKeyFactory.Create(nextRequest);
+                Assert.Equal(AiAnalysisWorkDisposition.Enqueued,
+                    (await scheduler.EnqueueAsync(nextRequest, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None)).Disposition);
+                Assert.Equal(AiAnalysisWorkDisposition.Completed,
+                    (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+
+                var inspection = await manifests.InspectAsync("batch_01", CancellationToken.None);
+                Assert.NotNull(inspection);
+                Assert.Contains(firstKey, inspection!.CommittedManifest!.CacheKeys);
+                Assert.Contains(nextKey, inspection.CommittedManifest.CacheKeys);
+                Assert.False((await reopened.FindCacheReferenceAsync(firstKey, CancellationToken.None))!.IsReusable);
+                Assert.True((await reopened.FindCacheReferenceAsync(nextKey, CancellationToken.None))!.IsReusable);
+                Assert.Equal(AiAnalysisCheckpointOutcome.Committed,
+                    (await coordinator.RecoverAsync("batch_01", CancellationToken.None)).Outcome);
+            }
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    private static AiAnalysisScheduler Scheduler(
+        SqliteDesktopStore store,
+        AtomicFileStore files,
+        AiAnalysisCheckpointCoordinator coordinator,
+        BoundedAiAnalysisWorkBuffer queue) => new(
+        new SuccessfulProvider(),
+        store,
+        queue,
+        new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m)),
+        stateStore: store,
+        stateKey: "batch-batch_01",
+        resultStore: new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator()),
+        checkpointPort: coordinator);
 
     private static AiAnalysisRequestV1 Request() => new(
         AiAnalysisProtocol.RequestSchemaVersion,
