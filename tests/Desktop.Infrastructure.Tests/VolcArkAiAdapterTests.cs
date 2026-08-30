@@ -280,6 +280,24 @@ public sealed class VolcArkAiAdapterTests
     }
 
     [Fact]
+    public async Task ProviderPayloadUsesExactResultItemSchema()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(SuccessBody(), Encoding.UTF8, "application/json")
+        });
+        var execution = await CreateAdapter(handler, new FakeCopySource()).AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.Completed, execution.Outcome);
+        var payload = JsonNode.Parse(handler.RequestBody!)!.AsObject();
+        var schema = payload["text"]!["format"]!["schema"]!.AsObject();
+        var match = schema["properties"]!["requirement_matches"]!["items"]!.AsObject();
+        Assert.False(match["additionalProperties"]!.GetValue<bool>());
+        Assert.Contains("requirement_id", match["required"]!.AsArray().Select(value => value!.GetValue<string>()));
+        Assert.DoesNotContain("matched", match["properties"]!.AsObject().Select(property => property.Key));
+    }
+
+    [Fact]
     public async Task PreparedLeaseCopyIsNotDeletedByProviderAdapter()
     {
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest));
@@ -455,12 +473,15 @@ public sealed class VolcArkAiAdapterTests
 
         public AuthenticationHeaderValue? Authorization { get; private set; }
 
+        public string? RequestBody { get; private set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             CallCount++;
             Authorization = request.Headers.Authorization;
+            RequestBody = await request.Content!.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             return await _responder(cancellationToken).ConfigureAwait(false);
         }
     }

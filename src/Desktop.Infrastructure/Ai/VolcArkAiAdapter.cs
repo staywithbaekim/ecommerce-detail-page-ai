@@ -736,7 +736,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         content.Add(new JsonObject
         {
             ["type"] = "input_text",
-            ["text"] = "请仅返回符合 ai-analysis-result/v1 的 JSON 对象。request_id="
+            ["text"] = "请仅返回符合 ai-analysis-result/v1 的 JSON 对象。每个 requirement_matches 元素只能包含 requirement_id、asset_id、rank、confidence、evidence_codes 五个字段，不要添加 matched 或其他字段。request_id="
                 + request.RequestId + "，model_config_version=" + request.ModelConfigVersion
                 + "。按以下品类中立图片框需求选择素材并给出证据，不要输出 Markdown 或隐藏推理："
                 + requirementSummary
@@ -779,15 +779,128 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         {
             ["schema_version"] = new JsonObject { ["const"] = "ai-analysis-result/v1" },
             ["document_kind"] = new JsonObject { ["const"] = "result" },
-            ["request_id"] = new JsonObject { ["type"] = "string" },
+            ["request_id"] = StringSchema(1, 128),
             ["provider_request_ref"] = new JsonObject { ["type"] = new JsonArray("string", "null") },
-            ["model_config_version"] = new JsonObject { ["type"] = "string" },
-            ["requirement_matches"] = new JsonObject { ["type"] = "array" },
-            ["variant_groups"] = new JsonObject { ["type"] = "array" },
-            ["subject_geometry"] = new JsonObject { ["type"] = "array" },
-            ["size_table_candidate"] = new JsonObject { ["type"] = new JsonArray("object", "null") },
-            ["warnings"] = new JsonObject { ["type"] = "array" },
-            ["usage"] = new JsonObject { ["type"] = "object" }
+            ["model_config_version"] = StringSchema(1, 128),
+            ["requirement_matches"] = ArraySchema(MatchSchema(), 40000),
+            ["variant_groups"] = ArraySchema(VariantSchema(), 200),
+            ["subject_geometry"] = ArraySchema(GeometrySchema(), 20000),
+            ["size_table_candidate"] = new JsonObject { ["anyOf"] = new JsonArray(SizeTableSchema(), new JsonObject { ["type"] = "null" }) },
+            ["warnings"] = ArraySchema(WarningSchema(), 200),
+            ["usage"] = UsageSchema()
+        }
+    };
+
+    private static JsonObject StringSchema(int minLength, int maxLength) => new()
+    {
+        ["type"] = "string",
+        ["minLength"] = minLength,
+        ["maxLength"] = maxLength
+    };
+
+    private static JsonObject IdSchema() => new()
+    {
+        ["type"] = "string",
+        ["minLength"] = 1,
+        ["maxLength"] = 128,
+        ["pattern"] = "^[A-Za-z0-9_-]+$"
+    };
+
+    private static JsonObject ArraySchema(JsonObject itemSchema, int maxItems) => new()
+    {
+        ["type"] = "array",
+        ["maxItems"] = maxItems,
+        ["items"] = itemSchema
+    };
+
+    private static JsonObject MatchSchema() => new()
+    {
+        ["type"] = "object",
+        ["additionalProperties"] = false,
+        ["required"] = new JsonArray("requirement_id", "asset_id", "rank", "confidence", "evidence_codes"),
+        ["properties"] = new JsonObject
+        {
+            ["requirement_id"] = IdSchema(),
+            ["asset_id"] = IdSchema(),
+            ["rank"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 20000 },
+            ["confidence"] = new JsonObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 },
+            ["evidence_codes"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 32, ["uniqueItems"] = true, ["items"] = IdSchema() }
+        }
+    };
+
+    private static JsonObject VariantSchema() => new()
+    {
+        ["type"] = "object",
+        ["additionalProperties"] = false,
+        ["required"] = new JsonArray("variant_id", "dimension", "value", "asset_ids", "is_primary_suggestion"),
+        ["properties"] = new JsonObject
+        {
+            ["variant_id"] = IdSchema(),
+            ["dimension"] = StringSchema(1, 200),
+            ["value"] = StringSchema(1, 200),
+            ["asset_ids"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 20000, ["uniqueItems"] = true, ["items"] = IdSchema() },
+            ["is_primary_suggestion"] = new JsonObject { ["type"] = "boolean" }
+        }
+    };
+
+    private static JsonObject GeometrySchema() => new()
+    {
+        ["type"] = "object",
+        ["additionalProperties"] = false,
+        ["required"] = new JsonArray("asset_id", "left", "top", "right", "bottom", "confidence"),
+        ["properties"] = new JsonObject
+        {
+            ["asset_id"] = IdSchema(),
+            ["left"] = UnitIntervalSchema(),
+            ["top"] = UnitIntervalSchema(),
+            ["right"] = UnitIntervalSchema(),
+            ["bottom"] = UnitIntervalSchema(),
+            ["confidence"] = UnitIntervalSchema()
+        }
+    };
+
+    private static JsonObject UnitIntervalSchema() => new() { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 };
+
+    private static JsonObject SizeTableSchema() => new()
+    {
+        ["type"] = "object",
+        ["additionalProperties"] = false,
+        ["required"] = new JsonArray("source_asset_id", "confidence", "columns", "rows"),
+        ["properties"] = new JsonObject
+        {
+            ["source_asset_id"] = IdSchema(),
+            ["confidence"] = UnitIntervalSchema(),
+            ["columns"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 50, ["items"] = StringSchema(1, 200) },
+            ["rows"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 200, ["items"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 50, ["items"] = new JsonObject { ["type"] = "string", ["maxLength"] = 500 } } }
+        }
+    };
+
+    private static JsonObject WarningSchema() => new()
+    {
+        ["type"] = "object",
+        ["additionalProperties"] = false,
+        ["required"] = new JsonArray("code", "scope", "message_summary"),
+        ["properties"] = new JsonObject
+        {
+            ["code"] = IdSchema(),
+            ["scope"] = new JsonObject { ["enum"] = new JsonArray("request", "product", "requirement", "asset", "size_table") },
+            ["message_summary"] = StringSchema(1, 500)
+        }
+    };
+
+    private static JsonObject UsageSchema() => new()
+    {
+        ["type"] = "object",
+        ["additionalProperties"] = false,
+        ["required"] = new JsonArray("usage_event_id", "input_units", "output_units", "request_count"),
+        ["properties"] = new JsonObject
+        {
+            ["usage_event_id"] = IdSchema(),
+            ["input_units"] = new JsonObject { ["type"] = "integer", ["minimum"] = 0 },
+            ["output_units"] = new JsonObject { ["type"] = "integer", ["minimum"] = 0 },
+            ["request_count"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1 },
+            ["provider_cost_amount"] = new JsonObject { ["type"] = new JsonArray("number", "null"), ["minimum"] = 0 },
+            ["provider_cost_currency"] = new JsonObject { ["type"] = new JsonArray("string", "null"), ["pattern"] = "^[A-Z]{3}$" }
         }
     };
 
