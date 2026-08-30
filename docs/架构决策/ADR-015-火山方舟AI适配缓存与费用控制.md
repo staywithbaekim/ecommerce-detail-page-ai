@@ -38,6 +38,10 @@ V1 使用火山引擎/方舟 API，客户提供自己的 API Key，由项目方�
 - 人工选图仍可跳过候选判断；需要主体级智能适配时只对最终选中的压缩图分析并优先命中缓存。
 - 该 ADR 不授权设置页增加模型或供应商选择。
 
+### S2/S3 治理关闭记录（2026-08-30）
+
+最终实现头 `8cd28b4371432a3fd16511a03aaa72eeee27b9fa` 已通过治理 reviewed diff 并 fast-forward 合并 `codex/desktop-foundation-01`。治理独立复跑 build 0 警告/0 错误、solution 329 通过/1 个 opt-in probe 跳过/0 失败、正式并发终态 checkpoint 3/3、format/diff/敏感产物检查通过；没有新增真实 HTTP 或账单事实。AI-S2/S3 自此关闭，但候选模型准确率、B-02/B-03 WPF、真实金标和 AI-01 整体验收仍分别留在 S4-S7。
+
 ### Windows 分析副本编码实施补充（2026-08-30）
 
 - 首发 Windows 实现使用 .NET WindowsDesktop framework 自带的 WPF/WIC 编解码栈，不新增第三方图像包。`Desktop.Infrastructure` 与其测试目标改为 `net10.0-windows`；Domain、Application、Contracts 和 renderer-neutral `RenderPlan` 保持 `net10.0` 且不引用 WIC/WPF。
