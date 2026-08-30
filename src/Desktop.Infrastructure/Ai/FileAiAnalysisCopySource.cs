@@ -15,7 +15,9 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
     private readonly IPathPolicy _pathPolicy;
     private readonly long _maxBytes;
 
-    public FileAiAnalysisCopySource(IPathPolicy pathPolicy, long maxBytes = 8 * 1024 * 1024)
+    public FileAiAnalysisCopySource(
+        IPathPolicy pathPolicy,
+        long maxBytes = 8 * 1024 * 1024)
     {
         _pathPolicy = pathPolicy ?? throw new ArgumentNullException(nameof(pathPolicy));
         if (maxBytes is < 1024 or > 64 * 1024 * 1024)
@@ -80,6 +82,15 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
         var digest = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         if (!string.Equals(digest, metadata.Digest, StringComparison.Ordinal))
             throw new InvalidDataException("AI 分析副本摘要不匹配。");
+        var inspected = WicAnalysisImageCodec.Inspect(bytes);
+        if (!string.Equals(inspected.MimeType, metadata.MimeType, StringComparison.Ordinal)
+            || inspected.PixelWidth != metadata.PixelWidth
+            || inspected.PixelHeight != metadata.PixelHeight)
+            throw new InvalidDataException("AI 分析副本内容与元数据不闭合。");
+        if (string.Equals(metadata.CompressionProfileVersion, AiAnalysisCopyProfiles.WicBoundedCandidateV1, StringComparison.Ordinal)
+            && (metadata.MimeType is not ("image/jpeg" or "image/png")
+                || Math.Max(metadata.PixelWidth, metadata.PixelHeight) > 1600))
+            throw new InvalidDataException("AI 分析副本压缩配置不闭合。");
         return new AiAnalysisCopy(metadata.Reference, metadata.MimeType, metadata.PixelWidth, metadata.PixelHeight, bytes,
             metadata.Digest, metadata.ByteLength, metadata.CompressionProfileVersion, metadata.LeaseId);
     }

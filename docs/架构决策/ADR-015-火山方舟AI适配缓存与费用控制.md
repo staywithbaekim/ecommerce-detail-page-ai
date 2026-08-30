@@ -38,6 +38,14 @@ V1 使用火山引擎/方舟 API，客户提供自己的 API Key，由项目方�
 - 人工选图仍可跳过候选判断；需要主体级智能适配时只对最终选中的压缩图分析并优先命中缓存。
 - 该 ADR 不授权设置页增加模型或供应商选择。
 
+### Windows 分析副本编码实施补充（2026-08-30）
+
+- 首发 Windows 实现使用 .NET WindowsDesktop framework 自带的 WPF/WIC 编解码栈，不新增第三方图像包。`Desktop.Infrastructure` 与其测试目标改为 `net10.0-windows`；Domain、Application、Contracts 和 renderer-neutral `RenderPlan` 保持 `net10.0` 且不引用 WIC/WPF。
+- 新建副本只接受 INPUT-01 已登记并校验的 JPEG、PNG、TIFF 源。JPEG 输出 JPEG，PNG 输出 PNG 并保留 alpha，TIFF 输出 JPEG；EXIF orientation 1–8 在缩放前归一，输出为单帧且不复制 EXIF、注释或本机路径元数据。
+- `wic-bounded/max1600/jpeg-q82/png/v1-candidate` 只是可审计的候选配置：最长边 1600、JPEG quality 82、源 64 MiB、输出 8 MiB、源像素 100M。尺寸和像素门在展开像素前检查，编码写入使用硬字节上限；源 hash 在编码前后复核，副本/sidecar 失败回滚只删除应用自有文件。
+- compression profile 版本与全部影响编码字节、尺寸或资源门的参数必须成对变更；正式候选版本不得在最长边、JPEG quality、源/输出字节或像素门漂移后继续复用同一 cache fingerprint。
+- 上述数值没有因离线 WIC 测试而冻结。必须在逐次批准的最少量正式方舟探测中记录脱敏尺寸、字节、tokens、延迟和费用摘要后，才能冻结或修订 compression profile、单款请求上限及 S3 并发/重试/费用参数。
+
 ## 退出条件
 
 若方舟合同不能满足隐私、延迟、结构输出或费用门，保留 `IAiAnalyzer` 端口并由新 ADR 选择兼容供应商；不得把供应商响应直接暴露给 Domain，也不得降低 PRD 准确率和原图保护要求。

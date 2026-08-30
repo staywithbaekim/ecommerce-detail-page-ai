@@ -42,6 +42,7 @@ public sealed record AiAnalysisCopyPreparationRequest(
 public static class AiAnalysisCopyProfiles
 {
     public const string BytePreservingProvisionalV1 = "byte-preserving/provisional-v1";
+    public const string WicBoundedCandidateV1 = "wic-bounded/max1600/jpeg-q82/png/v1-candidate";
 }
 
 public sealed record AiAnalysisCopyMetadata(

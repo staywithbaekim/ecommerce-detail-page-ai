@@ -15,15 +15,18 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
 {
     private readonly IPathPolicy _pathPolicy;
     private readonly IFileStore _files;
-    private readonly long _maxBytes;
+    private readonly AiAnalysisCopyEncodingOptions _encodingOptions;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public FileAiAnalysisCopyPreparer(IPathPolicy pathPolicy, IFileStore files, long maxBytes = 8 * 1024 * 1024)
+    public FileAiAnalysisCopyPreparer(
+        IPathPolicy pathPolicy,
+        IFileStore files,
+        AiAnalysisCopyEncodingOptions? encodingOptions = null)
     {
         _pathPolicy = pathPolicy ?? throw new ArgumentNullException(nameof(pathPolicy));
         _files = files ?? throw new ArgumentNullException(nameof(files));
-        if (maxBytes is < 1024 or > 64 * 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(maxBytes));
-        _maxBytes = maxBytes;
+        _encodingOptions = encodingOptions ?? new AiAnalysisCopyEncodingOptions();
+        _encodingOptions.Validate();
     }
 
     public async Task<AiAnalysisCopyMetadata> PrepareAsync(
@@ -35,7 +38,7 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
         ArgumentNullException.ThrowIfNull(request.SourceAsset);
         if (!string.Equals(
                 request.CompressionProfileVersion,
-                AiAnalysisCopyProfiles.BytePreservingProvisionalV1,
+                _encodingOptions.CompressionProfileVersion,
                 StringComparison.Ordinal))
             throw new InvalidDataException("AI_COPY_COMPRESSION_PROFILE_UNSUPPORTED");
 
@@ -43,24 +46,38 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
         try
         {
             var sourcePath = ResolveSourcePath(request.InputRoot, request.SourceAsset.SourceRelativePath);
-            var before = await ReadSourceAsync(sourcePath, request.SourceAsset.Sha256, cancellationToken).ConfigureAwait(false);
-            if (before.Bytes.Length <= 0 || before.Bytes.Length > _maxBytes)
+            var sourceInfo = new FileInfo(sourcePath);
+            if (sourceInfo.Length != request.SourceAsset.Length)
+                throw new InvalidDataException("AI_COPY_SOURCE_LENGTH_MISMATCH");
+            if (sourceInfo.Length <= 0 || sourceInfo.Length > _encodingOptions.MaxSourceBytes)
                 throw new InvalidDataException("AI_COPY_SOURCE_TOO_LARGE");
+            var beforeDigest = await ComputeSourceDigestAsync(
+                sourcePath,
+                request.SourceAsset.Sha256,
+                cancellationToken).ConfigureAwait(false);
+            var encoded = await Task.Run(
+                () => WicAnalysisImageCodec.Encode(sourcePath, request.SourceAsset.Format, _encodingOptions, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (encoded.SourcePixelWidth != request.SourceAsset.PixelWidth
+                || encoded.SourcePixelHeight != request.SourceAsset.PixelHeight)
+            {
+                throw new InvalidDataException("AI_COPY_SOURCE_DIMENSION_MISMATCH");
+            }
 
             var relative = $"ai-analysis/copies/{request.AnalysisCopyReference}.bin";
             var metadataRelative = $"ai-analysis/copies/{request.AnalysisCopyReference}.json";
             var existing = await ReadMetadataAsync(metadataRelative, cancellationToken).ConfigureAwait(false);
             var existingBytes = await _files.ReadAsync(relative, cancellationToken).ConfigureAwait(false);
-            var copyDigest = "sha256:" + Convert.ToHexString(SHA256.HashData(before.Bytes)).ToLowerInvariant();
+            var copyDigest = "sha256:" + Convert.ToHexString(SHA256.HashData(encoded.Content)).ToLowerInvariant();
             if (existing is not null || existingBytes is not null)
             {
                 if (existing is null || existingBytes is null
                     || !string.Equals(existing.Reference, request.AnalysisCopyReference, StringComparison.Ordinal)
                     || !string.Equals(existing.Digest, copyDigest, StringComparison.Ordinal)
-                    || existing.ByteLength != before.Bytes.Length
-                    || !string.Equals(existing.MimeType, request.SourceAsset.MimeType, StringComparison.Ordinal)
-                    || existing.PixelWidth != request.SourceAsset.PixelWidth
-                    || existing.PixelHeight != request.SourceAsset.PixelHeight
+                    || existing.ByteLength != encoded.Content.Length
+                    || !string.Equals(existing.MimeType, encoded.MimeType, StringComparison.Ordinal)
+                    || existing.PixelWidth != encoded.PixelWidth
+                    || existing.PixelHeight != encoded.PixelHeight
                     || !string.Equals(existing.CompressionProfileVersion, request.CompressionProfileVersion, StringComparison.Ordinal)
                     || !string.Equals("sha256:" + Convert.ToHexString(SHA256.HashData(existingBytes)).ToLowerInvariant(), existing.Digest, StringComparison.Ordinal))
                 {
@@ -74,7 +91,7 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
                 try
                 {
                     await _files.WriteAtomicallyAsync(metadataRelative, JsonSerializer.SerializeToUtf8Bytes(persisted), cancellationToken).ConfigureAwait(false);
-                    await VerifySourceUnchangedAsync(sourcePath, before.Digest, request.SourceAsset.Sha256, cancellationToken).ConfigureAwait(false);
+                    await VerifySourceUnchangedAsync(sourcePath, beforeDigest, request.SourceAsset.Sha256, cancellationToken).ConfigureAwait(false);
                     return persisted;
                 }
                 catch
@@ -88,10 +105,10 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
             var generated = new AiAnalysisCopyMetadata(
                 request.AnalysisCopyReference,
                 copyDigest,
-                before.Bytes.Length,
-                request.SourceAsset.MimeType,
-                request.SourceAsset.PixelWidth,
-                request.SourceAsset.PixelHeight,
+                encoded.Content.Length,
+                encoded.MimeType,
+                encoded.PixelWidth,
+                encoded.PixelHeight,
                 request.CompressionProfileVersion,
                 generatedLeaseId,
                 [generatedLeaseId]);
@@ -99,11 +116,11 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
             var wroteMetadata = false;
             try
             {
-                await _files.WriteAtomicallyAsync(relative, before.Bytes, cancellationToken).ConfigureAwait(false);
+                await _files.WriteAtomicallyAsync(relative, encoded.Content, cancellationToken).ConfigureAwait(false);
                 wroteCopy = true;
                 await _files.WriteAtomicallyAsync(metadataRelative, JsonSerializer.SerializeToUtf8Bytes(generated), cancellationToken).ConfigureAwait(false);
                 wroteMetadata = true;
-                await VerifySourceUnchangedAsync(sourcePath, before.Digest, request.SourceAsset.Sha256, cancellationToken).ConfigureAwait(false);
+                await VerifySourceUnchangedAsync(sourcePath, beforeDigest, request.SourceAsset.Sha256, cancellationToken).ConfigureAwait(false);
                 return generated;
             }
             catch
@@ -187,21 +204,18 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
 
     private static async Task VerifySourceUnchangedAsync(string path, string beforeDigest, string expectedDigest, CancellationToken cancellationToken)
     {
-        var after = await ReadSourceAsync(path, expectedDigest, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(beforeDigest, after.Digest, StringComparison.Ordinal))
+        var afterDigest = await ComputeSourceDigestAsync(path, expectedDigest, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(beforeDigest, afterDigest, StringComparison.Ordinal))
             throw new IOException("AI_COPY_SOURCE_CHANGED");
     }
 
-    private static async Task<(byte[] Bytes, string Digest)> ReadSourceAsync(string path, string expectedDigest, CancellationToken cancellationToken)
+    private static async Task<string> ComputeSourceDigestAsync(string path, string expectedDigest, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var memory = new MemoryStream();
-        await stream.CopyToAsync(memory, cancellationToken).ConfigureAwait(false);
-        var bytes = memory.ToArray();
-        var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var digest = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
         if (!string.Equals(digest, expectedDigest, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("AI_COPY_SOURCE_DIGEST_MISMATCH");
-        return (bytes, digest);
+        return digest;
     }
 
     private static string ResolveSourcePath(string inputRoot, string relative)

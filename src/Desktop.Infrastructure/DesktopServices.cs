@@ -84,12 +84,14 @@ public static class DesktopServices
         services.AddSingleton<IAiAnalyzer, MockAiAnalyzer>();
         services.AddSingleton<IAiCredentialSource, WindowsCredentialSource>();
         services.AddSingleton<IAiUsageRecorder, InMemoryAiUsageRecorder>();
+        services.AddSingleton(new AiAnalysisCopyEncodingOptions());
         services.AddSingleton<IAiAnalysisCopySource>(provider =>
             new FileAiAnalysisCopySource(provider.GetRequiredService<IPathPolicy>()));
         services.AddSingleton<FileAiAnalysisCopyPreparer>(provider =>
             new FileAiAnalysisCopyPreparer(
                 provider.GetRequiredService<IPathPolicy>(),
-                provider.GetRequiredService<IFileStore>()));
+                provider.GetRequiredService<IFileStore>(),
+                provider.GetRequiredService<AiAnalysisCopyEncodingOptions>()));
         services.AddSingleton<IAiAnalysisCopyPreparer>(provider => provider.GetRequiredService<FileAiAnalysisCopyPreparer>());
         services.AddSingleton<IAiAnalysisCopyLeaseManager>(provider => provider.GetRequiredService<FileAiAnalysisCopyPreparer>());
         services.AddSingleton<IAiAnalysisResultStore>(provider =>
