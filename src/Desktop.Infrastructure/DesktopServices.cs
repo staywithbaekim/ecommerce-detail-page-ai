@@ -86,6 +86,16 @@ public static class DesktopServices
         services.AddSingleton<IAiUsageRecorder, InMemoryAiUsageRecorder>();
         services.AddSingleton<IAiAnalysisCopySource>(provider =>
             new FileAiAnalysisCopySource(provider.GetRequiredService<IPathPolicy>()));
+        services.AddSingleton<FileAiAnalysisCopyPreparer>(provider =>
+            new FileAiAnalysisCopyPreparer(
+                provider.GetRequiredService<IPathPolicy>(),
+                provider.GetRequiredService<IFileStore>()));
+        services.AddSingleton<IAiAnalysisCopyPreparer>(provider => provider.GetRequiredService<FileAiAnalysisCopyPreparer>());
+        services.AddSingleton<IAiAnalysisCopyLeaseManager>(provider => provider.GetRequiredService<FileAiAnalysisCopyPreparer>());
+        services.AddSingleton<IAiAnalysisResultStore>(provider =>
+            new FileAiAnalysisResultStore(
+                provider.GetRequiredService<IFileStore>(),
+                provider.GetRequiredService<IJsonContractValidator>()));
         services.AddSingleton<VolcArkAiOptions>();
         services.AddSingleton<IAiServicePort>(provider => new VolcArkAiAdapter(
             new HttpClient(),

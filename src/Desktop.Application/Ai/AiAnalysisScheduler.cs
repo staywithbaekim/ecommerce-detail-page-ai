@@ -18,6 +18,8 @@ public sealed class AiAnalysisScheduler : IDisposable
     private readonly AiAnalysisBudgetPolicy _budgetPolicy;
     private readonly TimeProvider _timeProvider;
     private readonly IAiAnalysisSchedulingStateStore? _stateStore;
+    private readonly IAiAnalysisResultStore? _resultStore;
+    private readonly IAiAnalysisCopyPreparer? _copyPreparer;
     private readonly string _stateKey;
     private readonly object _budgetGate = new();
     private readonly object _pendingGate = new();
@@ -35,7 +37,9 @@ public sealed class AiAnalysisScheduler : IDisposable
         TimeProvider? timeProvider = null,
         AiAnalysisQueueOptions? queueOptions = null,
         IAiAnalysisSchedulingStateStore? stateStore = null,
-        string stateKey = "ai-s3-default")
+        string stateKey = "ai-s3-default",
+        IAiAnalysisResultStore? resultStore = null,
+        IAiAnalysisCopyPreparer? copyPreparer = null)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -46,6 +50,8 @@ public sealed class AiAnalysisScheduler : IDisposable
         _queueOptions.Validate();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _stateStore = stateStore;
+        _resultStore = resultStore;
+        _copyPreparer = copyPreparer;
         if (string.IsNullOrWhiteSpace(stateKey)
             || stateKey.Length > 128
             || stateKey.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '_' or '-')))
@@ -122,6 +128,10 @@ public sealed class AiAnalysisScheduler : IDisposable
                 templateRevision,
                 style.StyleId,
                 projectionOptions with { AnalysisKind = AiAnalysisKind.ProductJointUnderstanding });
+            if (_copyPreparer is not null)
+            {
+                request = await PrepareCopiesAsync(batch, style, request, projectionOptions.CompressionProfileVersion, cancellationToken).ConfigureAwait(false);
+            }
             results.Add(await EnqueueAsync(
                 request,
                 AiAnalysisWorkStage.ProductJointUnderstanding,
@@ -135,6 +145,36 @@ public sealed class AiAnalysisScheduler : IDisposable
             results.Count(result => result.Disposition == AiAnalysisWorkDisposition.Duplicate),
             results.Count(result => result.Disposition == AiAnalysisWorkDisposition.CacheHit),
             results.Count(result => result.Disposition == AiAnalysisWorkDisposition.AlreadySettled));
+    }
+
+    private async Task<AiAnalysisRequestV1> PrepareCopiesAsync(
+        BatchDraft batch,
+        StyleDraft style,
+        AiAnalysisRequestV1 request,
+        string compressionProfileVersion,
+        CancellationToken cancellationToken)
+    {
+        var sourceById = batch.Assets.ToDictionary(asset => asset.AssetId, StringComparer.Ordinal);
+        var prepared = new AiAssetInputV1[request.Assets.Count];
+        for (var index = 0; index < request.Assets.Count; index++)
+        {
+            var asset = request.Assets[index];
+            if (!sourceById.TryGetValue(asset.AssetId, out var source)
+                || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal))
+                throw new InvalidOperationException("AI_INPUT_ASSET_NOT_FOUND");
+            var metadata = await _copyPreparer!.PrepareAsync(
+                new AiAnalysisCopyPreparationRequest(asset.AnalysisCopyReference, batch.InputRoot, source, compressionProfileVersion),
+                cancellationToken).ConfigureAwait(false);
+            prepared[index] = asset with
+            {
+                AnalysisCopyDigest = metadata.Digest,
+                AnalysisCopyLength = metadata.ByteLength,
+                AnalysisCopyMimeType = metadata.MimeType,
+                AnalysisCopyCompressionProfile = metadata.CompressionProfileVersion,
+                AnalysisCopyLeaseId = metadata.LeaseId
+            };
+        }
+        return request with { Assets = prepared };
     }
 
     public async Task RequestPauseAsync(
@@ -464,7 +504,9 @@ public sealed class AiAnalysisScheduler : IDisposable
             var existingCache = await _store.FindCacheReferenceAsync(fingerprint, cancellationToken).ConfigureAwait(false);
             if (existingCache is not null)
             {
-                return new(AiAnalysisWorkDisposition.CacheHit, existing.RequestId, existingCache.ResultReference, null, 0);
+                if (_resultStore is null || await _resultStore.LoadAsync(existingCache.ResultReference, cancellationToken).ConfigureAwait(false) is not null)
+                    return new(AiAnalysisWorkDisposition.CacheHit, existing.RequestId, existingCache.ResultReference, null, 0);
+                await _store.InvalidateCacheReferenceAsync(existingCache.CacheKey, cancellationToken).ConfigureAwait(false);
             }
 
             return new(AiAnalysisWorkDisposition.Duplicate, existing.RequestId, existing.ResultReference, null, 0);
@@ -496,13 +538,20 @@ public sealed class AiAnalysisScheduler : IDisposable
         var cache = await _store.FindCacheReferenceAsync(fingerprint, cancellationToken).ConfigureAwait(false);
         if (cache is not null && await IsCacheReusableAsync(cache, request, cancellationToken).ConfigureAwait(false))
         {
-            await TransitionToAsync(request, AiAnalysisSessionStatus.Uploading, cancellationToken).ConfigureAwait(false);
-            await TransitionToAsync(request, AiAnalysisSessionStatus.Analysing, cancellationToken).ConfigureAwait(false);
-            await RecordCacheUsageAsync(request, cache, cancellationToken).ConfigureAwait(false);
-            await CompleteValidatedAsync(request, cache.ResultReference, cancellationToken).ConfigureAwait(false);
-            RemovePendingForRequest(request.RequestId, stage);
-            await PersistStateAsync(cancellationToken).ConfigureAwait(false);
-            return new(AiAnalysisWorkDisposition.CacheHit, request.RequestId, cache.ResultReference, null, 0);
+            if (_resultStore is not null && await _resultStore.LoadAsync(cache.ResultReference, cancellationToken).ConfigureAwait(false) is null)
+            {
+                await _store.InvalidateCacheReferenceAsync(cache.CacheKey, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await TransitionToAsync(request, AiAnalysisSessionStatus.Uploading, cancellationToken).ConfigureAwait(false);
+                await TransitionToAsync(request, AiAnalysisSessionStatus.Analysing, cancellationToken).ConfigureAwait(false);
+                await RecordCacheUsageAsync(request, cache, cancellationToken).ConfigureAwait(false);
+                await CompleteValidatedAsync(request, cache.ResultReference, cancellationToken).ConfigureAwait(false);
+                RemovePendingForRequest(request.RequestId, stage);
+                await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+                return new(AiAnalysisWorkDisposition.CacheHit, request.RequestId, cache.ResultReference, null, 0);
+            }
         }
 
         var item = new AiAnalysisWorkItem(
@@ -794,7 +843,14 @@ public sealed class AiAnalysisScheduler : IDisposable
 
         if (execution.Outcome == AiProviderOutcome.Completed && execution.Result is not null)
         {
-            return await CompleteResultAsync(item, execution, persistenceToken).ConfigureAwait(false);
+            try
+            {
+                return await CompleteResultAsync(item, execution, persistenceToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException)
+            {
+                return await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, "AI_RESULT_PERSISTENCE_FAILED", AiAnalysisSessionStatus.TerminalError, CancellationToken.None).ConfigureAwait(false);
+            }
         }
 
         if (execution.Outcome == AiProviderOutcome.RetryableError)
@@ -833,6 +889,15 @@ public sealed class AiAnalysisScheduler : IDisposable
         CancellationToken cancellationToken)
     {
         var resultReference = $"results/{item.Request.RequestId}";
+        if (!string.Equals(execution.Result!.RequestId, item.Request.RequestId, StringComparison.Ordinal)
+            || !string.Equals(execution.Result.ModelConfigVersion, item.Request.ModelConfigVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("AI_RESULT_REFERENCE_MISMATCH");
+        }
+        if (_resultStore is not null)
+        {
+            await _resultStore.SaveAsync(resultReference, execution.Result!, cancellationToken).ConfigureAwait(false);
+        }
         if (execution.Usage is not null)
         {
             await _store.RecordUsageAsync(

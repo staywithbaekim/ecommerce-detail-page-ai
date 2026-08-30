@@ -44,7 +44,12 @@ public sealed record AiAssetInputV1(
     [property: JsonPropertyName("mime_type")] string MimeType,
     [property: JsonPropertyName("pixel_width")] int PixelWidth,
     [property: JsonPropertyName("pixel_height")] int PixelHeight,
-    [property: JsonPropertyName("analysis_copy_ref")] string AnalysisCopyReference);
+    [property: JsonPropertyName("analysis_copy_ref")] string AnalysisCopyReference,
+    [property: JsonPropertyName("analysis_copy_digest")] string? AnalysisCopyDigest = null,
+    [property: JsonPropertyName("analysis_copy_length")] long? AnalysisCopyLength = null,
+    [property: JsonPropertyName("analysis_copy_mime_type")] string? AnalysisCopyMimeType = null,
+    [property: JsonPropertyName("analysis_copy_compression_profile")] string? AnalysisCopyCompressionProfile = null,
+    [property: JsonPropertyName("analysis_copy_lease_id")] string? AnalysisCopyLeaseId = null);
 
 public sealed record AiRequirementInputV1(
     [property: JsonPropertyName("requirement_id")] string RequirementId,

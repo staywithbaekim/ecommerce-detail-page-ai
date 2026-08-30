@@ -1,5 +1,6 @@
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
+using Desktop.Domain.Inputs;
 
 namespace Desktop.Application.Ai;
 
@@ -31,12 +32,51 @@ public interface IAiAnalysisCopySource
         CancellationToken cancellationToken);
 }
 
+public sealed record AiAnalysisCopyPreparationRequest(
+    string AnalysisCopyReference,
+    string InputRoot,
+    SourceAssetMetadata SourceAsset,
+    string CompressionProfileVersion);
+
+public sealed record AiAnalysisCopyMetadata(
+    string Reference,
+    string Digest,
+    long ByteLength,
+    string MimeType,
+    int PixelWidth,
+    int PixelHeight,
+    string CompressionProfileVersion,
+    string LeaseId);
+
+public interface IAiAnalysisCopyPreparer
+{
+    Task<AiAnalysisCopyMetadata> PrepareAsync(
+        AiAnalysisCopyPreparationRequest request,
+        CancellationToken cancellationToken);
+}
+
+public interface IAiAnalysisCopyLeaseManager
+{
+    Task AcquireAsync(string analysisCopyReference, string leaseId, CancellationToken cancellationToken);
+    Task ReleaseAsync(string analysisCopyReference, string leaseId, CancellationToken cancellationToken);
+}
+
 public sealed record AiAnalysisCopy(
     string Reference,
     string MimeType,
     int PixelWidth,
     int PixelHeight,
-    ReadOnlyMemory<byte> Content);
+    ReadOnlyMemory<byte> Content,
+    string? ContentDigest = null,
+    long? ByteLength = null,
+    string? CompressionProfileVersion = null,
+    string? LeaseId = null);
+
+public interface IAiAnalysisResultStore
+{
+    Task SaveAsync(string resultReference, AiAnalysisResultV1 result, CancellationToken cancellationToken);
+    Task<AiAnalysisResultV1?> LoadAsync(string resultReference, CancellationToken cancellationToken);
+}
 
 public enum AiProviderOutcome
 {

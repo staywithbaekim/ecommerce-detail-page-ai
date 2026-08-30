@@ -165,6 +165,24 @@ public sealed class AiAnalysisSchedulerTests
     }
 
     [Fact]
+    public async Task SuccessfulWorkPersistsResultBeforeValidatedAndCacheReuseReadsIt()
+    {
+        var store = new MemoryStore();
+        var results = new RecordingResultStore();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(Result("request_01"), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero));
+        var policy = new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.02m));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(provider, store, queue, policy, resultStore: results);
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Completed, (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+        Assert.NotNull(await results.LoadAsync("results/request_01", CancellationToken.None));
+        var equivalent = Request() with { RequestId = "request_02" };
+        var hit = await scheduler.EnqueueAsync(equivalent, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.CacheHit, hit.Disposition);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
     public async Task CacheInvalidationIsExplicitAndAllowsFreshWork()
     {
         var store = new MemoryStore();
@@ -702,6 +720,23 @@ public sealed class AiAnalysisSchedulerTests
             cancellationToken.ThrowIfCancellationRequested();
             _states[stateKey] = state;
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingResultStore : IAiAnalysisResultStore
+    {
+        private readonly Dictionary<string, AiAnalysisResultV1> _results = new(StringComparer.Ordinal);
+        public Task SaveAsync(string resultReference, AiAnalysisResultV1 result, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _results[resultReference] = result;
+            return Task.CompletedTask;
+        }
+        public Task<AiAnalysisResultV1?> LoadAsync(string resultReference, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _results.TryGetValue(resultReference, out var result);
+            return Task.FromResult(result);
         }
     }
 }

@@ -101,19 +101,21 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                             throw new InvalidDataException("AI 分析副本为空。");
                         }
 
+                        ValidateCopy(asset, copy);
+
                         images.Add(copy);
                     }
                     catch (Exception exception) when (exception is IOException or InvalidDataException)
                     {
-                        return Failure(
-                            AiProviderOutcome.TerminalError,
-                            "AI_ANALYSIS_COPY_UNAVAILABLE",
-                            retryable: false,
-                            "分析副本不可用，请重新扫描素材后重试。",
-                            stopwatch);
+                        return Failure(AiProviderOutcome.TerminalError, "AI_ANALYSIS_COPY_UNAVAILABLE", false, "分析副本不可用，请重新扫描素材后重试。", stopwatch);
                     }
                 }
 
+                var estimatedPayloadBytes = EstimatePayloadBytes(request, images);
+                if (estimatedPayloadBytes > _options.MaxRequestBytes)
+                {
+                    return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_REQUEST_TOO_LARGE", false, "本次分析素材过大，请减少素材或稍后重试。", stopwatch);
+                }
                 var payload = BuildProviderPayload(request, images);
                 if (payload.Length > _options.MaxRequestBytes)
                 {
@@ -164,33 +166,51 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                         return MapHttpFailure(response.StatusCode, stopwatch);
                     }
 
-                    var body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-                    if (body.Length > _options.MaxResponseBytes)
+                    if (response.Content.Headers.ContentLength is > 0 and var contentLength
+                        && contentLength > _options.MaxResponseBytes)
                     {
                         return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_TOO_LARGE", false, "供应商响应过大，已安全拒绝。", stopwatch);
+                    }
+
+                    byte[] body;
+                    try
+                    {
+                        body = await ReadLimitedResponseAsync(response, _options.MaxResponseBytes, timeout.Token).ConfigureAwait(false);
+                    }
+                    catch (InvalidDataException)
+                    {
+                        return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_TOO_LARGE", false, "供应商响应过大，已安全拒绝。", stopwatch);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return Failure(AiProviderOutcome.Cancelled, "AI_REQUEST_CANCELLED", false, "分析已取消。", stopwatch);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return Failure(AiProviderOutcome.AiResultUnknown, "AI_PROVIDER_TIMEOUT", false, "请求超时，结果状态未知，请查询或人工确认后再继续。", stopwatch);
                     }
 
                     return ParseProviderResponse(request, body, stopwatch);
                 }
             }
+            catch (Exception exception) when (exception is IOException or InvalidDataException)
+            {
+                return Failure(AiProviderOutcome.TerminalError, "AI_ANALYSIS_COPY_UNAVAILABLE", false, "分析副本不可用，请重新扫描素材后重试。", stopwatch);
+            }
             finally
             {
+                // Copy lifetime is owned by the application lease/coordinator.
+                // The provider adapter never deletes a reference: retries,
+                // refinement and restart may still need the same copy.
+                // Legacy unleased test copies retain the historical opt-in cleanup
+                // for compatibility; formally prepared copies always carry a lease
+                // and are left to the application owner.
                 if (_options.ReleaseCopiesAfterRequest)
                 {
-                    foreach (var asset in request.Assets)
+                    foreach (var copy in images.Where(copy => copy.LeaseId is null))
                     {
-                        try
-                        {
-                            await _copySource.ReleaseAsync(asset.AnalysisCopyReference, CancellationToken.None)
-                                .ConfigureAwait(false);
-                        }
-                        catch (Exception)
-                        {
-                            // Cleanup failure is intentionally not allowed to
-                            // turn an already-observed provider result into a
-                            // false success. The owned-copy store records its
-                            // own recovery marker in a later integration step.
-                        }
+                        try { await _copySource.ReleaseAsync(copy.Reference, CancellationToken.None).ConfigureAwait(false); }
+                        catch { /* cleanup is recoverable application-owned state */ }
                     }
                 }
             }
@@ -203,6 +223,61 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         {
             return Failure(AiProviderOutcome.TerminalError, "AI_REQUEST_INVALID", false, "分析请求不符合当前版本要求，请重新扫描素材后重试。", stopwatch);
         }
+    }
+
+    private static async Task<byte[]> ReadLimitedResponseAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var output = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var remaining = maxBytes - (int)output.Length;
+            if (remaining < 0) throw new InvalidDataException("AI_PROVIDER_RESPONSE_TOO_LARGE");
+            var read = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining + 1)), cancellationToken).ConfigureAwait(false);
+            if (read == 0) break;
+            if (output.Length + read > maxBytes)
+                throw new InvalidDataException("AI_PROVIDER_RESPONSE_TOO_LARGE");
+            output.Write(buffer, 0, read);
+        }
+        return output.ToArray();
+    }
+
+    private static void ValidateCopy(AiAssetInputV1 asset, AiAnalysisCopy copy)
+    {
+        if (!string.Equals(copy.Reference, asset.AnalysisCopyReference, StringComparison.Ordinal)
+            || !IsSupportedMime(copy.MimeType)
+            || copy.PixelWidth <= 0 || copy.PixelHeight <= 0)
+            throw new InvalidDataException("AI_ANALYSIS_COPY_METADATA_INVALID");
+        var digest = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(copy.Content.Span)).ToLowerInvariant();
+        if (copy.ContentDigest is not null && !string.Equals(copy.ContentDigest, digest, StringComparison.Ordinal))
+            throw new InvalidDataException("AI_ANALYSIS_COPY_DIGEST_MISMATCH");
+        if (copy.ByteLength is not null && copy.ByteLength != copy.Content.Length)
+            throw new InvalidDataException("AI_ANALYSIS_COPY_LENGTH_MISMATCH");
+        if (asset.AnalysisCopyDigest is not null && !string.Equals(asset.AnalysisCopyDigest, digest, StringComparison.Ordinal))
+            throw new InvalidDataException("AI_ANALYSIS_COPY_DIGEST_MISMATCH");
+        if (asset.AnalysisCopyLength is not null && asset.AnalysisCopyLength != copy.Content.Length)
+            throw new InvalidDataException("AI_ANALYSIS_COPY_LENGTH_MISMATCH");
+        if (asset.AnalysisCopyMimeType is not null && !string.Equals(asset.AnalysisCopyMimeType, copy.MimeType, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("AI_ANALYSIS_COPY_MIME_MISMATCH");
+        if (asset.AnalysisCopyCompressionProfile is not null && !string.Equals(asset.AnalysisCopyCompressionProfile, copy.CompressionProfileVersion, StringComparison.Ordinal))
+            throw new InvalidDataException("AI_ANALYSIS_COPY_PROFILE_MISMATCH");
+    }
+
+    private static bool IsSupportedMime(string value) => value is "image/jpeg" or "image/png" or "image/tiff";
+
+    private static long EstimatePayloadBytes(AiAnalysisRequestV1 request, List<AiAnalysisCopy> images)
+    {
+        long total = 8_192;
+        for (var index = 0; index < images.Count; index++)
+        {
+            var length = images[index].ByteLength ?? images[index].Content.Length;
+            if (length < 0 || length > (long.MaxValue - total - 64) / 2)
+                return long.MaxValue;
+            total += 64 + ((length + 2) / 3) * 4;
+            if (total > int.MaxValue) return long.MaxValue;
+        }
+        return total;
     }
 
     private AiAnalysisExecutionResult ParseProviderResponse(
@@ -407,7 +482,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             content.Add(new JsonObject
             {
                 ["type"] = "input_image",
-                ["image_url"] = "data:" + asset.MimeType + ";base64," + Convert.ToBase64String(copy.Content.Span)
+                ["image_url"] = "data:" + copy.MimeType + ";base64," + Convert.ToBase64String(copy.Content.Span)
             });
         }
 

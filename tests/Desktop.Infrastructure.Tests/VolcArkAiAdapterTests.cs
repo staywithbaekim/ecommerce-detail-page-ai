@@ -11,6 +11,31 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class VolcArkAiAdapterTests
 {
+    [RealProbeFact]
+    public async Task RealProbeThroughFormalAdapter()
+    {
+        var copyPath = Environment.GetEnvironmentVariable("AI01_PROBE_COPY_PATH");
+        if (string.IsNullOrWhiteSpace(copyPath) || !File.Exists(copyPath)) return;
+
+        var handler = new HttpClientHandler();
+        var adapter = new VolcArkAiAdapter(
+            new HttpClient(handler),
+            new WindowsCredentialSource(),
+            new ProbeCopySource(copyPath),
+            new JsonSchemaContractValidator());
+        var result = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.Completed, result.Outcome);
+        Assert.NotNull(result.Result);
+    }
+
+    private sealed class RealProbeFactAttribute : FactAttribute
+    {
+        public RealProbeFactAttribute() => Skip = string.Equals(Environment.GetEnvironmentVariable("AI01_RUN_REAL_PROBE"), "1", StringComparison.Ordinal)
+            && File.Exists(Environment.GetEnvironmentVariable("AI01_PROBE_COPY_PATH") ?? string.Empty)
+            ? null
+            : "Opt-in real provider probe with approved temporary copy";
+    }
+
     [Fact]
     public async Task MapsCompletedResponsesAndRedactsProviderDetails()
     {
@@ -143,6 +168,57 @@ public sealed class VolcArkAiAdapterTests
         Assert.Equal("AI_PROVIDER_RESULT_PENDING", unknown.Error!.Code);
     }
 
+    [Fact]
+    public async Task PreparedLeaseCopyIsNotDeletedByProviderAdapter()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest));
+        var copies = new FakeCopySource { IncludeLease = true };
+        var execution = await CreateAdapter(handler, copies).AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Empty(copies.Released);
+    }
+
+    [Fact]
+    public async Task RejectsCopyMetadataMismatchBeforeHttp()
+    {
+        var handler = new StubHandler((Func<CancellationToken, HttpResponseMessage>)(_ => throw new InvalidOperationException("should not send")));
+        var copies = new FakeCopySource { MimeType = "image/gif" };
+        var execution = await CreateAdapter(handler, copies).AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task RejectsResponseContentLengthBeforeReadingBody()
+    {
+        var handler = new StubHandler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[] { 1, 2, 3 })
+            };
+            response.Content.Headers.ContentLength = 2048;
+            return response;
+        });
+        var adapter = CreateAdapter(handler, new FakeCopySource(), options: new VolcArkAiOptions(MaxResponseBytes: 1024));
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_TOO_LARGE", execution.Error!.Code);
+    }
+
+    [Fact]
+    public async Task RejectsChunkedResponseAtBoundedReadLimit()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new OversizedContent(2048)
+        });
+        var adapter = CreateAdapter(handler, new FakeCopySource(), options: new VolcArkAiOptions(MaxResponseBytes: 1024));
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_TOO_LARGE", execution.Error!.Code);
+    }
+
     private static VolcArkAiAdapter CreateAdapter(
         HttpMessageHandler handler,
         FakeCopySource copies,
@@ -216,16 +292,22 @@ public sealed class VolcArkAiAdapterTests
     private sealed class FakeCopySource : IAiAnalysisCopySource
     {
         public List<string> Released { get; } = [];
+        public bool IncludeLease { get; set; }
+        public string MimeType { get; set; } = "image/jpeg";
 
         public Task<AiAnalysisCopy> OpenAsync(string analysisCopyReference, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(new AiAnalysisCopy(
                 analysisCopyReference,
-                "image/jpeg",
+                MimeType,
                 10,
                 10,
-                new byte[] { 1, 2, 3 }));
+                new byte[] { 1, 2, 3 },
+                IncludeLease ? "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new byte[] { 1, 2, 3 })).ToLowerInvariant() : null,
+                3,
+                "analysis-copy/v1",
+                IncludeLease ? "lease-1" : null));
         }
 
         public Task ReleaseAsync(string analysisCopyReference, CancellationToken cancellationToken)
@@ -234,6 +316,18 @@ public sealed class VolcArkAiAdapterTests
             Released.Add(analysisCopyReference);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class ProbeCopySource(string path) : IAiAnalysisCopySource
+    {
+        public async Task<AiAnalysisCopy> OpenAsync(string analysisCopyReference, CancellationToken cancellationToken)
+        {
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            var digest = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+            return new AiAnalysisCopy(analysisCopyReference, "image/jpeg", 1, 1, bytes, digest, bytes.Length, "probe-temporary-v1", "probe-lease");
+        }
+
+        public Task ReleaseAsync(string analysisCopyReference, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class StubHandler(
@@ -258,5 +352,11 @@ public sealed class VolcArkAiAdapterTests
             Authorization = request.Headers.Authorization;
             return await _responder(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private sealed class OversizedContent(int length) : HttpContent
+    {
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context) => await stream.WriteAsync(new byte[length]);
+        protected override bool TryComputeLength(out long lengthValue) { lengthValue = -1; return false; }
     }
 }

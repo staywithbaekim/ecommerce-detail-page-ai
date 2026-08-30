@@ -21,7 +21,12 @@
     "mime_type": "image/jpeg",
     "pixel_width": 1200,
     "pixel_height": 1600,
-    "analysis_copy_ref": "analysis_copy_0001"
+    "analysis_copy_ref": "analysis_copy_0001",
+    "analysis_copy_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "analysis_copy_length": 48000,
+    "analysis_copy_mime_type": "image/jpeg",
+    "analysis_copy_compression_profile": "analysis-copy/v1-proposed",
+    "analysis_copy_lease_id": "lease_0001"
   }],
   "requirements": [{
     "requirement_id": "frame_0001",

@@ -1,5 +1,7 @@
 using Desktop.Application.Ai;
 using Desktop.Application.Files;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace Desktop.Infrastructure.Ai;
 
@@ -47,10 +49,37 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
             throw new InvalidDataException("AI 分析副本超过大小限制。");
         }
 
+        var metadataPath = _pathPolicy.ResolveOwnedPath(Path.Combine("ai-analysis", "copies", analysisCopyReference + ".json"));
+        if (!File.Exists(metadataPath)) throw new InvalidDataException("AI 分析副本元数据缺失。");
+        AiAnalysisCopyMetadata metadata;
+        try
+        {
+            metadata = JsonSerializer.Deserialize<AiAnalysisCopyMetadata>(await File.ReadAllBytesAsync(metadataPath, cancellationToken).ConfigureAwait(false))
+                ?? throw new JsonException();
+        }
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
+        {
+            throw new InvalidDataException("AI 分析副本元数据损坏。", exception);
+        }
+        if (!string.Equals(metadata.Reference, analysisCopyReference, StringComparison.Ordinal)
+            || metadata.ByteLength != info.Length
+            || metadata.ByteLength <= 0
+            || metadata.ByteLength > _maxBytes
+            || !IsSupportedMime(metadata.MimeType)
+            || string.IsNullOrWhiteSpace(metadata.CompressionProfileVersion)
+            || metadata.Digest.Length != 71
+            || !metadata.Digest.StartsWith("sha256:", StringComparison.Ordinal)
+            || metadata.Digest.Skip(7).Any(c => !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            || string.IsNullOrWhiteSpace(metadata.LeaseId)
+            || metadata.LeaseId.Length > 128
+            || metadata.LeaseId.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '_' or '-')))
+            throw new InvalidDataException("AI 分析副本元数据不闭合。");
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        // Dimensions are supplied by the versioned request contract. The
-        // source intentionally does not inspect or rewrite customer images.
-        return new AiAnalysisCopy(analysisCopyReference, "application/octet-stream", 0, 0, bytes);
+        var digest = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!string.Equals(digest, metadata.Digest, StringComparison.Ordinal))
+            throw new InvalidDataException("AI 分析副本摘要不匹配。");
+        return new AiAnalysisCopy(metadata.Reference, metadata.MimeType, metadata.PixelWidth, metadata.PixelHeight, bytes,
+            metadata.Digest, metadata.ByteLength, metadata.CompressionProfileVersion, metadata.LeaseId);
     }
 
     public Task ReleaseAsync(string analysisCopyReference, CancellationToken cancellationToken)
@@ -59,10 +88,9 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
         ValidateReference(analysisCopyReference);
         var relativePath = Path.Combine("ai-analysis", "copies", analysisCopyReference + ".bin");
         var path = _pathPolicy.ResolveOwnedPath(relativePath);
-        if (File.Exists(path))
-        {
-            File.Delete(path);
-        }
+        if (File.Exists(path)) File.Delete(path);
+        var metadata = _pathPolicy.ResolveOwnedPath(Path.Combine("ai-analysis", "copies", analysisCopyReference + ".json"));
+        if (File.Exists(metadata)) File.Delete(metadata);
 
         return Task.CompletedTask;
     }
@@ -76,4 +104,6 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
             throw new InvalidDataException("AI 分析副本引用无效。");
         }
     }
+
+    private static bool IsSupportedMime(string value) => value is "image/jpeg" or "image/png" or "image/tiff";
 }
