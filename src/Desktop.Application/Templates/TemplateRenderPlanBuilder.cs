@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using Desktop.Application.Rendering;
 using Desktop.Domain.Templates;
@@ -11,6 +10,25 @@ public sealed record TemplateRenderSource(
     long Length,
     string MediaType = "image/jpeg");
 
+public sealed record TemplateRenderSubjectGeometry(
+    string AssetResourceId,
+    decimal Left,
+    decimal Top,
+    decimal Right,
+    decimal Bottom,
+    decimal Confidence)
+{
+    public bool IsValid => Left >= 0m && Top >= 0m
+        && Right > Left && Right <= 1m
+        && Bottom > Top && Bottom <= 1m
+        && Confidence is >= 0m and <= 1m;
+}
+
+public sealed record TemplateRenderSelection(
+    string FrameId,
+    string AssetResourceId,
+    TemplateRenderSubjectGeometry SubjectGeometry);
+
 public sealed record TemplateRenderPlanRequest(
     string PlanId,
     string IdempotencyKey,
@@ -22,7 +40,8 @@ public sealed record TemplateRenderPlanRequest(
     bool IncludeEditablePsd,
     string? PsdFileName,
     DateTimeOffset CreatedAt,
-    IReadOnlyList<TemplateRenderSource> Sources);
+    IReadOnlyList<TemplateRenderSource> Sources,
+    IReadOnlyList<TemplateRenderSelection>? ConfirmedSelections = null);
 
 public interface ITemplateRenderPlanBuilder
 {
@@ -68,14 +87,36 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             throw new TemplateRuleViolationException("TPL_FRAME_EVIDENCE_INCOMPLETE");
         }
 
+        var explicitSelections = request.ConfirmedSelections?.ToDictionary(
+            selection => selection.FrameId,
+            StringComparer.Ordinal);
+        if (explicitSelections is not null
+            && (explicitSelections.Count != bindings.Length
+                || bindings.Any(binding => !explicitSelections.ContainsKey(binding.FrameId))))
+        {
+            throw new TemplateRuleViolationException("TPL_RENDER_SELECTIONS_INCOMPLETE");
+        }
+
         var targets = bindings.Select(binding =>
         {
-            var assetId = binding.SelectionRequirement.Criteria.SingleOrDefault(criterion =>
-                string.Equals(criterion.Key, "asset_id", StringComparison.Ordinal))?.Value
+            var explicitSelection = explicitSelections?.GetValueOrDefault(binding.FrameId);
+            var assetId = explicitSelection?.AssetResourceId
+                ?? binding.SelectionRequirement.Criteria.SingleOrDefault(criterion =>
+                    string.Equals(criterion.Key, "asset_id", StringComparison.Ordinal))?.Value
                 ?? throw new TemplateRuleViolationException("TPL_CALIBRATION_INCOMPLETE");
             if (!sources.ContainsKey(assetId))
             {
                 throw new TemplateRuleViolationException("TPL_RENDER_SOURCE_MISSING");
+            }
+
+            if (explicitSelection is not null
+                && (!explicitSelection.SubjectGeometry.IsValid
+                    || !string.Equals(
+                        explicitSelection.SubjectGeometry.AssetResourceId,
+                        assetId,
+                        StringComparison.Ordinal)))
+            {
+                throw new TemplateRuleViolationException("TPL_RENDER_GEOMETRY_INVALID");
             }
 
             return new
@@ -195,10 +236,10 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             }
         };
 
-        var preimage = JsonSerializer.SerializeToUtf8Bytes(
+        var digestPreimage = JsonSerializer.Serialize(
             CreateDocument("sha256:" + new string('0', 64)),
             JsonOptions);
-        var digest = "sha256:" + Convert.ToHexString(SHA256.HashData(preimage)).ToLowerInvariant();
+        var digest = RenderPlanDigest.Compute(digestPreimage);
         var json = JsonSerializer.Serialize(CreateDocument(digest), JsonOptions);
         var validation = validator.Validate(json);
         if (!validation.IsValid)

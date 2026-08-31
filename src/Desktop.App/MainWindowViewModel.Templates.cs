@@ -562,6 +562,7 @@ public sealed partial class MainWindowViewModel
     public void SetWindowWidth(double width)
     {
         SetBatchWindowWidth(width);
+        SetResultWindowWidth(width);
         var narrow = width <= 1180;
         var compactPageSettings = width <= 1240;
         if (_isCalibrationNarrowLayout == narrow

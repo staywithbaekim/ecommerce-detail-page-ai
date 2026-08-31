@@ -354,6 +354,7 @@ public sealed partial class MainWindowViewModel
         CancelAiReplacementCommand = new RelayCommand(ClearAiReplacementState);
         OpenAiStyleReviewCommand = new RelayCommand<AiStyleAnalysisViewModel>(OpenAiStyleReview);
         ReturnFromAiStyleReviewCommand = new RelayCommand(ReturnFromAiStyleReview);
+        InitializeResultReview();
         _aiRefreshTimer = new System.Windows.Threading.DispatcherTimer(
             TimeSpan.FromSeconds(1),
             System.Windows.Threading.DispatcherPriority.Background,
@@ -1071,6 +1072,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(CanResumeAi));
         OnPropertyChanged(nameof(CanCancelAi));
         OnPropertyChanged(nameof(IsAiReady));
+        RaiseResultCommandsChanged();
         (PauseAiAnalysisCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (ResumeAiAnalysisCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (CancelAiAnalysisCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();

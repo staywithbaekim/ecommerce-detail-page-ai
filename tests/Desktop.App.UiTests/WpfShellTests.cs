@@ -1016,6 +1016,151 @@ public sealed class WpfShellTests
         });
     }
 
+    [Fact]
+    public void ResultOverviewAndDetailUsePreparedPlansWithoutInventingFormalOutput()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var requirement = new AiRequirementSelectionProjection(
+                "batch_results",
+                "style_01",
+                "page_01",
+                "主图页",
+                "frame_01",
+                "主商品框",
+                "商品主体清晰完整",
+                AiRequirementSelectionUiStatus.ManualLocked,
+                "人工选用 · 已锁定",
+                "asset_front",
+                null);
+            var sourcePage = new AiPageAnalysisProjection(
+                "batch_results",
+                "style_01",
+                "page_01",
+                "主图页",
+                AiPageUiStatus.Ready,
+                "可生成",
+                "已通过",
+                [new AiCandidateProjection(
+                    "batch_results",
+                    "style_01",
+                    "frame_01",
+                    "asset_front",
+                    "internal.jpg",
+                    1,
+                    0.96m,
+                    ["SUBJECT_COMPLETE"],
+                    true,
+                    "主商品框",
+                    null,
+                    "商品主体清晰完整",
+                    "主图页")],
+                [],
+                Requirements: [requirement]);
+            var projection = new AiBatchAnalysisProjection(
+                "batch_results",
+                AiBatchUiStatus.Ready,
+                "分析完成",
+                "开始生成",
+                1,
+                1,
+                1,
+                1,
+                [new AiStyleAnalysisProjection(
+                    "batch_results",
+                    "style_01",
+                    "款式 01",
+                    AiStyleUiStatus.Ready,
+                    "可生成",
+                    [sourcePage],
+                    1)],
+                AiAnalysisSchedulingControlState.Running,
+                null);
+            var workflow = new RecordingAiBatchAnalysisWorkflow
+            {
+                RenderPreparation = new AiRenderPlanPreparation(
+                    "batch_results",
+                    AiRenderPreparationStatus.WaitingForPhotoshop,
+                    "PHOTOSHOP_FORMAL_ADAPTER_NOT_AVAILABLE",
+                    [new AiRenderPagePreparation(
+                        "style_01",
+                        "page_01",
+                        AiRenderPagePreparationStatus.ReadyToRender,
+                        "AI_RENDER_PLAN_VALID",
+                        "{}",
+                        "sha256:" + new string('a', 64))])
+            };
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: workflow);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                ApplyAiProjection(viewModel, projection);
+                SetAiScreen(viewModel);
+                FlushLayout(window);
+
+                viewModel.PrepareRenderingCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.Equal(1, workflow.PrepareRenderingCount);
+                Assert.True(viewModel.IsResultOverviewVisible);
+                Assert.Contains("安全停在待渲染", viewModel.ResultStatusText, StringComparison.Ordinal);
+                Assert.Contains("尚无正式输出", viewModel.ResultFormalOutputText, StringComparison.Ordinal);
+                Assert.Equal(
+                    ["全部 1", "需检查 1", "完成但有问题 0", "运行失败 0"],
+                    viewModel.ResultFilters.Select(filter => filter.DisplayText).ToArray());
+                Assert.True(FindByAutomationId<Grid>(window, "ResultOverviewPage").IsVisible);
+
+                var page = Assert.Single(Assert.Single(viewModel.ResultStyleGroups).Pages);
+                Assert.Equal("待渲染", page.StatusText);
+                Assert.False(page.HasFormalOutput);
+                viewModel.OpenResultPageCommand.Execute(page);
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsResultDetailVisible);
+                Assert.True(FindByAutomationId<Grid>(window, "ResultDetailPage").IsVisible);
+                Assert.Equal("主图页", FindByAutomationId<TextBlock>(window, "ResultDetailTitle").Text);
+                Assert.False(FindByAutomationId<Button>(window, "RegenerateResultPageButton").IsEnabled);
+                Assert.False(FindByAutomationId<Button>(window, "EditResultPageInPhotoshopButton").IsEnabled);
+                var candidateList = FindByAutomationId<ItemsControl>(window, "ResultCandidateList");
+                var candidateContainer = Assert.IsType<ContentPresenter>(
+                    candidateList.ItemContainerGenerator.ContainerFromIndex(0));
+                var candidateAutomationName = AutomationProperties.GetName(candidateContainer);
+                Assert.Contains("Top-1", candidateAutomationName, StringComparison.Ordinal);
+                Assert.DoesNotContain(@"C:\", candidateAutomationName, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("front.jpg", candidateAutomationName, StringComparison.OrdinalIgnoreCase);
+
+                SetWindowSize(window, 1440, 900);
+                SetWindowSize(window, 1100, 760);
+                Assert.True(viewModel.IsResultDetailNarrowLayout);
+                Assert.Equal(172, FindByAutomationId<Border>(window, "ResultCandidatePanel").ActualWidth, precision: 0);
+                Assert.True(FindByAutomationId<Border>(window, "ResultPagePreviewPanel").ActualWidth >= 400);
+                Assert.Equal(216, FindByAutomationId<Border>(window, "ResultAdjustmentPanel").ActualWidth, precision: 0);
+                var bounds = FindByAutomationId<Grid>(window, "ResultDetailPage")
+                    .TransformToAncestor(window)
+                    .TransformBounds(new Rect(FindByAutomationId<Grid>(window, "ResultDetailPage").RenderSize));
+                Assert.True(bounds.Left >= 0);
+                Assert.True(bounds.Right <= window.ActualWidth + 0.5);
+            }
+            finally
+            {
+                viewModel.Dispose();
+                window.Close();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
     private static TemplateCalibrationDraftView CreateCalibrationDraft(string revisionId) => new(
         revisionId,
         "page_1",
@@ -1349,11 +1494,15 @@ public sealed class WpfShellTests
 
         public int LockCount { get; private set; }
 
+        public int PrepareRenderingCount { get; private set; }
+
         public (string BatchId, string StyleId, string RequirementId, string AssetId)? LastLock { get; private set; }
 
         public AiBatchAnalysisProjection? RefreshProjection { get; set; }
 
         public AiBatchAnalysisProjection? LockProjection { get; set; }
+
+        public AiRenderPlanPreparation? RenderPreparation { get; set; }
 
         public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken cancellationToken) =>
             Task.FromResult(_consent);
@@ -1420,5 +1569,14 @@ public sealed class WpfShellTests
             string assetId,
             bool includeSizeTableSource,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<AiRenderPlanPreparation> PrepareRenderingAsync(
+            string batchId,
+            CancellationToken cancellationToken)
+        {
+            PrepareRenderingCount++;
+            return Task.FromResult(RenderPreparation
+                ?? throw new InvalidOperationException("TEST_RENDER_PREPARATION_MISSING"));
+        }
     }
 }

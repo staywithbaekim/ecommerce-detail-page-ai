@@ -101,6 +101,37 @@ public sealed class AiBatchAnalysisProjectionTests
     }
 
     [Fact]
+    public void UnconfirmedReviewPageDoesNotEnterGeneration()
+    {
+        var awaitingConfirmation = Page("page_review", AiPageUiStatus.ReviewRequired) with
+        {
+            RequiresManualConfiguration = true
+        };
+        var projection = new AiBatchAnalysisProjection(
+            "batch_01",
+            AiBatchUiStatus.ReviewRequired,
+            "分析完成，部分页面需要人工复核后才能生成。",
+            "处理此页",
+            1,
+            1,
+            0,
+            1,
+            [new AiStyleAnalysisProjection(
+                "batch_01",
+                "style_01",
+                "SKU-01",
+                AiStyleUiStatus.ReviewRequired,
+                "待人工复核",
+                [awaitingConfirmation],
+                1)],
+            AiAnalysisSchedulingControlState.Running,
+            null);
+
+        Assert.Equal(0, projection.ExecutablePageCount);
+        Assert.False(projection.CanEnterGeneration);
+    }
+
+    [Fact]
     public void UnknownResultUsesActionableTextWithoutSensitiveDetails()
     {
         var page = new AiPageAnalysisProjection(

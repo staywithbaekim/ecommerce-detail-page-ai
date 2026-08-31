@@ -727,6 +727,9 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(IsWorkbenchVisible));
         OnPropertyChanged(nameof(IsBatchInputVisible));
         OnPropertyChanged(nameof(IsAiAnalysisVisible));
+        OnPropertyChanged(nameof(IsAiStyleReviewVisible));
+        OnPropertyChanged(nameof(IsResultOverviewVisible));
+        OnPropertyChanged(nameof(IsResultDetailVisible));
         OnPropertyChanged(nameof(IsPlaceholderVisible));
         UpdateAiAutoRefresh();
     }
@@ -781,7 +784,9 @@ public sealed partial class MainWindowViewModel
         Workbench,
         BatchInput,
         AiAnalysis,
-        AiStyleReview
+        AiStyleReview,
+        ResultOverview,
+        ResultDetail
     }
 }
 

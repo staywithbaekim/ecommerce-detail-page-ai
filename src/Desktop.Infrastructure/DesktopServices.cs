@@ -37,6 +37,8 @@ public static class DesktopServices
         services.AddSingleton<IJsonContractValidator>(provider => provider.GetRequiredService<JsonSchemaContractValidator>());
         services.AddSingleton<IRenderPlanValidator, RenderPlanValidator>();
         services.AddSingleton<ITemplateRenderPlanBuilder, TemplateRenderPlanBuilder>();
+        services.AddSingleton<IPhotoshopAvailabilityPort, UnavailablePhotoshopAvailabilityPort>();
+        services.AddSingleton<IAiRenderPlanFactory, AiRenderPlanFactory>();
 
         services.AddSingleton<SqliteDesktopStore>();
         services.AddSingleton<ITaskEventStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());

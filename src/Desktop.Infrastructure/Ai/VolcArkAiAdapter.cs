@@ -765,6 +765,8 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             ["type"] = "input_text",
             ["text"] = "请仅返回符合 ai-analysis-result/v1 的 JSON 对象。每个 requirement_matches 元素只能包含 requirement_id、asset_id、rank、confidence、evidence_codes 五个字段，不要添加 matched 或其他字段。request_id="
                 + request.RequestId + "，model_config_version=" + request.ModelConfigVersion
+                + "，analysis_kind=" + request.AnalysisKind
+                + "。analysis_kind=product_joint_understanding 时识别需求匹配、变体分组和可见主体；analysis_kind=selected_asset_geometry 时只分析请求中的已确认单图并返回其主体几何；analysis_kind=size_table_extraction 时只从清晰可读的尺码来源提取原文行列，缺失、低清或冲突时返回 warning 且 size_table_candidate=null，禁止猜值"
                 + "。图片按输入顺序对应以下标识；结果中的所有 asset_id、asset_ids 和 source_asset_id 必须使用映射里的真实 asset_id，不得输出 img_0 等临时编号："
                 + assetIdentityMap
                 + "。按以下品类中立图片框需求选择素材并给出证据，不要输出 Markdown 或隐藏推理："

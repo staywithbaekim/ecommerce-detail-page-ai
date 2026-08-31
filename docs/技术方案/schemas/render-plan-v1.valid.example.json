@@ -6,7 +6,7 @@
   "batch_id": "batch_01JEXAMPLE",
   "product_id": "product_01JEXAMPLE",
   "template_revision_id": "tplrev_01JEXAMPLE",
-  "plan_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "plan_digest": "sha256:b6d55cebf2b8e4ec8df92bf3b44f576384ea284b7256d01aab46238c27ba39cb",
   "created_at": "2026-08-27T12:00:00Z",
   "required_capabilities": [
     "psd-layer-path/psd-bottom-to-top",

@@ -5,6 +5,7 @@ using Desktop.Domain.Templates;
 using Desktop.Application.Inputs;
 using Desktop.Application.Templates;
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace Desktop.Application.Ai;
 
@@ -51,6 +52,10 @@ public interface IAiBatchAnalysisWorkflow
         string styleId,
         string assetId,
         bool includeSizeTableSource,
+        CancellationToken cancellationToken);
+
+    Task<AiRenderPlanPreparation> PrepareRenderingAsync(
+        string batchId,
         CancellationToken cancellationToken);
 
     Task<AiUploadConsentRecord?> GetUploadConsentAsync(
@@ -262,7 +267,9 @@ public sealed record AiBatchAnalysisProjection(
     public string ProgressText => $"已完成 {CompletedStyleCount}/{StyleCount} 款 · 可生成页面 {ReadyPageCount}/{TotalPageCount}";
 
     public int ExecutablePageCount => Styles.SelectMany(style => style.Pages)
-        .Count(page => page.Status is AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired);
+        .Count(page => page.Status == AiPageUiStatus.Ready
+            || page.Status == AiPageUiStatus.ReviewRequired
+                && !page.RequiresManualConfiguration);
 
     public int IsolatedPageCount => Styles.SelectMany(style => style.Pages)
         .Count(page => page.Status == AiPageUiStatus.BusinessError);
@@ -311,6 +318,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     private readonly IAiAnalysisSchedulingStateStore _schedulingState;
     private readonly IAiAnalysisSchedulerFactory _schedulerFactory;
     private readonly IConsentPort _consent;
+    private readonly ITemplateResourceRepository? _templateResources;
+    private readonly IAiRenderPlanFactory? _renderPlans;
     private readonly ConcurrentDictionary<string, BatchContext> _contexts = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _contextGate = new(1, 1);
     private readonly CancellationTokenSource _backgroundCancellation = new();
@@ -334,7 +343,9 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         IAiAnalysisResultStore results,
         IAiAnalysisSchedulingStateStore schedulingState,
         IAiAnalysisSchedulerFactory schedulerFactory,
-        IConsentPort consent)
+        IConsentPort consent,
+        ITemplateResourceRepository? templateResources = null,
+        IAiRenderPlanFactory? renderPlans = null)
     {
         _batches = batches ?? throw new ArgumentNullException(nameof(batches));
         _templates = templates ?? throw new ArgumentNullException(nameof(templates));
@@ -343,6 +354,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         _schedulingState = schedulingState ?? throw new ArgumentNullException(nameof(schedulingState));
         _schedulerFactory = schedulerFactory ?? throw new ArgumentNullException(nameof(schedulerFactory));
         _consent = consent ?? throw new ArgumentNullException(nameof(consent));
+        _templateResources = templateResources;
+        _renderPlans = renderPlans;
     }
 
     public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken cancellationToken) =>
@@ -452,6 +465,137 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         await RefreshRequestsAsync(context, cancellationToken).ConfigureAwait(false);
         StartBackgroundProcessing(context);
         return await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<AiRenderPlanPreparation> PrepareRenderingAsync(
+        string batchId,
+        CancellationToken cancellationToken)
+    {
+        if (_templateResources is null || _renderPlans is null)
+        {
+            throw new InvalidOperationException("AI_RENDER_FACTORY_NOT_CONFIGURED");
+        }
+
+        var context = await LoadContextAsync(batchId, cancellationToken).ConfigureAwait(false);
+        await EnsureSchedulerRestoredAsync(context, cancellationToken).ConfigureAwait(false);
+        await RefreshRequestsAsync(context, cancellationToken).ConfigureAwait(false);
+        var projection = await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
+        if (projection.Status is AiBatchUiStatus.RecoveryRequired
+            or AiBatchUiStatus.Failed
+            or AiBatchUiStatus.Cancelled
+            or AiBatchUiStatus.BudgetStopped
+            or AiBatchUiStatus.Analysing
+            or AiBatchUiStatus.Waiting)
+        {
+            throw new InvalidOperationException("AI_RENDER_ANALYSIS_NOT_CLOSED");
+        }
+
+        var resources = new List<ImportedTemplateResource>();
+        foreach (var resourceId in context.Batch.TemplateSnapshot.Pages
+                     .Select(page => page.TemplateResourceId)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            var resource = await _templateResources.GetByResourceIdAsync(
+                resourceId,
+                cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_NOT_FOUND");
+            resources.Add(resource);
+        }
+
+        var styleInputs = new List<AiRenderStyleInput>(context.Batch.Styles.Length);
+        var planCreatedAt = context.Batch.UpdatedAt;
+        foreach (var style in context.Batch.Styles.OrderBy(style => style.Order))
+        {
+            var firstLayer = context.Requests.Values.FirstOrDefault(request =>
+                string.Equals(request.StyleId, style.StyleId, StringComparison.Ordinal)
+                && string.Equals(
+                    request.AnalysisKind,
+                    AiAnalysisKind.ProductJointUnderstanding,
+                    StringComparison.Ordinal));
+            var session = firstLayer is null
+                ? null
+                : await _store.LoadSessionAsync(SessionId(firstLayer), cancellationToken).ConfigureAwait(false);
+            var results = new List<AiAnalysisResultV1>();
+            foreach (var request in context.Requests.Values.Where(request =>
+                         string.Equals(request.StyleId, style.StyleId, StringComparison.Ordinal)))
+            {
+                var ledger = await _store.FindRequestByFingerprintAsync(
+                    AiAnalysisCacheKeyFactory.Create(request),
+                    cancellationToken).ConfigureAwait(false);
+                if (ledger?.UpdatedAt > planCreatedAt)
+                {
+                    planCreatedAt = ledger.UpdatedAt;
+                }
+                if (ledger?.ResultReference is null
+                    || ledger.Status is not ("Validated" or "ManualReview" or "PlanClosed"))
+                {
+                    continue;
+                }
+
+                var result = await _results.LoadAsync(
+                    ledger.ResultReference,
+                    cancellationToken).ConfigureAwait(false);
+                if (result is not null)
+                {
+                    results.Add(AiAnalysisResultReferenceNormalizer.Normalize(request, result));
+                }
+            }
+
+            var geometryByAsset = results.SelectMany(result => result.SubjectGeometry)
+                .GroupBy(geometry => geometry.AssetId, StringComparer.Ordinal)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(geometry => geometry.Confidence).First(),
+                    StringComparer.Ordinal);
+            var selectedRequirements = projection.Styles
+                .Single(item => string.Equals(item.StyleId, style.StyleId, StringComparison.Ordinal))
+                .Pages
+                .Where(page => page.Status == AiPageUiStatus.Ready
+                    || page.Status == AiPageUiStatus.ReviewRequired
+                        && !page.RequiresManualConfiguration)
+                .SelectMany(page => page.Requirements ?? [])
+                .Where(requirement => requirement.SelectedAssetId is not null)
+                .GroupBy(requirement => requirement.RequirementId, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .Select(requirement =>
+                {
+                    var assetId = requirement.SelectedAssetId!;
+                    var revision = session?.LockedSelections.TryGetValue(
+                        requirement.RequirementId,
+                        out var locked) == true
+                        ? locked.SelectionRevision
+                        : 0;
+                    return new AiConfirmedRenderSelection(
+                        requirement.RequirementId,
+                        assetId,
+                        geometryByAsset.GetValueOrDefault(assetId),
+                        revision);
+                })
+                .ToArray();
+            var sizeCandidates = results.Where(result => result.SizeTableCandidate is not null)
+                .Select(result => result.SizeTableCandidate!)
+                .GroupBy(candidate => JsonSerializer.Serialize(new
+                {
+                    candidate.SourceAssetId,
+                    candidate.Columns,
+                    candidate.Rows
+                }), StringComparer.Ordinal)
+                .Select(group => group.OrderByDescending(candidate => candidate.Confidence).First())
+                .ToArray();
+            styleInputs.Add(new AiRenderStyleInput(
+                style.StyleId,
+                selectedRequirements,
+                sizeCandidates.Length == 1 ? sizeCandidates[0] : null));
+        }
+
+        return await _renderPlans.PrepareAsync(
+            new AiRenderPlanPreparationRequest(
+                context.Batch,
+                context.TemplateRevision,
+                resources,
+                styleInputs,
+                planCreatedAt),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<AiBatchAnalysisProjection> ControlAsync(
@@ -964,7 +1108,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             status == AiPageUiStatus.Ready ? "已通过" : "处理此页",
             candidates,
             warnings,
-            manualNeedsLock,
+            manualNeedsLock || hasUnconfirmedLowConfidence,
             BuildRequirementSelections(
                 context,
                 style,

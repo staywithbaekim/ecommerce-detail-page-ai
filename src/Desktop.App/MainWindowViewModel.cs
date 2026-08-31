@@ -76,6 +76,9 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             OnPropertyChanged(nameof(IsWorkbenchVisible));
             OnPropertyChanged(nameof(IsBatchInputVisible));
             OnPropertyChanged(nameof(IsAiAnalysisVisible));
+            OnPropertyChanged(nameof(IsAiStyleReviewVisible));
+            OnPropertyChanged(nameof(IsResultOverviewVisible));
+            OnPropertyChanged(nameof(IsResultDetailVisible));
             OnPropertyChanged(nameof(IsSettingsVisible));
             OnPropertyChanged(nameof(IsTemplateSectionVisible));
             OnPropertyChanged(nameof(IsPlaceholderVisible));
@@ -137,7 +140,9 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
     public bool IsWorkbenchVisible => SelectedNavigationItem.Key == "workbench"
         && !IsBatchInputVisible
         && !IsAiAnalysisVisible
-        && !IsAiStyleReviewVisible;
+        && !IsAiStyleReviewVisible
+        && !IsResultOverviewVisible
+        && !IsResultDetailVisible;
 
     public bool IsTemplateSectionVisible => SelectedNavigationItem.Key == "templates";
 
@@ -147,6 +152,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         && !IsBatchInputVisible
         && !IsAiAnalysisVisible
         && !IsAiStyleReviewVisible
+        && !IsResultOverviewVisible
+        && !IsResultDetailVisible
         && !IsSettingsVisible
         && !IsTemplateSectionVisible;
 

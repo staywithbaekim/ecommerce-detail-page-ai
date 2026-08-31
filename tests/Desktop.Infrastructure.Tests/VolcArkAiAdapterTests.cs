@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -35,7 +36,7 @@ public sealed class VolcArkAiAdapterTests
             out var parsedCount)
             ? parsedCount
             : sourcePaths.Length;
-        Assert.InRange(expectedAssetCount, 1, 3);
+        Assert.InRange(expectedAssetCount, 1, 4);
         Assert.Equal(expectedAssetCount, sourcePaths.Length);
 
         var encodingOptions = new AiAnalysisCopyEncodingOptions();
@@ -115,7 +116,8 @@ public sealed class VolcArkAiAdapterTests
                 asset.Copy.MimeType,
                 asset.Copy.CompressionProfileVersion,
                 asset.Copy.LeaseId)).ToArray();
-            var request = Request() with
+            var probeProfile = Environment.GetEnvironmentVariable("AI01_PROBE_PROFILE") ?? "generic";
+            var request = CreateProbeRequest(probeProfile) with
             {
                 CompressionProfileVersion = encodingOptions.CompressionProfileVersion,
                 Assets = requestAssets
@@ -158,6 +160,29 @@ public sealed class VolcArkAiAdapterTests
                     $"REAL_PROBE_FAILURE outcome={result.Outcome} error_code={result.Error?.Code ?? "none"} "
                     + $"duration_ms={result.Duration.TotalMilliseconds:F0} diagnostics={shapeSummary}");
             }
+
+            Console.WriteLine("REAL_PROBE_RESULT " + JsonSerializer.Serialize(new
+            {
+                profile = probeProfile,
+                result.Result.RequestId,
+                request.AnalysisKind,
+                requirement_matches = result.Result.RequirementMatches.Select(match => new
+                {
+                    match.RequirementId,
+                    match.AssetId,
+                    match.Rank,
+                    match.Confidence,
+                    match.EvidenceCodes
+                }),
+                variant_groups = result.Result.VariantGroups,
+                subject_geometry = result.Result.SubjectGeometry,
+                size_table_candidate = result.Result.SizeTableCandidate,
+                warnings = result.Result.Warnings.Select(warning => new
+                {
+                    warning.Scope,
+                    warning.Code
+                })
+            }));
         }
         finally
         {
@@ -179,6 +204,67 @@ public sealed class VolcArkAiAdapterTests
 
     private static HttpClient CreateRealProbeHttpClient(HttpMessageHandler handler) =>
         new(handler) { Timeout = Timeout.InfiniteTimeSpan };
+
+    private static AiAnalysisRequestV1 CreateProbeRequest(string profile)
+    {
+        var (analysisKind, requirements) = profile switch
+        {
+            "clothing-joint" => (
+                AiAnalysisKind.ProductJointUnderstanding,
+                new AiRequirementInputV1[]
+                {
+                    new("black_front", "选择黑色圆领印花短袖的完整正面商品图；黑、白、灰为独立变体，不能混用。", "subject_complete", true),
+                    new("white_front", "选择白色圆领印花短袖的完整正面商品图；黑、白、灰为独立变体，不能混用。", "subject_complete", true),
+                    new("gray_front", "选择灰色圆领印花短袖的完整正面商品图；黑、白、灰为独立变体，不能混用。", "subject_complete", true),
+                    new("back_view", "选择当前商品任一已确认颜色变体的完整背面图；没有背面时必须报告缺失，不能用正面代替。", "subject_complete", true),
+                    new("neckline_detail", "选择同款圆领领口细节图；没有独立细节时必须报告缺失。", "detail_clear", true),
+                    new("cuff_detail", "选择同款袖口细节图；没有独立细节时必须报告缺失。", "detail_clear", true),
+                    new("fabric_detail", "选择同款印花面料细节图，不能把其他变体或旧商品当作面料来源。", "detail_clear", true)
+                }),
+            "clothing-subject" => (
+                AiAnalysisKind.SelectedAssetGeometry,
+                new AiRequirementInputV1[]
+                {
+                    new("locked_subject", "当前图片已由人工锁定；只识别灰色圆领印花短袖的完整主体边界。若仍包含其他商品或边缘被裁切，必须返回 warning。", "subject_complete", true)
+                }),
+            "size-table" => (
+                AiAnalysisKind.SizeTableExtraction,
+                new AiRequirementInputV1[]
+                {
+                    new("size_table", "只提取图片中清晰可读的尺码表原文行列；不得猜测缺失数字，低清、缺失或来源冲突时必须返回 warning 且不返回候选。", "structured_size_table", true)
+                }),
+            "computer-case" => (
+                AiAnalysisKind.ProductJointUnderstanding,
+                new AiRequirementInputV1[]
+                {
+                    new("front_three_quarter", "选择电脑机箱完整的前侧三分之四视角，不能把背景、地面或装饰当作商品。", "subject_complete", true),
+                    new("front_view", "选择电脑机箱完整正面视角，不能与背面或侧面混淆。", "subject_complete", true),
+                    new("rear_view", "选择电脑机箱完整背面视角，不能与正面或侧面混淆。", "subject_complete", true),
+                    new("side_view", "选择电脑机箱完整侧面视角，不能与正面或背面混淆。", "subject_complete", true)
+                }),
+            _ => (AiAnalysisKind.ProductJointUnderstanding, Request().Requirements.ToArray())
+        };
+        var normalized = profile.Replace('-', '_');
+        var digestJson = JsonSerializer.Serialize(requirements.Select(requirement => new
+        {
+            requirement.RequirementId,
+            requirement.SelectionRequirement,
+            requirement.LayoutIntent,
+            requirement.Required
+        }).ToArray());
+        return Request() with
+        {
+            RequestId = $"probe_{normalized}",
+            CorrelationId = $"probe_{normalized}",
+            ProductId = $"product_{normalized}",
+            BatchId = $"batch_{normalized}",
+            StyleId = $"style_{normalized}",
+            AnalysisKind = analysisKind,
+            RequirementsDigest = "sha256:" + Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(digestJson))).ToLowerInvariant(),
+            Requirements = requirements
+        };
+    }
 
     private sealed class RealProbeFactAttribute : FactAttribute
     {
@@ -489,6 +575,8 @@ public sealed class VolcArkAiAdapterTests
             .GetValue<string>();
         Assert.Contains("\"image_alias\":\"img_0\"", instructions, StringComparison.Ordinal);
         Assert.Contains("\"asset_id\":\"asset_01\"", instructions, StringComparison.Ordinal);
+        Assert.Contains("analysis_kind=product_joint_understanding", instructions, StringComparison.Ordinal);
+        Assert.Contains("size_table_extraction", instructions, StringComparison.Ordinal);
     }
 
     [Fact]
