@@ -5,6 +5,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Desktop.Application.Ai;
 using Desktop.Application.Templates;
 using Xunit.Abstractions;
 
@@ -31,6 +32,7 @@ public sealed class WpfShellTests
         "PageContent",
         "ActiveTaskList",
         "RecentTaskList",
+        "RestoreLatestBatchAction",
         "ChineseImeFixtureInput",
         "ActiveTaskBar"
     ];
@@ -61,7 +63,9 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = new Desktop.App.App();
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
             application.InitializeComponent();
             var workflow = new RecordingBatchInputWorkflow();
             var viewModel = new MainWindowViewModel(
@@ -131,6 +135,12 @@ public sealed class WpfShellTests
                 FlushLayout(window);
                 Assert.Equal("设置", viewModel.PageTitle);
                 Assert.Equal(5, viewModel.PageRows.Count);
+                var consentCard = FindByAutomationId<Border>(window, "AiUploadConsentCard");
+                Assert.NotNull(consentCard);
+                Assert.Equal(
+                    "尚未授权上传压缩分析图",
+                    FindByAutomationId<TextBlock>(window, "AiUploadConsentStatus").Text);
+                Assert.False(FindByAutomationId<Button>(window, "GrantAiUploadConsentButton").IsEnabled);
 
                 var dpi = VisualTreeHelper.GetDpi(window);
                 Assert.True(dpi.DpiScaleX > 0);
@@ -196,7 +206,10 @@ public sealed class WpfShellTests
             finally
             {
                 window.Close();
-                application.Shutdown();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
             }
         });
     }
@@ -240,8 +253,11 @@ public sealed class WpfShellTests
         viewModel.SelectedNavigationItem = viewModel.NavigationItems[0];
         FlushLayout(window);
         var entry = FindByAutomationId<Button>(window, "PrimaryPageAction");
+        var restoreEntry = FindByAutomationId<Button>(window, "RestoreLatestBatchAction");
         Assert.True(entry.IsHitTestVisible);
         Assert.True(entry.Focusable);
+        Assert.True(restoreEntry.IsHitTestVisible);
+        Assert.True(restoreEntry.Focusable);
         viewModel.OpenBatchInputCommand.Execute(null);
         FlushLayout(window);
 
@@ -252,17 +268,27 @@ public sealed class WpfShellTests
             FindByAutomationId<TextBlock>(window, "BatchInputTitle").Text);
 
         viewModel.TemplateGroups.Add(new TemplateLibraryCardViewModel(
+            "group_draft_only",
+            "尚未提交模板",
+            "1 个页面 · 草稿",
+            "今天 09:00",
+            "草稿"));
+        viewModel.TemplateGroups.Add(new TemplateLibraryCardViewModel(
             "group_batch_ui",
             "通用品类模板",
             "2 个页面 · Committed",
             "今天 10:00",
-            "Committed"));
-        viewModel.SelectedBatchTemplate = viewModel.TemplateGroups[0];
+            "Committed",
+            HasCommittedRevision: true));
+        viewModel.SelectedBatchTemplate = viewModel.TemplateGroups[1];
         FlushLayout(window);
         var templateSelect = FindByAutomationId<ComboBox>(window, "BatchTemplateSelect");
         Assert.Contains(
             EnumerateVisualDescendants<TextBlock>(templateSelect),
             text => string.Equals(text.Text, "通用品类模板", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            EnumerateVisualDescendants<TextBlock>(templateSelect),
+            text => string.Equals(text.Text, "尚未提交模板", StringComparison.Ordinal));
         Assert.DoesNotContain(
             EnumerateVisualDescendants<TextBlock>(templateSelect),
             text => text.Text.Contains(nameof(TemplateLibraryCardViewModel), StringComparison.Ordinal));
@@ -368,6 +394,16 @@ public sealed class WpfShellTests
         viewModel.CancelBatchInputCommand.Execute(null);
         viewModel.OpenBatchInputCommand.Execute(null);
         FlushLayout(window);
+        Assert.Equal(0, workflow.RestoreCount);
+        Assert.Equal("", viewModel.BatchInputDirectory);
+        Assert.Equal("", viewModel.BatchOutputDirectory);
+        Assert.Equal("新批次草稿", viewModel.BatchDraftSaveText);
+        Assert.False(viewModel.IsBatchScanReady);
+
+        viewModel.CancelBatchInputCommand.Execute(null);
+        viewModel.RestoreBatchInputCommand.Execute(null);
+        FlushLayout(window);
+        Assert.Equal(1, workflow.RestoreCount);
         Assert.Equal(@"C:\商品 素材\秋季上新", viewModel.BatchInputDirectory);
         Assert.Equal(@"D:\生产输出\秋季上新", viewModel.BatchOutputDirectory);
         Assert.Equal("草稿已自动保存", viewModel.BatchDraftSaveText);
@@ -404,8 +440,9 @@ public sealed class WpfShellTests
             "已识别为正常批次 · 2 款",
             "上次扫描未安全完成。源图片没有更改，请重新扫描。");
         viewModel.CancelBatchInputCommand.Execute(null);
-        viewModel.OpenBatchInputCommand.Execute(null);
+        viewModel.RestoreBatchInputCommand.Execute(null);
         FlushLayout(window);
+        Assert.Equal(2, workflow.RestoreCount);
         Assert.Equal("草稿已自动保存", viewModel.BatchDraftSaveText);
         Assert.Equal("group_batch_ui", viewModel.SelectedBatchTemplate?.GroupId);
         Assert.True(viewModel.IsBatchScanBlocked);
@@ -480,6 +517,505 @@ public sealed class WpfShellTests
         viewModel.Dispose();
     }
 
+    [Fact]
+    public void NewBatchDoesNotRestoreCompletedAiProjectionAndRecoveryStillWorks()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var batchWorkflow = new RecordingBatchInputWorkflow
+            {
+                RestoreProjection = new BatchInputProjection(
+                    "batch_completed_ai",
+                    "group_ai",
+                    BatchInputUiStatus.ScanReady,
+                    @"C:\旧商品目录",
+                    @"D:\旧输出目录",
+                    ["page_1"],
+                    BatchSelectionMode.Automatic,
+                    false,
+                    "已识别为单款批次 · 1 款",
+                    "扫描完成。")
+            };
+            var aiWorkflow = new RecordingAiBatchAnalysisWorkflow
+            {
+                RefreshProjection = new AiBatchAnalysisProjection(
+                    "batch_completed_ai",
+                    AiBatchUiStatus.ReviewRequired,
+                    "旧批次分析已完成，等待人工复核。",
+                    "继续处理",
+                    1,
+                    1,
+                    0,
+                    1,
+                    [],
+                    AiAnalysisSchedulingControlState.Running,
+                    null)
+            };
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                batchInputWorkflow: batchWorkflow,
+                aiBatchAnalysisWorkflow: aiWorkflow);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                viewModel.OpenBatchInputCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsBatchInputVisible);
+                Assert.False(viewModel.IsAiAnalysisVisible);
+                Assert.Equal("", viewModel.BatchInputDirectory);
+                Assert.Equal("", viewModel.BatchOutputDirectory);
+                Assert.Equal(0, batchWorkflow.RestoreCount);
+                Assert.Equal(0, aiWorkflow.RefreshCount);
+
+                viewModel.CancelBatchInputCommand.Execute(null);
+                viewModel.RestoreBatchInputCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.False(viewModel.IsBatchInputVisible);
+                Assert.True(viewModel.IsAiAnalysisVisible);
+                Assert.Equal(@"C:\旧商品目录", viewModel.BatchInputDirectory);
+                Assert.Equal(@"D:\旧输出目录", viewModel.BatchOutputDirectory);
+                Assert.Equal(1, batchWorkflow.RestoreCount);
+                Assert.Equal(1, aiWorkflow.RefreshCount);
+            }
+            finally
+            {
+                viewModel.Dispose();
+                window.Close();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void BatchOutputPreviewTracksTheActuallySelectedPages()
+    {
+        var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+        viewModel.BatchPages.Add(new BatchPageOptionViewModel("page_1", "主图页", "每款一次", true));
+        viewModel.BatchPages.Add(new BatchPageOptionViewModel("page_2", "细节页", "每款一次", true));
+        viewModel.BatchPages.Add(new BatchPageOptionViewModel("page_3", "尺码页", "每款一次", true));
+
+        Assert.Equal(
+            ["01-主图页.jpg", "02-细节页.jpg", "03-尺码页.jpg"],
+            viewModel.BatchOutputPreviewFiles);
+
+        viewModel.BatchPages[1].IsSelected = false;
+        Assert.Equal(["01-主图页.jpg", "02-尺码页.jpg"], viewModel.BatchOutputPreviewFiles);
+        Assert.Equal("每款独立目录 · 2 个 JPG", viewModel.BatchOutputPreviewSummary);
+
+        viewModel.BatchIncludeEditablePsd = true;
+        Assert.Equal("每款独立目录 · 2 个 JPG + 同名可编辑 PSD", viewModel.BatchOutputPreviewSummary);
+        viewModel.Dispose();
+    }
+
+    [Fact]
+    public void FirstScanRequiresExplicitUncheckedUploadConsentAndContinuesAfterGrant()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var batchWorkflow = new RecordingBatchInputWorkflow
+            {
+                NextStatus = BatchInputUiStatus.ScanBlocked,
+                NextStatusMessage = "测试扫描已完成授权门验证。"
+            };
+            var aiWorkflow = new RecordingAiBatchAnalysisWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                folderPicker: new QueueFolderPicker(@"C:\商品素材", @"D:\正式输出"),
+                batchInputWorkflow: batchWorkflow,
+                aiBatchAnalysisWorkflow: aiWorkflow);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                viewModel.OpenBatchInputCommand.Execute(null);
+                viewModel.TemplateGroups.Add(new TemplateLibraryCardViewModel(
+                    "group_consent_ui",
+                    "授权验证模板",
+                    "1 个页面 · Committed",
+                    "今天 10:00",
+                    "Committed",
+                    HasCommittedRevision: true));
+                viewModel.SelectedBatchTemplate = viewModel.TemplateGroups[0];
+                viewModel.BatchPages.Add(new BatchPageOptionViewModel(
+                    "page_1",
+                    "主图页",
+                    "普通套图页 · 每款一次",
+                    true));
+                viewModel.ChooseBatchInputDirectoryCommand.Execute(null);
+                viewModel.ChooseBatchOutputDirectoryCommand.Execute(null);
+                FlushLayout(window);
+
+                viewModel.ScanBatchInputCommand.Execute(null);
+                FlushLayout(window);
+
+                var dialog = FindByAutomationId<Grid>(window, "AiUploadConsentDialog");
+                var acknowledgement = FindByAutomationId<CheckBox>(window, "AiUploadConsentAcknowledgement");
+                var confirm = FindByAutomationId<Button>(window, "ConfirmAiUploadConsentButton");
+                Assert.Equal(Visibility.Visible, dialog.Visibility);
+                Assert.False(acknowledgement.IsChecked);
+                Assert.False(confirm.IsEnabled);
+                Assert.Null(batchWorkflow.Submission);
+                Assert.Equal(0, aiWorkflow.GrantCount);
+
+                viewModel.CancelAiUploadConsentCommand.Execute(null);
+                viewModel.ScanBatchInputCommand.Execute(null);
+                FlushLayout(window);
+                Assert.Equal(Visibility.Visible, dialog.Visibility);
+                Assert.False(acknowledgement.IsChecked);
+
+                viewModel.AiUploadConsentAcknowledged = true;
+                FlushLayout(window);
+                Assert.True(confirm.IsEnabled);
+                viewModel.ConfirmAiUploadConsentCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.Equal(Visibility.Collapsed, dialog.Visibility);
+                Assert.Equal(1, aiWorkflow.GrantCount);
+                Assert.True(viewModel.IsAiUploadConsentGranted);
+                Assert.NotNull(batchWorkflow.Submission);
+                Assert.Equal("测试扫描已完成授权门验证。", viewModel.BatchStatusMessage);
+            }
+            finally
+            {
+                window.Close();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void AiAnalysisPageSupportsWideNarrowLongListUiaAndChineseStatus()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                var projection = new Desktop.Application.Ai.AiBatchAnalysisProjection(
+                    "batch_ui",
+                    Desktop.Application.Ai.AiBatchUiStatus.ReviewRequired,
+                    "分析完成，部分页面需要人工复核后才能生成。",
+                    "继续处理",
+                    40,
+                    40,
+                    39,
+                    40,
+                    Enumerable.Range(1, 40).Select(index => new Desktop.Application.Ai.AiStyleAnalysisProjection(
+                        "batch_ui",
+                        $"style_{index}",
+                        $"款式 {index:D2}",
+                        index == 40
+                            ? Desktop.Application.Ai.AiStyleUiStatus.BusinessError
+                            : Desktop.Application.Ai.AiStyleUiStatus.Ready,
+                        index == 40 ? "需要修复" : "可生成",
+                        [new Desktop.Application.Ai.AiPageAnalysisProjection(
+                            "batch_ui",
+                            $"style_{index}",
+                            $"page_{index}",
+                            "中文主图页",
+                            index == 40
+                                ? Desktop.Application.Ai.AiPageUiStatus.BusinessError
+                                : Desktop.Application.Ai.AiPageUiStatus.Ready,
+                            index == 40 ? "需要修复" : "可生成",
+                            index == 40 ? "处理此页" : "已通过",
+                            index == 1
+                                ? [new Desktop.Application.Ai.AiCandidateProjection(
+                                    "batch_ui",
+                                    "style_1",
+                                    "frame_01",
+                                    "asset_01",
+                                    "internal-file-name.jpg",
+                                    1,
+                                    0.98m,
+                                    ["SUBJECT_COMPLETE", "NO_EXTRA_DISTRACTIONS"],
+                                    false,
+                                    "图片框 1",
+                                    null,
+                                    "选择完整清晰的商品主体图。",
+                                    "中文主图页")]
+                                : [],
+                            index == 40 ? ["缺少必需素材，请补充后重试。"] : [])],
+                        3)).ToArray(),
+                    Desktop.Application.Ai.AiAnalysisSchedulingControlState.Running,
+                    null);
+                ApplyAiProjection(viewModel, projection);
+                SetAiScreen(viewModel);
+                FlushLayout(window);
+
+                var page = FindByAutomationId<Grid>(window, "AiAnalysisPage");
+                Assert.Equal(Visibility.Visible, page.Visibility);
+                Assert.Equal("生成前检查", FindByAutomationId<TextBlock>(window, "AiAnalysisTitle").Text);
+                Assert.Equal(40, viewModel.AiStyles.Count);
+                Assert.Contains("人工复核", FindByAutomationId<TextBlock>(window, "AiAnalysisStatus").Text, StringComparison.Ordinal);
+                var scroll = FindByAutomationId<ScrollViewer>(window, "AiAnalysisScrollViewer");
+                Assert.Equal(ScrollBarVisibility.Auto, scroll.VerticalScrollBarVisibility);
+                Assert.NotNull(FindByAutomationId<FrameworkElement>(window, "PauseAiAnalysisButton"));
+                Assert.NotNull(FindByAutomationId<FrameworkElement>(window, "ResumeAiAnalysisButton"));
+                Assert.NotNull(FindByAutomationId<FrameworkElement>(window, "CancelAiAnalysisButton"));
+                Assert.True(FindByAutomationId<Button>(window, "EnterGenerationButton").IsEnabled);
+
+                var firstStyle = viewModel.AiStyles[0];
+                firstStyle.IsExpanded = true;
+                FlushLayout(window);
+                var candidate = Assert.Single(firstStyle.Pages[0].Candidates);
+                viewModel.OpenAiCandidatePreviewCommand.Execute(candidate);
+                FlushLayout(window);
+                Assert.Equal(Visibility.Visible, FindByAutomationId<Grid>(window, "AiCandidatePreviewDialog").Visibility);
+                Assert.Equal("用于：中文主图页 · 图片框 1", viewModel.AiCandidatePreview!.UsageText);
+                Assert.Equal("选用这张", FindByAutomationId<Button>(window, "ConfirmAiCandidateSelectionButton").Content);
+                Assert.DoesNotContain(
+                    EnumerateVisualDescendants<Button>(window).Select(button => button.Content?.ToString()),
+                    content => content is "锁定此图" or "主体分析" or "当前首选");
+                viewModel.CloseAiCandidatePreviewCommand.Execute(null);
+                FlushLayout(window);
+
+                ApplyAiProjection(
+                    viewModel,
+                    projection with
+                    {
+                        Status = Desktop.Application.Ai.AiBatchUiStatus.BudgetStopped,
+                        StatusText = "本轮 AI 预算已达到停止线；请降低范围或等待人工批准后继续。",
+                        ActionText = "继续处理",
+                        ReadyPageCount = 0
+                    });
+                FlushLayout(window);
+                Assert.Contains("预算", FindByAutomationId<TextBlock>(window, "AiAnalysisStatus").Text, StringComparison.Ordinal);
+                Assert.Equal("稍后继续", FindByAutomationId<Button>(window, "EnterGenerationButton").Content);
+                Assert.False(FindByAutomationId<Button>(window, "EnterGenerationButton").IsEnabled);
+                Assert.False(FindByAutomationId<Button>(window, "PauseAiAnalysisButton").IsEnabled);
+                Assert.True(FindByAutomationId<Button>(window, "CancelAiAnalysisButton").IsEnabled);
+
+                SetWindowSize(window, 1440, 900);
+                SetWindowSize(window, 1100, 760);
+                var bounds = page.TransformToAncestor(window).TransformBounds(new Rect(page.RenderSize));
+                Assert.True(bounds.Left >= 0);
+                Assert.True(bounds.Right <= window.ActualWidth + 0.5);
+            }
+            finally
+            {
+                window.Close();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void AiStyleReviewShowsAllUsageAndAssetsAndReplacesWithoutProviderRequest()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var workflow = new RecordingAiBatchAnalysisWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: workflow);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                var requirement = new Desktop.Application.Ai.AiRequirementSelectionProjection(
+                    "batch_ui",
+                    "style_1",
+                    "page_1",
+                    "中文主图页",
+                    "frame_01",
+                    "图片框 1",
+                    "商品主体清晰完整，构图适合当前图片框。",
+                    Desktop.Application.Ai.AiRequirementSelectionUiStatus.AiSelected,
+                    "AI 推荐 · 已选用",
+                    "asset_01",
+                    null);
+                var initialPage = new Desktop.Application.Ai.AiPageAnalysisProjection(
+                    "batch_ui",
+                    "style_1",
+                    "page_1",
+                    "中文主图页",
+                    Desktop.Application.Ai.AiPageUiStatus.Ready,
+                    "可生成",
+                    "已通过",
+                    [],
+                    [],
+                    Requirements: [requirement]);
+                var assets = new Desktop.Application.Ai.AiStyleAssetProjection[]
+                {
+                    new("batch_ui", "style_1", "asset_01", null, 1),
+                    new("batch_ui", "style_1", "asset_02", null, 2),
+                    new("batch_ui", "style_1", "asset_03", null, 3)
+                };
+                var initialStyle = new Desktop.Application.Ai.AiStyleAnalysisProjection(
+                    "batch_ui",
+                    "style_1",
+                    "款式 01",
+                    Desktop.Application.Ai.AiStyleUiStatus.Ready,
+                    "可生成",
+                    [initialPage],
+                    assets.Length,
+                    assets);
+                var initial = new Desktop.Application.Ai.AiBatchAnalysisProjection(
+                    "batch_ui",
+                    Desktop.Application.Ai.AiBatchUiStatus.Ready,
+                    "分析完成，所有已选页面均可生成。",
+                    "进入生成",
+                    1,
+                    1,
+                    1,
+                    1,
+                    [initialStyle],
+                    Desktop.Application.Ai.AiAnalysisSchedulingControlState.Running,
+                    null);
+                var lockedRequirement = requirement with
+                {
+                    Status = Desktop.Application.Ai.AiRequirementSelectionUiStatus.ManualLocked,
+                    StatusText = "人工选用 · 已锁定",
+                    SelectedAssetId = "asset_02"
+                };
+                workflow.LockProjection = initial with
+                {
+                    Styles =
+                    [
+                        initialStyle with
+                        {
+                            Pages = [initialPage with { Requirements = [lockedRequirement] }]
+                        }
+                    ]
+                };
+
+                ApplyAiProjection(viewModel, initial);
+                SetAiScreen(viewModel);
+                var style = Assert.Single(viewModel.AiStyles);
+                viewModel.OpenAiStyleReviewCommand.Execute(style);
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsAiStyleReviewVisible);
+                Assert.False(viewModel.IsWorkbenchVisible);
+                Assert.True(FindByAutomationId<Grid>(window, "AiStyleReviewPage").IsVisible);
+                Assert.True(FindByAutomationId<Button>(window, "ReturnFromAiStyleReviewButton").IsVisible);
+                Assert.Equal(
+                    ["全部", "可生成 1", "待检查 0", "不可生成 0"],
+                    viewModel.AiStatusFilters.Select(filter => filter.DisplayText).ToArray());
+                Assert.Equal(ScrollBarVisibility.Visible,
+                    FindByAutomationId<ScrollViewer>(window, "AiStyleReviewUsageScrollViewer").VerticalScrollBarVisibility);
+                Assert.Equal(ScrollBarVisibility.Visible,
+                    FindByAutomationId<ScrollViewer>(window, "AiStyleReviewAssetScrollViewer").VerticalScrollBarVisibility);
+                Assert.Equal(3, style.Assets.Count);
+                Assert.Single(style.Pages[0].Requirements);
+
+                var target = style.Pages[0].Requirements[0];
+                viewModel.BeginAiReplacementCommand.Execute(target);
+                viewModel.SelectAiReplacementAssetCommand.Execute(style.Assets[1]);
+                Assert.True(viewModel.CanConfirmAiReplacement);
+                viewModel.ConfirmAiReplacementCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.Equal(1, workflow.LockCount);
+                Assert.Equal(("batch_ui", "style_1", "frame_01", "asset_02"), workflow.LastLock);
+                var locked = Assert.Single(Assert.Single(viewModel.AiStyles).Pages[0].Requirements);
+                Assert.Equal("asset_02", locked.SelectedAssetId);
+                Assert.Equal("人工选用 · 已锁定", locked.StatusText);
+                Assert.False(viewModel.IsAiReplacementActive);
+                Assert.DoesNotContain(
+                    EnumerateVisualDescendants<TextBlock>(window).Select(text => text.Text),
+                    text => text.Contains("asset_", StringComparison.Ordinal)
+                        || text.Contains(".jpg", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains(@"C:\", StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void AiAnalysisAutoRefreshReadsLocalStateAndStopsAfterAnalysisSettles()
+    {
+        RunInSta(() =>
+        {
+            var workflow = new RecordingAiBatchAnalysisWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: workflow);
+            try
+            {
+                var analysing = new AiBatchAnalysisProjection(
+                    "batch_auto_refresh",
+                    AiBatchUiStatus.Analysing,
+                    "正在分析",
+                    "等待分析完成",
+                    1,
+                    0,
+                    0,
+                    1,
+                    [],
+                    AiAnalysisSchedulingControlState.Running,
+                    null);
+                SetCurrentBatchId(viewModel, analysing.BatchId);
+                ApplyAiProjection(viewModel, analysing);
+                SetAiScreen(viewModel);
+
+                var timer = GetAiRefreshTimer(viewModel);
+                Assert.True(timer.IsEnabled);
+
+                workflow.RefreshProjection = analysing with
+                {
+                    Status = AiBatchUiStatus.ReviewRequired,
+                    StatusText = "分析完成，等待检查",
+                    ActionText = "开始生成",
+                    CompletedStyleCount = 1
+                };
+                RunAiAutoRefreshOnce(viewModel);
+
+                Assert.Equal(1, workflow.RefreshCount);
+                Assert.False(timer.IsEnabled);
+
+                RunAiAutoRefreshOnce(viewModel);
+                Assert.Equal(1, workflow.RefreshCount);
+            }
+            finally
+            {
+                viewModel.Dispose();
+            }
+        });
+    }
+
     private static TemplateCalibrationDraftView CreateCalibrationDraft(string revisionId) => new(
         revisionId,
         "page_1",
@@ -538,6 +1074,60 @@ public sealed class WpfShellTests
         updateMethod.Invoke(viewModel, [draft]);
     }
 
+    private static void ApplyAiProjection(
+        MainWindowViewModel viewModel,
+        Desktop.Application.Ai.AiBatchAnalysisProjection projection)
+    {
+        var method = typeof(MainWindowViewModel).GetMethod(
+            "ApplyAiProjection",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("AI projection method not found.");
+        method.Invoke(viewModel, [projection]);
+    }
+
+    private static void SetAiScreen(MainWindowViewModel viewModel)
+    {
+        var screenField = typeof(MainWindowViewModel).GetField(
+            "_batchScreen",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Batch screen field not found.");
+        var value = Enum.Parse(screenField.FieldType, "AiAnalysis");
+        screenField.SetValue(viewModel, value);
+        var notify = typeof(MainWindowViewModel).GetMethod(
+            "NotifyBatchScreenChanged",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Batch screen notification not found.");
+        notify.Invoke(viewModel, null);
+    }
+
+    private static void SetCurrentBatchId(MainWindowViewModel viewModel, string batchId)
+    {
+        var field = typeof(MainWindowViewModel).GetField(
+            "_currentBatchId",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Current batch field not found.");
+        field.SetValue(viewModel, batchId);
+    }
+
+    private static System.Windows.Threading.DispatcherTimer GetAiRefreshTimer(MainWindowViewModel viewModel)
+    {
+        var field = typeof(MainWindowViewModel).GetField(
+            "_aiRefreshTimer",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("AI refresh timer field not found.");
+        return Assert.IsType<System.Windows.Threading.DispatcherTimer>(field.GetValue(viewModel));
+    }
+
+    private static void RunAiAutoRefreshOnce(MainWindowViewModel viewModel)
+    {
+        var method = typeof(MainWindowViewModel).GetMethod(
+            "AutoRefreshAiAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("AI auto-refresh method not found.");
+        var task = Assert.IsAssignableFrom<Task>(method.Invoke(viewModel, null));
+        task.GetAwaiter().GetResult();
+    }
+
     private static void VerifySize(Window window, double width, double height)
     {
         var fittedBounds = WindowBoundsCalculator.Fit(
@@ -568,6 +1158,21 @@ public sealed class WpfShellTests
             Assert.True(bounds.Right <= window.ActualWidth + 0.5, $"{id} extends right of the window.");
             Assert.True(bounds.Bottom <= window.ActualHeight + 0.5, $"{id} extends below the window.");
         }
+    }
+
+    private static void SetWindowSize(Window window, double width, double height)
+    {
+        var fittedBounds = WindowBoundsCalculator.Fit(
+            SystemParameters.WorkArea,
+            new Size(width, height),
+            new Size(window.MinWidth, window.MinHeight));
+        window.Left = fittedBounds.Left;
+        window.Top = fittedBounds.Top;
+        window.Width = fittedBounds.Width;
+        window.Height = fittedBounds.Height;
+        FlushLayout(window);
+        Assert.Equal(fittedBounds.Width, window.ActualWidth, precision: 0);
+        Assert.Equal(fittedBounds.Height, window.ActualHeight, precision: 0);
     }
 
     private static T FindByAutomationId<T>(DependencyObject root, string automationId)
@@ -618,6 +1223,7 @@ public sealed class WpfShellTests
 
     private static void RunInSta(Action action)
     {
+        ResetWpfApplicationState();
         Exception? failure = null;
         var thread = new Thread(() =>
         {
@@ -645,6 +1251,17 @@ public sealed class WpfShellTests
         {
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
+
+        ResetWpfApplicationState();
+    }
+
+    private static void ResetWpfApplicationState()
+    {
+        var applicationType = typeof(System.Windows.Application);
+        const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Static;
+        applicationType.GetField("_appInstance", flags)?.SetValue(null, null);
+        applicationType.GetField("_appCreatedInThisAppDomain", flags)?.SetValue(null, false);
+        applicationType.GetField("_isShuttingDown", flags)?.SetValue(null, false);
     }
 
     private sealed class QueueFolderPicker(params string[] paths) : IFolderPicker
@@ -665,6 +1282,8 @@ public sealed class WpfShellTests
     {
         public BatchInputSubmission? Submission { get; private set; }
 
+        public int RestoreCount { get; private set; }
+
         public BatchInputProjection? RestoreProjection { get; set; }
 
         public TaskCompletionSource? ScanGate { get; set; }
@@ -675,8 +1294,11 @@ public sealed class WpfShellTests
 
         public string NextStatusMessage { get; set; } = "扫描完成，可进入后续分析。";
 
-        public Task<BatchInputProjection?> RestoreLatestDraftAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(RestoreProjection);
+        public Task<BatchInputProjection?> RestoreLatestDraftAsync(CancellationToken cancellationToken)
+        {
+            RestoreCount++;
+            return Task.FromResult(RestoreProjection);
+        }
 
         public async Task<BatchInputProjection> ScanAsync(
             BatchInputSubmission submission,
@@ -715,5 +1337,88 @@ public sealed class WpfShellTests
                 submission.IncludeEditablePsd,
                 "目录已选择；等待扫描识别。",
                 "草稿已自动保存。"));
+    }
+
+    private sealed class RecordingAiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow
+    {
+        private AiUploadConsentRecord? _consent;
+
+        public int GrantCount { get; private set; }
+
+        public int RefreshCount { get; private set; }
+
+        public int LockCount { get; private set; }
+
+        public (string BatchId, string StyleId, string RequirementId, string AssetId)? LastLock { get; private set; }
+
+        public AiBatchAnalysisProjection? RefreshProjection { get; set; }
+
+        public AiBatchAnalysisProjection? LockProjection { get; set; }
+
+        public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(_consent);
+
+        public Task<AiUploadConsentRecord> GrantUploadConsentAsync(CancellationToken cancellationToken)
+        {
+            GrantCount++;
+            _consent = new AiUploadConsentRecord(
+                AiConsentScopes.AnalysisCopy,
+                "consent-ui-test",
+                AiUploadConsentState.Granted,
+                AiConsentPolicy.Version,
+                new DateTimeOffset(2026, 8, 31, 10, 0, 0, TimeSpan.FromHours(8)));
+            return Task.FromResult(_consent);
+        }
+
+        public Task<AiUploadConsentRecord> RevokeUploadConsentAsync(CancellationToken cancellationToken)
+        {
+            _consent = new AiUploadConsentRecord(
+                AiConsentScopes.AnalysisCopy,
+                "consent-ui-test",
+                AiUploadConsentState.Revoked,
+                AiConsentPolicy.Version,
+                new DateTimeOffset(2026, 8, 31, 10, 1, 0, TimeSpan.FromHours(8)));
+            return Task.FromResult(_consent);
+        }
+
+        public Task<AiBatchAnalysisProjection> StartAsync(string batchId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<AiBatchAnalysisProjection?> RefreshAsync(string batchId, CancellationToken cancellationToken)
+        {
+            RefreshCount++;
+            return Task.FromResult(RefreshProjection);
+        }
+
+        public Task<AiBatchAnalysisProjection> PauseAsync(string batchId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<AiBatchAnalysisProjection> ResumeAsync(string batchId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<AiBatchAnalysisProjection> CancelAsync(string batchId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<AiBatchAnalysisProjection> WaitForNetworkAsync(string batchId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<AiBatchAnalysisProjection> LockSelectionAsync(
+            string batchId,
+            string styleId,
+            string requirementId,
+            string assetId,
+            CancellationToken cancellationToken)
+        {
+            LockCount++;
+            LastLock = (batchId, styleId, requirementId, assetId);
+            return Task.FromResult(LockProjection ?? throw new InvalidOperationException("TEST_LOCK_PROJECTION_MISSING"));
+        }
+
+        public Task<AiBatchAnalysisProjection> AnalyzeSelectedAssetAsync(
+            string batchId,
+            string styleId,
+            string assetId,
+            bool includeSizeTableSource,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

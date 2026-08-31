@@ -68,6 +68,70 @@ public sealed class TemplateCalibrationServiceTests
     }
 
     [Fact]
+    public async Task RebindingAssetPreservesExplicitRuleAndNeverPersistsSelectionPromptAsRule()
+    {
+        var now = new DateTimeOffset(2026, 8, 31, 12, 0, 0, TimeSpan.Zero);
+        var group = TemplateGroup.Create("group_rule", "Rule", now);
+        var revision = TemplateRevision.CreateDraft(
+            "revision_rule",
+            group.GroupId,
+            1,
+            now,
+            [TemplatePage.Create(
+                "page_rule",
+                "revision_rule",
+                0,
+                "主图页",
+                TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct,
+                null,
+                enabled: true,
+                "resource_cal")]);
+        var templates = new MemoryTemplateRepository(group, revision);
+        var service = new TemplateCalibrationService(
+            templates,
+            new MemoryResourceRepository(Resource()));
+        var session = new TemplateDraftSession(
+            group.GroupId,
+            group.Name,
+            revision.RevisionId,
+            revision.RevisionNo,
+            new HashSet<string>(StringComparer.Ordinal));
+        var frameId = Assert.Single((await service.LoadAsync(
+            session,
+            "page_rule",
+            CancellationToken.None)).Frames).FrameId;
+
+        var first = await service.BindAssetAsync(
+            session,
+            "page_rule",
+            frameId,
+            "asset_first",
+            CancellationToken.None);
+        Assert.Equal("商品主体清晰完整，构图适合当前图片框。", first.SelectionRequirement);
+
+        await service.SetSelectionRequirementAsync(
+            session,
+            "page_rule",
+            frameId,
+            "正面全景图，商品主体完整。",
+            CancellationToken.None);
+        var rebound = await service.BindAssetAsync(
+            session,
+            "page_rule",
+            frameId,
+            "asset_second",
+            CancellationToken.None);
+        var persisted = Assert.Single((await templates.GetRevisionAsync(
+            revision.RevisionId,
+            CancellationToken.None))!.FrameBindings);
+
+        Assert.Equal("正面全景图，商品主体完整。", rebound.SelectionRequirement);
+        Assert.Equal("正面全景图，商品主体完整。", persisted.SelectionRequirement.Description);
+        Assert.Equal("asset_second", Assert.Single(persisted.SelectionRequirement.Criteria).Value);
+    }
+
+    [Fact]
     public async Task MissingStructureEvidenceBlocksCalibration()
     {
         var now = DateTimeOffset.UtcNow;

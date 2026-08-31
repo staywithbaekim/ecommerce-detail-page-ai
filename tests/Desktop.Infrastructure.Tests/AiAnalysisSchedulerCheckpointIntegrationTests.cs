@@ -1,6 +1,7 @@
 using Desktop.Application.Ai;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
+using Desktop.Domain.Ai;
 using Desktop.Infrastructure.Ai;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Persistence;
@@ -9,6 +10,76 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
 {
+    [Fact]
+    public async Task SelectionLockPersistsAcrossRefreshAndSchedulerRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ai01-selection-lock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var options = new DesktopDataOptions(root);
+        var request = Request() with
+        {
+            Assets =
+            [
+                Request().Assets[0],
+                Request().Assets[0] with
+                {
+                    AssetId = "asset_02",
+                    ContentHash = "sha256:" + new string('c', 64),
+                    AnalysisCopyReference = "copy_02"
+                }
+            ]
+        };
+        try
+        {
+            await using (var store = new SqliteDesktopStore(options))
+            {
+                await store.InitializeAsync();
+                var files = new AtomicFileStore(new LocalAppPathPolicy(root));
+                using var coordinator = new AiAnalysisCheckpointCoordinator(
+                    store, new AiAnalysisStateManifestStore(files), TimeProvider.System);
+                using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+                var provider = new SuccessfulProvider();
+                using var scheduler = Scheduler(store, files, coordinator, queue, provider);
+
+                Assert.Equal(AiAnalysisWorkDisposition.Enqueued,
+                    (await scheduler.EnqueueAsync(request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None)).Disposition);
+                Assert.Equal(AiAnalysisWorkDisposition.Completed,
+                    (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+                Assert.Equal(1, provider.Calls);
+
+                var locked = await scheduler.LockSelectionAsync(
+                    request, "frame_01", "asset_02", CancellationToken.None);
+                var persisted = await store.LoadSessionAsync("session-request_01", CancellationToken.None);
+                var ledger = await store.FindRequestByFingerprintAsync(
+                    AiAnalysisCacheKeyFactory.Create(request), CancellationToken.None);
+
+                Assert.Equal(AiAnalysisSessionStatus.ManualReview, locked.Status);
+                Assert.Equal(1, locked.SelectionRevision);
+                Assert.Equal("asset_02", locked.LockedSelections["frame_01"].AssetId);
+                Assert.Equal(AiAnalysisSessionStatus.ManualReview, persisted!.Status);
+                Assert.Equal(1, persisted.SelectionRevision);
+                Assert.Equal("asset_02", persisted.LockedSelections["frame_01"].AssetId);
+                Assert.Equal("ManualReview", ledger!.Status);
+                Assert.Equal(1, provider.Calls);
+            }
+
+            await using var reopened = new SqliteDesktopStore(options);
+            await reopened.InitializeAsync();
+            var reopenedFiles = new AtomicFileStore(new LocalAppPathPolicy(root));
+            using var reopenedCoordinator = new AiAnalysisCheckpointCoordinator(
+                reopened, new AiAnalysisStateManifestStore(reopenedFiles), TimeProvider.System);
+            using var reopenedQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+            using var reopenedScheduler = Scheduler(reopened, reopenedFiles, reopenedCoordinator, reopenedQueue);
+
+            Assert.Equal(0, await reopenedScheduler.RestoreAsync(CancellationToken.None));
+            var recovered = await reopened.LoadSessionAsync("session-request_01", CancellationToken.None);
+            Assert.Equal(AiAnalysisSessionStatus.ManualReview, recovered!.Status);
+            Assert.Equal(1, recovered.SelectionRevision);
+            Assert.Equal("asset_02", recovered.LockedSelections["frame_01"].AssetId);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     [Fact]
     public async Task ConcurrentRequestsAdvanceOneFullCheckpointGraphAndRestartClosed()
     {
@@ -384,8 +455,9 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
         SqliteDesktopStore store,
         AtomicFileStore files,
         AiAnalysisCheckpointCoordinator coordinator,
-        BoundedAiAnalysisWorkBuffer queue) => new(
-        new SuccessfulProvider(),
+        BoundedAiAnalysisWorkBuffer queue,
+        IAiServicePort? provider = null) => new(
+        provider ?? new SuccessfulProvider(),
         store,
         queue,
         new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)),

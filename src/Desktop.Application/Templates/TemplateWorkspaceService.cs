@@ -70,6 +70,30 @@ public sealed class TemplateWorkspaceService(
                 group.UpdatedAt);
     }
 
+    public async Task<TemplateGroupDetails?> GetCommittedDetailsAsync(
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        var group = await templates.GetGroupAsync(groupId, cancellationToken).ConfigureAwait(false);
+        if (group?.CurrentRevisionId is null)
+        {
+            return null;
+        }
+
+        var revision = await templates.GetRevisionAsync(group.CurrentRevisionId, cancellationToken)
+            .ConfigureAwait(false);
+        return revision is null
+            ? null
+            : new TemplateGroupDetails(
+                group.GroupId,
+                group.Name,
+                revision.RevisionId,
+                revision.RevisionNo,
+                revision.Pages.OrderBy(page => page.Order).Select(ToProjection).ToArray(),
+                IsCommitted: true,
+                group.UpdatedAt);
+    }
+
     public async Task<TemplateDraftSession> BeginCreateAsync(
         string groupName,
         CancellationToken cancellationToken)

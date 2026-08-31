@@ -367,6 +367,28 @@ public sealed partial class SqliteDesktopStore
         new(11, "desktop-v11-ai-cache-logical-invalidation-001", """
             ALTER TABLE ai_cache_references
                 ADD COLUMN is_reusable INTEGER NOT NULL DEFAULT 1 CHECK(is_reusable IN (0, 1));
+            """),
+        new(12, "desktop-v12-ai-upload-consent-001", """
+            CREATE TABLE IF NOT EXISTS ai_upload_consents (
+                scope TEXT PRIMARY KEY,
+                consent_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('Granted', 'Revoked')),
+                policy_version TEXT NOT NULL,
+                changed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_upload_consent_events (
+                event_id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                consent_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('Granted', 'Revoked')),
+                policy_version TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY(scope) REFERENCES ai_upload_consents(scope)
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_ai_upload_consent_events_scope_time
+                ON ai_upload_consent_events(scope, occurred_at);
             """)
     ];
 

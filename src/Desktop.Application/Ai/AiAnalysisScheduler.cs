@@ -22,6 +22,7 @@ public sealed class AiAnalysisScheduler : IDisposable
     private readonly IAiAnalysisCopyPreparer? _copyPreparer;
     private readonly IAiAnalysisCopyLeaseManager? _copyLeaseManager;
     private readonly IAiAnalysisCheckpointPort? _checkpointPort;
+    private readonly IConsentPort? _consentPort;
     private readonly bool _strictResultPersistence;
     private readonly string _stateKey;
     private readonly object _budgetGate = new();
@@ -49,7 +50,8 @@ public sealed class AiAnalysisScheduler : IDisposable
         IAiAnalysisResultStore? resultStore = null,
         IAiAnalysisCopyPreparer? copyPreparer = null,
         IAiAnalysisCopyLeaseManager? copyLeaseManager = null,
-        IAiAnalysisCheckpointPort? checkpointPort = null)
+        IAiAnalysisCheckpointPort? checkpointPort = null,
+        IConsentPort? consentPort = null)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -67,6 +69,7 @@ public sealed class AiAnalysisScheduler : IDisposable
         _copyPreparer = copyPreparer;
         _copyLeaseManager = copyLeaseManager ?? copyPreparer as IAiAnalysisCopyLeaseManager;
         _checkpointPort = checkpointPort;
+        _consentPort = consentPort;
         _strictResultPersistence = copyPreparer is not null || copyLeaseManager is not null || checkpointPort is not null;
         if (string.IsNullOrWhiteSpace(stateKey)
             || stateKey.Length > 128
@@ -109,6 +112,92 @@ public sealed class AiAnalysisScheduler : IDisposable
                 return _controlReason;
             }
         }
+    }
+
+    /// <summary>
+    /// Durable key for this batch-scoped scheduler.  B-03 uses it only to read
+    /// the provider-neutral scheduling snapshot; it is never shown to users.
+    /// </summary>
+    public string StateKey => _stateKey;
+
+    /// <summary>
+    /// Number of durable work items currently pending in this scheduler.
+    /// Exposed for application orchestration so a bounded B-03 refresh can
+    /// drain work without duplicating the scheduler state machine.
+    /// </summary>
+    public int PendingCount
+    {
+        get
+        {
+            lock (_pendingGate)
+            {
+                return _pendingItems.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Number of items that are safe to execute now. Durable pending items can
+    /// also contain Uploading/Analysing recovery evidence, so orchestration
+    /// must never use <see cref="PendingCount"/> as a dequeue count.
+    /// </summary>
+    public int ReadyCount => _queue.Count;
+
+    /// <summary>
+    /// Commits a user selection and the matching request-ledger transition as
+    /// one full-batch checkpoint.  Presentation must not save either resource
+    /// independently because a crash between the two writes would lose the
+    /// user's lock or expose an inconsistent recovery graph.
+    /// </summary>
+    public async Task<AiAnalysisSession> LockSelectionAsync(
+        AiAnalysisRequestV1 request,
+        string requirementId,
+        string assetId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        lock (_pendingGate)
+        {
+            if (!_historicalRequests.TryGetValue(request.RequestId, out var historical)
+                || !string.Equals(historical.BatchId, request.BatchId, StringComparison.Ordinal)
+                || !string.Equals(historical.StyleId, request.StyleId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("AI_REQUEST_NOT_FOUND");
+            }
+        }
+
+        var fingerprint = AiAnalysisCacheKeyFactory.Create(request);
+        var ledger = await _store.FindRequestByFingerprintAsync(fingerprint, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_REQUEST_NOT_FOUND");
+        if (ledger.Status is not ("Validated" or "ManualReview") || ledger.ResultReference is null)
+        {
+            throw new InvalidOperationException("AI_SELECTION_NOT_AVAILABLE");
+        }
+
+        var session = await _store.LoadSessionAsync(SessionId(request), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("AI_SESSION_NOT_FOUND");
+        var locked = session.LockSelection(requirementId, assetId, session.SelectionRevision);
+        var nextStatus = AiAnalysisSessionStatus.ManualReview.ToString();
+        var nextLedger = ledger with
+        {
+            Status = nextStatus,
+            UpdatedAt = NextTimestamp(ledger.UpdatedAt)
+        };
+        var usage = (await _store.LoadUsageAsync(request.RequestId, cancellationToken).ConfigureAwait(false))
+            .OrderBy(item => item.RecordedAt)
+            .LastOrDefault();
+        var cache = await _store.FindCacheReferenceAsync(fingerprint, cancellationToken).ConfigureAwait(false);
+        await CommitGraphAsync(
+            request,
+            nextLedger,
+            ledger.Status,
+            locked,
+            session.Status,
+            session.SelectionRevision,
+            usage,
+            cache,
+            cancellationToken).ConfigureAwait(false);
+        return locked;
     }
 
     /// <summary>
@@ -1132,6 +1221,24 @@ public sealed class AiAnalysisScheduler : IDisposable
         if (ledger.Status is not ("Queued" or "RetryableError"))
         {
             return Failure(item, AiAnalysisWorkDisposition.ResultUnknown, "AI_REQUEST_IN_FLIGHT");
+        }
+
+        if (_consentPort is not null)
+        {
+            var consent = await _consentPort.GetConsentAsync(
+                AiConsentScopes.AnalysisCopy,
+                cancellationToken).ConfigureAwait(false);
+            if (consent?.IsGranted != true)
+            {
+                var reason = consent?.State == AiUploadConsentState.Revoked
+                    ? "AI_UPLOAD_CONSENT_REVOKED"
+                    : "AI_UPLOAD_CONSENT_REQUIRED";
+                SetControlState(
+                    AiAnalysisSchedulingControlState.Paused,
+                    reason);
+                await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+                return Failure(item, AiAnalysisWorkDisposition.Paused, reason);
+            }
         }
 
         if (ledger.Status == "RetryableError")
@@ -2454,6 +2561,10 @@ public sealed class AiAnalysisScheduler : IDisposable
 
     public void Dispose()
     {
+        if (_queue is IDisposable disposableQueue)
+        {
+            disposableQueue.Dispose();
+        }
         _processingGate.Dispose();
         _statePersistenceGate.Dispose();
     }

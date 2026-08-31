@@ -149,6 +149,57 @@ public interface IAiCredentialSource
     ValueTask<string?> GetCredentialAsync(CancellationToken cancellationToken);
 }
 
+public static class AiConsentScopes
+{
+    public const string AnalysisCopy = "ai-analysis-copy";
+}
+
+public static class AiConsentPolicy
+{
+    public const string Version = "ai-upload-consent/v1";
+}
+
+public enum AiUploadConsentState
+{
+    Granted = 0,
+    Revoked
+}
+
+/// <summary>
+/// The local, provider-neutral record of the user's permission to send
+/// application-owned analysis copies to the configured AI service. It carries
+/// no credentials, source paths or image data.
+/// </summary>
+public sealed record AiUploadConsentRecord(
+    string Scope,
+    string ConsentId,
+    AiUploadConsentState State,
+    string PolicyVersion,
+    DateTimeOffset ChangedAt)
+{
+    public bool IsGranted => State == AiUploadConsentState.Granted;
+}
+
+/// <summary>
+/// V1 consent boundary. Implementations are local and durable; a future
+/// gateway may replace the producer without changing AI request contracts.
+/// </summary>
+public interface IConsentPort
+{
+    Task<AiUploadConsentRecord?> GetConsentAsync(
+        string scope,
+        CancellationToken cancellationToken);
+
+    Task<AiUploadConsentRecord> GrantAsync(
+        string scope,
+        string policyVersion,
+        CancellationToken cancellationToken);
+
+    Task<AiUploadConsentRecord> RevokeAsync(
+        string scope,
+        CancellationToken cancellationToken);
+}
+
 public interface IAiUsageRecorder
 {
     Task RecordAsync(AiUsageEvent usageEvent, CancellationToken cancellationToken);

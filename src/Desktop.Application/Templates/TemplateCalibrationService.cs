@@ -12,6 +12,7 @@ public sealed class TemplateCalibrationService(
     ICalibrationAssetSourcePort? assetSources = null,
     IPathPolicy? paths = null) : ITemplateCalibrationService
 {
+    private const string DefaultSelectionRequirement = "商品主体清晰完整，构图适合当前图片框。";
     private readonly ConcurrentDictionary<string, CalibrationState> _states = new(StringComparer.Ordinal);
 
     public async Task<TemplateCalibrationDraftView> LoadAsync(
@@ -108,7 +109,7 @@ public sealed class TemplateCalibrationService(
         var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
-        state.SelectionRequirements[frameId] = "请为这个图片框选择一张代表款商品图。";
+        state.SelectionRequirements.TryAdd(frameId, DefaultSelectionRequirement);
         if (!revision.FrameBindings.Any(binding => string.Equals(binding.FrameId, frameId, StringComparison.Ordinal)))
         {
             await templates.SaveDraftRevisionAsync(
@@ -532,7 +533,7 @@ public sealed class TemplateCalibrationService(
         {
             var description = SelectionRequirements.GetValueOrDefault(
                 frameId,
-                "请选择一张代表款商品图放入当前图片框。");
+                DefaultSelectionRequirement);
             description = NormalizeSelectionRequirement(description);
             var assetId = FrameAssets.GetValueOrDefault(frameId);
             return SelectionRequirement.Create(
@@ -644,8 +645,10 @@ public sealed class TemplateCalibrationService(
             {
                 "Select one user-provided asset for this registered frame."
                     or "Choose one source whose subject fits this registered frame."
-                    => "请选择一张代表款商品图放入当前图片框。",
-                _ => normalized.Length == 0 ? "请选择一张代表款商品图放入当前图片框。" : normalized
+                    or "请为这个图片框选择一张代表款商品图。"
+                    or "请选择一张代表款商品图放入当前图片框。"
+                    => DefaultSelectionRequirement,
+                _ => normalized.Length == 0 ? DefaultSelectionRequirement : normalized
             };
         }
 

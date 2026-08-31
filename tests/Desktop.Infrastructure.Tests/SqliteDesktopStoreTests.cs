@@ -98,7 +98,7 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(11, migrationVersion);
+        Assert.Equal(12, migrationVersion);
     }
 
     [Fact]
@@ -737,7 +737,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V5DataUpgradesSuccessfullyThroughV11AndPreservesSentinel()
+    public async Task V5DataUpgradesSuccessfullyThroughV12AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -769,7 +769,7 @@ public sealed class SqliteDesktopStoreTests
         tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
         await using var columnCommand = verify.CreateCommand();
         columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
-        Assert.Equal(11L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal(12L, (long)(await versionCommand.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
         Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
         Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
@@ -809,7 +809,7 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
-    public async Task V6DataUpgradesSuccessfullyToV11AndPreservesSentinel()
+    public async Task V6DataUpgradesSuccessfullyToV12AndPreservesSentinel()
     {
         using var directory = new TestDirectory();
         var options = new DesktopDataOptions(directory.Path);
@@ -839,7 +839,7 @@ public sealed class SqliteDesktopStoreTests
         sentinel.CommandText = "SELECT value FROM v6_sentinel;";
         await using var tables = verify.CreateCommand();
         tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
-        Assert.Equal(11L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(12L, (long)(await version.ExecuteScalarAsync())!);
         Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
         Assert.Equal(2L, (long)(await tables.ExecuteScalarAsync())!);
     }

@@ -198,12 +198,17 @@ public sealed class TemplateWorkspaceServiceTests
         var draft = await service.GetDraftAsync(session, CancellationToken.None);
         var resumed = await service.ResumeDraftAsync("group_existing", CancellationToken.None);
         var library = await service.ListAsync(CancellationToken.None);
+        var draftDetails = await service.GetDetailsAsync("group_existing", CancellationToken.None);
+        var committedDetails = await service.GetCommittedDetailsAsync("group_existing", CancellationToken.None);
 
         Assert.Equal("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY", exception.Code);
         Assert.Equal(session.DraftRevisionId, resumed.DraftRevisionId);
         Assert.Contains("page_original", resumed.BasePageIds);
         Assert.Equal("草稿", Assert.Single(library).Status);
         Assert.Equal(2, library[0].PageCount);
+        Assert.Equal(["page_original", "page_new"], draftDetails!.Pages.Select(page => page.PageId));
+        Assert.True(committedDetails!.IsCommitted);
+        Assert.Equal(["page_original"], committedDetails.Pages.Select(page => page.PageId));
         Assert.False(draft.Pages.Single(page => page.Page.PageId == "page_original").IsAffected);
         Assert.True(draft.Pages.Single(page => page.Page.PageId == "page_new").IsAffected);
         Assert.Equal("新增细节页", draft.Pages.Single(page => page.Page.PageId == "page_new").Page.Name);

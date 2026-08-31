@@ -70,6 +70,8 @@ public interface ITemplateWorkspaceService
 
     Task<TemplateGroupDetails?> GetDetailsAsync(string groupId, CancellationToken cancellationToken);
 
+    Task<TemplateGroupDetails?> GetCommittedDetailsAsync(string groupId, CancellationToken cancellationToken);
+
     Task<TemplateDraftSession> BeginCreateAsync(string groupName, CancellationToken cancellationToken);
 
     Task<TemplateDraftSession> BeginIncrementAsync(string groupId, CancellationToken cancellationToken);

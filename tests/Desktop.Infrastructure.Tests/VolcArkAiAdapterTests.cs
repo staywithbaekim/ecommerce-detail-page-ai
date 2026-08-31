@@ -213,6 +213,60 @@ public sealed class VolcArkAiAdapterTests
         Assert.Equal("Bearer test-key", handler.Authorization?.ToString());
     }
 
+    [Fact]
+    public async Task NormalizesTransportImageAliasesBeforeReturningResult()
+    {
+        var aliased = new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [new AiRequirementMatchV1("frame_01", "img_0", 1, 0.98m, ["SUBJECT_COMPLETE"])],
+            [new AiVariantGroupV1("variant_01", "款式", "默认", ["img_0"], true)],
+            [new AiSubjectGeometryV1("img_0", 0.1m, 0.2m, 0.8m, 0.9m, 0.99m)],
+            new AiSizeTableCandidateV1("img_0", 0.9m, ["尺码"], [["M"]]),
+            [],
+            new AiUsageSummaryV1("usage_request_01", 3, 4, 1, null, null));
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(SuccessBody(aliased), Encoding.UTF8, "application/json")
+        });
+
+        var execution = await CreateAdapter(handler, new FakeCopySource())
+            .AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.Completed, execution.Outcome);
+        Assert.Equal("asset_01", Assert.Single(execution.Result!.RequirementMatches).AssetId);
+        Assert.Equal("asset_01", Assert.Single(execution.Result.VariantGroups).AssetIds.Single());
+        Assert.Equal("asset_01", Assert.Single(execution.Result.SubjectGeometry).AssetId);
+        Assert.Equal("asset_01", execution.Result.SizeTableCandidate!.SourceAssetId);
+    }
+
+    [Fact]
+    public async Task RejectsResultReferencesOutsideProducingRequest()
+    {
+        var mismatched = new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [new AiRequirementMatchV1("frame_01", "img_9", 1, 0.98m, ["SUBJECT_COMPLETE"])],
+            [], [], null, [],
+            new AiUsageSummaryV1("usage_request_01", 3, 4, 1, null, null));
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(SuccessBody(mismatched), Encoding.UTF8, "application/json")
+        });
+
+        var execution = await CreateAdapter(handler, new FakeCopySource())
+            .AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", execution.Error!.Code);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, AiProviderOutcome.TerminalError, "AI_PROVIDER_BAD_REQUEST")]
     [InlineData(HttpStatusCode.Unauthorized, AiProviderOutcome.TerminalError, "AI_PROVIDER_AUTH_FAILED")]
@@ -430,6 +484,11 @@ public sealed class VolcArkAiAdapterTests
         Assert.False(match["additionalProperties"]!.GetValue<bool>());
         Assert.Contains("requirement_id", match["required"]!.AsArray().Select(value => value!.GetValue<string>()));
         Assert.DoesNotContain("matched", match["properties"]!.AsObject().Select(property => property.Key));
+        var instructions = payload["input"]![0]!["content"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "input_text")!["text"]!
+            .GetValue<string>();
+        Assert.Contains("\"image_alias\":\"img_0\"", instructions, StringComparison.Ordinal);
+        Assert.Contains("\"asset_id\":\"asset_01\"", instructions, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -695,6 +754,11 @@ public sealed class VolcArkAiAdapterTests
             null,
             [],
             new AiUsageSummaryV1("usage_request_01", 3, 4, 1, null, null));
+        return SuccessBody(result);
+    }
+
+    private static string SuccessBody(AiAnalysisResultV1 result)
+    {
         return JsonSerializer.Serialize(new
         {
             id = "resp_test_01",

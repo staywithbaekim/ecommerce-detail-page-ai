@@ -471,6 +471,16 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                 return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", false, "供应商结果与当前分析请求不匹配。", stopwatch);
             }
 
+            try
+            {
+                result = AiAnalysisResultReferenceNormalizer.Normalize(request, result);
+            }
+            catch (InvalidDataException)
+            {
+                EmitDiagnostic(shape.Build("reference_closure"));
+                return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", false, "供应商结果引用了当前请求之外的图片或图片框。", stopwatch);
+            }
+
             EmitDiagnostic(shape.Build("none"));
             stopwatch.Stop();
             return AiAnalysisExecutionResult.Completed(result, usage, stopwatch.Elapsed);
@@ -743,11 +753,20 @@ public sealed class VolcArkAiAdapter : IAiServicePort
         }
 
         var requirementSummary = JsonSerializer.Serialize(request.Requirements, JsonOptions);
+        var assetIdentityMap = JsonSerializer.Serialize(
+            request.Assets.Select((asset, index) => new
+            {
+                image_alias = $"img_{index}",
+                asset_id = asset.AssetId
+            }),
+            JsonOptions);
         content.Add(new JsonObject
         {
             ["type"] = "input_text",
             ["text"] = "请仅返回符合 ai-analysis-result/v1 的 JSON 对象。每个 requirement_matches 元素只能包含 requirement_id、asset_id、rank、confidence、evidence_codes 五个字段，不要添加 matched 或其他字段。request_id="
                 + request.RequestId + "，model_config_version=" + request.ModelConfigVersion
+                + "。图片按输入顺序对应以下标识；结果中的所有 asset_id、asset_ids 和 source_asset_id 必须使用映射里的真实 asset_id，不得输出 img_0 等临时编号："
+                + assetIdentityMap
                 + "。按以下品类中立图片框需求选择素材并给出证据，不要输出 Markdown 或隐藏推理："
                 + requirementSummary
         });

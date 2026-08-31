@@ -17,6 +17,32 @@
         SnapsToDevicePixels="True"
         AutomationProperties.AutomationId="DesktopMainWindow">
     <Window.Resources>
+        <!-- Shared by the inline summary and the standalone style-review page. -->
+        <Style x:Key="AiStyleStatusDotStyle" TargetType="Ellipse">
+            <Setter Property="Width" Value="8" />
+            <Setter Property="Height" Value="8" />
+            <Setter Property="Fill" Value="{StaticResource TextDisabledBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding StatusState}" Value="Analysing"><Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="Ready"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="ReviewRequired"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="BudgetStopped"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="BusinessError"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="SystemError"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="AiRequirementStatusDotStyle" TargetType="Ellipse">
+            <Setter Property="Width" Value="8" />
+            <Setter Property="Height" Value="8" />
+            <Setter Property="Fill" Value="{StaticResource TextDisabledBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding StatusState}" Value="Analysing"><Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="AiSelected"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="ManualLocked"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="Missing"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                <DataTrigger Binding="{Binding StatusState}" Value="Unavailable"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+            </Style.Triggers>
+        </Style>
         <DataTemplate x:Key="TaskRowTemplate">
             <Border Height="68"
                     Padding="16"
@@ -249,7 +275,7 @@
                     <ColumnDefinition Width="36" />
                     <ColumnDefinition Width="*" />
                      <ColumnDefinition Width="34" />
-                     <ColumnDefinition Width="52" />
+                     <ColumnDefinition Width="60" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0"
                            VerticalAlignment="Center"
@@ -293,8 +319,8 @@
                      </Button>
                  </StackPanel>
                  <Button Grid.Column="4"
-                         Width="44"
-                         Height="26"
+                         Width="52"
+                         Height="30"
                          Margin="8,0,0,0"
                          Padding="0"
                          VerticalAlignment="Center"
@@ -442,6 +468,12 @@
                             <DataTrigger Binding="{Binding IsTemplateCalibrationVisible}" Value="True">
                                 <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
                             </DataTrigger>
+                            <DataTrigger Binding="{Binding IsAiAnalysisVisible}" Value="True">
+                                <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsAiStyleReviewVisible}" Value="True">
+                                <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
+                            </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </ScrollViewer.Style>
@@ -461,7 +493,7 @@
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="120" />
+                                    <ColumnDefinition Width="248" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Grid.Column="0">
                                     <TextBlock FontSize="24"
@@ -475,21 +507,30 @@
                                                Foreground="{StaticResource TextMutedBrush}"
                                                Text="继续活动任务或开始新的批量生产" />
                                 </StackPanel>
-                                <Button Grid.Column="1"
-                                        Margin="0,11,0,11"
-                                        Command="{Binding OpenBatchInputCommand}"
-                                        Style="{StaticResource PrimaryButtonStyle}"
-                                        AutomationProperties.AutomationId="PrimaryPageAction"
-                                        AutomationProperties.Name="新建批次">
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Margin="0,0,8,0"
-                                                   VerticalAlignment="Center"
-                                                   FontFamily="Segoe Fluent Icons"
-                                                   FontSize="16"
-                                                   Text="&#xE710;" />
-                                        <TextBlock VerticalAlignment="Center" Text="新建批次" />
-                                    </StackPanel>
-                                </Button>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                    <Button Width="120"
+                                            Margin="0,11,8,11"
+                                            Command="{Binding RestoreBatchInputCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Content="恢复上次批次"
+                                            AutomationProperties.AutomationId="RestoreLatestBatchAction"
+                                            AutomationProperties.Name="恢复上次批次" />
+                                    <Button Width="120"
+                                            Margin="0,11,0,11"
+                                            Command="{Binding OpenBatchInputCommand}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            AutomationProperties.AutomationId="PrimaryPageAction"
+                                            AutomationProperties.Name="新建批次">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Margin="0,0,8,0"
+                                                       VerticalAlignment="Center"
+                                                       FontFamily="Segoe Fluent Icons"
+                                                       FontSize="16"
+                                                       Text="&#xE710;" />
+                                            <TextBlock VerticalAlignment="Center" Text="新建批次" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
                             </Grid>
                         </Border>
 
@@ -601,7 +642,7 @@
 
                                 <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="模板组" />
                                 <ComboBox Margin="0,6,0,0"
-                                          ItemsSource="{Binding TemplateGroups}"
+                                          ItemsSource="{Binding BatchTemplateGroups}"
                                           SelectedItem="{Binding SelectedBatchTemplate, Mode=TwoWay}"
                                           IsEnabled="{Binding IsBatchConfigurationEditable}"
                                           Style="{StaticResource FieldComboBoxStyle}"
@@ -797,9 +838,20 @@
                                         CornerRadius="8">
                                     <StackPanel>
                                         <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="款式目录\" />
-                                        <TextBlock Margin="0,4,0,0" Style="{StaticResource CaptionTextStyle}" Text="01-页面名称.jpg" />
-                                        <TextBlock Margin="0,2,0,0" Style="{StaticResource CaptionTextStyle}" Text="02-页面名称.jpg" />
-                                        <TextBlock Margin="0,4,0,0" Style="{StaticResource CaptionTextStyle}" Text="每款独立目录 · JPG 始终生成" />
+                                        <ItemsControl Margin="0,4,0,0"
+                                                      ItemsSource="{Binding BatchOutputPreviewFiles}"
+                                                      AutomationProperties.AutomationId="BatchOutputPreviewFiles">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Margin="0,0,0,2"
+                                                               Style="{StaticResource CaptionTextStyle}"
+                                                               Text="{Binding}" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock Margin="0,4,0,0"
+                                                   Style="{StaticResource CaptionTextStyle}"
+                                                   Text="{Binding BatchOutputPreviewSummary}" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -869,6 +921,603 @@
                                         AutomationProperties.Name="{Binding BatchPrimaryActionText}" />
                             </StackPanel>
                             </Grid>
+                        </Border>
+                    </Grid>
+
+                    <Grid Visibility="{Binding IsAiAnalysisVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                          AutomationProperties.AutomationId="AiAnalysisPage">
+                        <Grid.Resources>
+                            <Style x:Key="AiFilterButtonStyle" TargetType="Button" BasedOn="{StaticResource CompactButtonStyle}">
+                                <Setter Property="MinWidth" Value="64" />
+                                <Setter Property="Margin" Value="0,0,8,0" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                        <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                        <Setter Property="Foreground" Value="White" />
+                                        <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                            <Style x:Key="AiStyleStatusDotStyle" TargetType="Ellipse">
+                                <Setter Property="Width" Value="8" />
+                                <Setter Property="Height" Value="8" />
+                                <Setter Property="Fill" Value="{StaticResource TextDisabledBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="Analysing"><Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="Ready"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="ReviewRequired"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="BudgetStopped"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="BusinessError"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="SystemError"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                            <Style x:Key="AiFilterDotStyle" TargetType="Ellipse">
+                                <Setter Property="Width" Value="8" />
+                                <Setter Property="Height" Value="8" />
+                                <Setter Property="Fill" Value="{StaticResource TextDisabledBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Tone}" Value="Processing"><Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="Review"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="Ready"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="Blocked"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                            <Style x:Key="AiRequirementStatusDotStyle" TargetType="Ellipse">
+                                <Setter Property="Width" Value="8" />
+                                <Setter Property="Height" Value="8" />
+                                <Setter Property="Fill" Value="{StaticResource TextDisabledBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="Analysing"><Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="AiSelected"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="ManualLocked"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="Missing"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusState}" Value="Unavailable"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Resources>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="116" />
+                            <RowDefinition Height="16" />
+                            <RowDefinition Height="{Binding AiSummaryHeight}" />
+                            <RowDefinition Height="16" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="20,10,28,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="120" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource CaptionTextStyle}" Text="新建批次 / 生成前" />
+                                <TextBlock Margin="0,2,0,0"
+                                           Style="{StaticResource PageTitleTextStyle}"
+                                           Text="{Binding AiPageTitle}"
+                                           AutomationProperties.AutomationId="AiAnalysisTitle" />
+                                <TextBlock Margin="0,2,0,0"
+                                           Style="{StaticResource SmallBodyTextStyle}"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           Text="{Binding AiPageSubtitle}" />
+                            </StackPanel>
+                            <Button Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Content="{Binding AiPrimaryActionText}"
+                                    IsEnabled="{Binding IsAiReady}"
+                                    AutomationProperties.AutomationId="EnterGenerationButton" />
+                        </Grid>
+
+                        <Border Grid.Row="2" Padding="0" Style="{StaticResource SectionCardStyle}" AutomationProperties.AutomationId="AiAnalysisSummary">
+                            <UniformGrid Columns="{Binding AiSummaryColumnCount}">
+                                <StackPanel Margin="20,8" VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="模板组" />
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="{Binding AiTemplateSummary}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiTemplateMeta}" />
+                                </StackPanel>
+                                <StackPanel Margin="20,8" VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="输入批次" />
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="{Binding AiBatchSummary}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiBatchMeta}" />
+                                </StackPanel>
+                                <StackPanel Margin="20,8" VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="输出设置" />
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="{Binding AiOutputSummary}" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiOutputMeta}" />
+                                </StackPanel>
+                                <StackPanel Margin="20,8" VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="页面生成" />
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="{Binding AiPageSummary}" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiPageMeta}" />
+                                </StackPanel>
+                            </UniformGrid>
+                        </Border>
+
+                        <Grid Grid.Row="4" Visibility="{Binding IsAiRegularState, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="60" />
+                                <RowDefinition Height="16" />
+                                <RowDefinition Height="40" />
+                                <RowDefinition Height="8" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Padding="16,0" Style="{StaticResource SectionCardStyle}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <Ellipse Width="8" Height="8" Margin="0,0,12,0" VerticalAlignment="Center" Style="{StaticResource AiStyleStatusDotStyle}" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="{Binding AiBatchProgressText}" />
+                                        <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiStatusMessage}" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" AutomationProperties.AutomationId="AiAnalysisStatus" />
+                                    </StackPanel>
+                                    <Button Grid.Column="2" Style="{StaticResource GhostButtonStyle}" Content="刷新状态" Command="{Binding RefreshAiAnalysisCommand}" AutomationProperties.AutomationId="RefreshAiAnalysisButton" />
+                                </Grid>
+                            </Border>
+                            <Grid Grid.Row="2">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBlock Margin="0,0,12,0" VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Text="{Binding AiBatchProgressText}" />
+                                <ItemsControl Grid.Column="1" ItemsSource="{Binding AiStatusFilters}" AutomationProperties.AutomationId="AiStatusFilters">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Style="{StaticResource AiFilterButtonStyle}"
+                                                    Command="{Binding DataContext.SelectAiStatusFilterCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Margin="0,0,6,0" VerticalAlignment="Center" Style="{StaticResource AiFilterDotStyle}" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding DisplayText}" />
+                                                </StackPanel>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Grid>
+                            <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" AutomationProperties.AutomationId="AiAnalysisScrollViewer">
+                                <ItemsControl ItemsSource="{Binding VisibleAiStyles}" AutomationProperties.AutomationId="AiStyleList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,0,8"
+                                                    Padding="16,0"
+                                                    Background="{StaticResource SurfaceBrush}"
+                                                    BorderBrush="{StaticResource BorderBrush}"
+                                                    BorderThickness="1"
+                                                    AutomationProperties.Name="款式检查摘要">
+                                                    <Grid>
+                                                    <Grid Height="{Binding DataContext.AiStyleRowHeight, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="48" />
+                                                            <ColumnDefinition Width="2*" />
+                                                            <ColumnDefinition Width="160" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="40" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <Border Width="36" Height="36" VerticalAlignment="Center" Background="{StaticResource SurfaceStrongBrush}" CornerRadius="6">
+                                                            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource TextDisabledBrush}" Text="▧" />
+                                                        </Border>
+                                                        <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
+                                                            <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="{Binding StyleName}" />
+                                                            <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding MetaText}" TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+                                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <Ellipse Margin="0,0,6,0" Style="{StaticResource AiStyleStatusDotStyle}" />
+                                                            <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding StatusText}" />
+                                                        </StackPanel>
+                                                        <Button Grid.Column="4"
+                                                                Width="32"
+                                                                Height="32"
+                                                                MinWidth="32"
+                                                                Padding="0"
+                                                                HorizontalAlignment="Right"
+                                                                Style="{StaticResource IconButtonStyle}"
+                                                                Content="&gt;"
+                                                                Command="{Binding DataContext.OpenAiStyleReviewCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"
+                                                                AutomationProperties.Name="进入款式检查" />
+                                                    </Grid>
+                                                <Grid Height="{Binding DataContext.AiStyleReviewHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      Margin="16,0,16,12"
+                                                      Visibility="Collapsed"
+                                                      AutomationProperties.AutomationId="AiStyleReviewTwoPane">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="3*" MinWidth="420" />
+                                                        <ColumnDefinition Width="16" />
+                                                        <ColumnDefinition Width="2*" MinWidth="280" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <Border Grid.Column="0" Padding="16" Style="{StaticResource SectionCardStyle}">
+                                                        <Grid>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="52" />
+                                                                <RowDefinition Height="*" />
+                                                            </Grid.RowDefinitions>
+                                                            <StackPanel>
+                                                                <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="本款全部用图" />
+                                                                <TextBlock Margin="0,2,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding UsageSummaryText}" />
+                                                            </StackPanel>
+                                                            <ScrollViewer Grid.Row="1"
+                                                                          HorizontalScrollBarVisibility="Disabled"
+                                                                          VerticalScrollBarVisibility="Visible"
+                                                                          PanningMode="VerticalOnly"
+                                                                          AutomationProperties.AutomationId="AiCurrentUsageScrollViewer"
+                                                                          AutomationProperties.Name="本款全部用图，可向下滚动">
+                                                                <ItemsControl ItemsSource="{Binding Pages}" AutomationProperties.AutomationId="AiPageList">
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <StackPanel Margin="0,0,10,12">
+                                                                                <Grid Margin="4,0,4,8">
+                                                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                                                    <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="{Binding PageName}" />
+                                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                                                        <Ellipse Margin="0,0,6,0" VerticalAlignment="Center" Style="{StaticResource AiStyleStatusDotStyle}" />
+                                                                                        <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding StatusText}" />
+                                                                                    </StackPanel>
+                                                                                </Grid>
+                                                                                <ItemsControl Margin="4,0,4,6"
+                                                                                              ItemsSource="{Binding WarningTexts}"
+                                                                                              Visibility="{Binding HasWarnings, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                                                    <ItemsControl.ItemTemplate>
+                                                                                        <DataTemplate>
+                                                                                            <TextBlock Margin="0,0,0,4" Style="{StaticResource CaptionTextStyle}" Text="{Binding}" TextWrapping="Wrap" />
+                                                                                        </DataTemplate>
+                                                                                    </ItemsControl.ItemTemplate>
+                                                                                </ItemsControl>
+                                                                                <ItemsControl ItemsSource="{Binding Requirements}" AutomationProperties.AutomationId="AiRequirementUsageList">
+                                                                                    <ItemsControl.ItemTemplate>
+                                                                                        <DataTemplate>
+                                                                                            <Border Height="{Binding DataContext.AiRequirementRowHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                                    Margin="0,0,0,8"
+                                                                                                    Padding="8"
+                                                                                                    Background="{StaticResource SurfaceSubtleBrush}"
+                                                                                                    BorderBrush="{StaticResource BorderBrush}"
+                                                                                                    BorderThickness="1"
+                                                                                                    CornerRadius="6">
+                                                                                                <Border.Style>
+                                                                                                    <Style TargetType="Border">
+                                                                                                        <Setter Property="Background" Value="{StaticResource SurfaceSubtleBrush}" />
+                                                                                                        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+                                                                                                        <Style.Triggers>
+                                                                                                            <DataTrigger Binding="{Binding IsReplacementTarget}" Value="True">
+                                                                                                                <Setter Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
+                                                                                                                <Setter Property="BorderBrush" Value="{StaticResource BorderStrongBrush}" />
+                                                                                                            </DataTrigger>
+                                                                                                        </Style.Triggers>
+                                                                                                    </Style>
+                                                                                                </Border.Style>
+                                                                                                <Grid>
+                                                                                                    <Grid.ColumnDefinitions>
+                                                                                                        <ColumnDefinition Width="72" />
+                                                                                                        <ColumnDefinition Width="*" />
+                                                                                                        <ColumnDefinition Width="80" />
+                                                                                                    </Grid.ColumnDefinitions>
+                                                                                                    <Button Width="64"
+                                                                                                            Height="80"
+                                                                                                            Padding="0"
+                                                                                                            HorizontalAlignment="Left"
+                                                                                                            VerticalAlignment="Center"
+                                                                                                            Style="{StaticResource CompactButtonStyle}"
+                                                                                                            Command="{Binding DataContext.OpenAiRequirementPreviewCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                                            CommandParameter="{Binding}"
+                                                                                                            IsEnabled="{Binding HasSelection}"
+                                                                                                            AutomationProperties.Name="{Binding PreviewAutomationName}">
+                                                                                                        <Grid ClipToBounds="True">
+                                                                                                            <Border Background="{StaticResource SurfaceStrongBrush}" CornerRadius="4" />
+                                                                                                            <Image Source="{Binding PreviewPath}" Stretch="UniformToFill" />
+                                                                                                            <Border Height="18" VerticalAlignment="Bottom" Background="#B3000000" CornerRadius="0,0,4,4">
+                                                                                                                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="White" FontSize="10" Text="点开查看" />
+                                                                                                            </Border>
+                                                                                                        </Grid>
+                                                                                                    </Button>
+                                                                                                    <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                                                                                                        <TextBlock Style="{StaticResource SmallBodyTextStyle}" FontWeight="SemiBold" Text="{Binding FrameDisplayName}" />
+                                                                                                        <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                                                                                            <Ellipse Margin="0,0,6,0" VerticalAlignment="Center" Style="{StaticResource AiRequirementStatusDotStyle}" />
+                                                                                                            <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding StatusText}" />
+                                                                                                        </StackPanel>
+                                                                                                        <TextBlock Margin="0,4,0,0"
+                                                                                                                   Style="{StaticResource CaptionTextStyle}"
+                                                                                                                   Text="{Binding SelectionRequirement}"
+                                                                                                                   TextTrimming="CharacterEllipsis"
+                                                                                                                   ToolTip="{Binding SelectionRequirement}" />
+                                                                                                    </StackPanel>
+                                                                                                    <Button Grid.Column="2"
+                                                                                                            Width="72"
+                                                                                                            Height="32"
+                                                                                                            VerticalAlignment="Center"
+                                                                                                            Style="{StaticResource CompactButtonStyle}"
+                                                                                                            Content="替换"
+                                                                                                            Command="{Binding DataContext.BeginAiReplacementCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                                            CommandParameter="{Binding}"
+                                                                                                            AutomationProperties.Name="替换当前图片框用图" />
+                                                                                                </Grid>
+                                                                                            </Border>
+                                                                                        </DataTemplate>
+                                                                                    </ItemsControl.ItemTemplate>
+                                                                                </ItemsControl>
+                                                                            </StackPanel>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </ScrollViewer>
+                                                        </Grid>
+                                                    </Border>
+
+                                                    <Border Grid.Column="2" Padding="16" Style="{StaticResource SectionCardStyle}">
+                                                        <Grid>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="52" />
+                                                                <RowDefinition Height="*" />
+                                                                <RowDefinition Height="12" />
+                                                                <RowDefinition Height="Auto" />
+                                                            </Grid.RowDefinitions>
+                                                            <StackPanel>
+                                                                <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="本款全部照片" />
+                                                                <TextBlock Margin="0,2,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding AssetSummaryText}" TextTrimming="CharacterEllipsis" />
+                                                            </StackPanel>
+                                                            <ScrollViewer Grid.Row="1"
+                                                                          HorizontalScrollBarVisibility="Disabled"
+                                                                          VerticalScrollBarVisibility="Visible"
+                                                                          PanningMode="VerticalOnly"
+                                                                          AutomationProperties.AutomationId="AiStyleAssetLibraryScrollViewer"
+                                                                          AutomationProperties.Name="本款全部照片，可向下滚动">
+                                                                <ItemsControl Margin="0,0,10,0" ItemsSource="{Binding Assets}" AutomationProperties.AutomationId="AiStyleAssetLibrary">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <UniformGrid Columns="2" />
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <Button Height="{Binding DataContext.AiAssetTileHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                    Margin="0,0,8,8"
+                                                                                    Padding="0"
+                                                                                    Command="{Binding DataContext.SelectAiReplacementAssetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                    CommandParameter="{Binding}"
+                                                                                    AutomationProperties.Name="{Binding AutomationName}">
+                                                                                <Button.Style>
+                                                                                    <Style TargetType="Button" BasedOn="{StaticResource CompactButtonStyle}">
+                                                                                        <Setter Property="BorderThickness" Value="1" />
+                                                                                        <Style.Triggers>
+                                                                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                                                <Setter Property="BorderBrush" Value="{StaticResource BorderStrongBrush}" />
+                                                                                                <Setter Property="BorderThickness" Value="2" />
+                                                                                                <Setter Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
+                                                                                            </DataTrigger>
+                                                                                        </Style.Triggers>
+                                                                                    </Style>
+                                                                                </Button.Style>
+                                                                                <Grid ClipToBounds="True">
+                                                                                    <Border Background="{StaticResource SurfaceStrongBrush}" CornerRadius="4" />
+                                                                                    <Image Margin="1" Source="{Binding PreviewPath}" Stretch="UniformToFill" />
+                                                                                    <Border Height="38" VerticalAlignment="Bottom" Background="#CC171717" CornerRadius="0,0,4,4">
+                                                                                        <Grid Margin="8,0">
+                                                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                                                            <TextBlock VerticalAlignment="Center" Foreground="White" FontSize="11" Text="{Binding DisplayName}" />
+                                                                                            <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="White" FontSize="11" Text="{Binding SelectionStateText}" />
+                                                                                        </Grid>
+                                                                                    </Border>
+                                                                                </Grid>
+                                                                            </Button>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </ScrollViewer>
+                                                            <StackPanel Grid.Row="3">
+                                                                <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding ReplacementInstructionText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                                                <StackPanel Margin="0,8,0,0"
+                                                                            HorizontalAlignment="Right"
+                                                                            Orientation="Horizontal"
+                                                                            Visibility="{Binding IsReplacementActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                                    <Button Margin="0,0,8,0"
+                                                                            Style="{StaticResource GhostButtonStyle}"
+                                                                            Content="取消替换"
+                                                                            Command="{Binding DataContext.CancelAiReplacementCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                                                    <Button Style="{StaticResource PrimaryButtonStyle}"
+                                                                            Content="改用这张"
+                                                                            Command="{Binding DataContext.ConfirmAiReplacementCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                            AutomationProperties.AutomationId="ConfirmAiReplacementButton" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+                                                        </Grid>
+                                                    </Border>
+                                                </Grid>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <Border Grid.Row="4"
+                                Width="{Binding AiZeroOutputPanelWidth}"
+                                Padding="24,20"
+                                HorizontalAlignment="Left"
+                                Style="{StaticResource SectionCardStyle}"
+                                Visibility="{Binding IsAiZeroOutput, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="AiZeroOutputPanel">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="24" /><RowDefinition Height="*" /><RowDefinition Height="58" /></Grid.RowDefinitions>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse Width="8" Height="8" Margin="0,7,16,0" VerticalAlignment="Top" Fill="{StaticResource StatusRecoverableBrush}" />
+                                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="{Binding AiZeroOutputTitle}" />
+                                    </StackPanel>
+                                    <TextBlock Margin="24,4,0,0" Style="{StaticResource SmallBodyTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="{Binding AiZeroOutputDescription}" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="2">
+                                    <Border Height="62" Padding="16,0" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="180" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Text="{Binding AiZeroReasonOneLabel}" /><TextBlock Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource SmallBodyTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="{Binding AiZeroReasonOneText}" /></Grid></Border>
+                                    <Border Height="62" Margin="0,12,0,0" Padding="16,0" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="180" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Text="{Binding AiZeroReasonTwoLabel}" /><TextBlock Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource SmallBodyTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="{Binding AiZeroReasonTwoText}" /></Grid></Border>
+                                    <Border Height="62" Margin="0,12,0,0" Padding="16,0" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="180" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" Style="{StaticResource FieldLabelTextStyle}" Text="{Binding AiZeroReasonThreeLabel}" /><TextBlock Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource SmallBodyTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="{Binding AiZeroReasonThreeText}" /></Grid></Border>
+                                </StackPanel>
+                                <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                    <Button Margin="0,0,12,0" Style="{StaticResource SecondaryButtonStyle}" Content="取消批次" Command="{Binding CancelAiAnalysisCommand}" AutomationProperties.AutomationId="CancelAiAnalysisButton" />
+                                    <Button Style="{StaticResource PrimaryButtonStyle}" Content="处理问题" Command="{Binding RefreshAiAnalysisCommand}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="5" Height="64" Margin="0,16,0,0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Visibility="{Binding IsAiRegularState, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="{Binding AiBatchSummary}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiBatchProgressText}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Margin="0,0,8,0" Style="{StaticResource SecondaryButtonStyle}" Content="暂停" Command="{Binding PauseAiAnalysisCommand}" AutomationProperties.AutomationId="PauseAiAnalysisButton" />
+                                    <Button Margin="0,0,8,0" Style="{StaticResource SecondaryButtonStyle}" Content="恢复" Command="{Binding ResumeAiAnalysisCommand}" AutomationProperties.AutomationId="ResumeAiAnalysisButton" />
+                                    <Button Margin="0,0,8,0" Style="{StaticResource DangerButtonStyle}" Content="取消批次" Command="{Binding CancelAiAnalysisCommand}" AutomationProperties.AutomationId="CancelAiAnalysisButton" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <Grid Visibility="{Binding IsAiStyleReviewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                          AutomationProperties.AutomationId="AiStyleReviewPage">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="58" />
+                            <RowDefinition Height="16" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Button Width="88"
+                                    Height="36"
+                                    Style="{StaticResource GhostButtonStyle}"
+                                    Content="&lt; 返回"
+                                    Command="{Binding ReturnFromAiStyleReviewCommand}"
+                                    AutomationProperties.AutomationId="ReturnFromAiStyleReviewButton" />
+                            <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                <TextBlock Style="{StaticResource PageTitleTextStyle}" Text="款式检查" AutomationProperties.AutomationId="AiStyleReviewTitle" />
+                                <TextBlock Margin="0,2,0,0" Style="{StaticResource SmallBodyTextStyle}" Foreground="{StaticResource TextMutedBrush}" Text="{Binding SelectedAiStyle.StyleName}" />
+                            </StackPanel>
+                        </Grid>
+                        <Grid Grid.Row="2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="3*" MinWidth="420" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="2*" MinWidth="280" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Padding="16" Style="{StaticResource SectionCardStyle}">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="52" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="本款全部用图" />
+                                        <TextBlock Margin="0,2,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding SelectedAiStyle.UsageSummaryText}" />
+                                    </StackPanel>
+                                    <ScrollViewer Grid.Row="1"
+                                                  VerticalScrollBarVisibility="Visible"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  PanningMode="VerticalOnly"
+                                                  AutomationProperties.AutomationId="AiStyleReviewUsageScrollViewer"
+                                                  AutomationProperties.Name="本款全部用图，可向下滚动">
+                                        <ItemsControl ItemsSource="{Binding SelectedAiStyle.AllRequirements}" AutomationProperties.AutomationId="AiStyleReviewUsageList">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Height="{Binding DataContext.AiRequirementRowHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            Margin="0,0,8,8"
+                                                            Padding="8"
+                                                            Background="{StaticResource SurfaceSubtleBrush}"
+                                                            BorderBrush="{StaticResource BorderBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="6">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="72" /><ColumnDefinition Width="*" /><ColumnDefinition Width="80" /></Grid.ColumnDefinitions>
+                                                            <Button Width="64"
+                                                                    Height="80"
+                                                                    Padding="0"
+                                                                    Style="{StaticResource CompactButtonStyle}"
+                                                                    Command="{Binding DataContext.OpenAiRequirementPreviewCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    IsEnabled="{Binding HasSelection}"
+                                                                    AutomationProperties.Name="{Binding PreviewAutomationName}">
+                                                                <Grid ClipToBounds="True">
+                                                                    <Border Background="{StaticResource SurfaceStrongBrush}" CornerRadius="4" />
+                                                                    <Image Source="{Binding PreviewPath}" Stretch="UniformToFill" />
+                                                                    <Border Height="18" VerticalAlignment="Bottom" Background="#B3000000" CornerRadius="0,0,4,4">
+                                                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="White" FontSize="10" Text="点开查看" />
+                                                                    </Border>
+                                                                </Grid>
+                                                            </Button>
+                                                            <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                                                                <TextBlock Style="{StaticResource SmallBodyTextStyle}" FontWeight="SemiBold" Text="{Binding FrameDisplayName}" />
+                                                                <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                                                    <Ellipse Margin="0,0,6,0" VerticalAlignment="Center" Style="{StaticResource AiRequirementStatusDotStyle}" />
+                                                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding StatusText}" />
+                                                                </StackPanel>
+                                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding SelectionRequirement}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectionRequirement}" />
+                                                            </StackPanel>
+                                                            <Button Grid.Column="2"
+                                                                    Width="72"
+                                                                    Height="32"
+                                                                    VerticalAlignment="Center"
+                                                                    Style="{StaticResource CompactButtonStyle}"
+                                                                    Content="替换"
+                                                                    Command="{Binding DataContext.BeginAiReplacementCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    AutomationProperties.Name="替换当前图片框用图" />
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Column="2" Padding="16" Style="{StaticResource SectionCardStyle}">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="52" /><RowDefinition Height="*" /><RowDefinition Height="12" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="本款全部照片" />
+                                        <TextBlock Margin="0,2,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding SelectedAiStyle.AssetSummaryText}" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <ScrollViewer Grid.Row="1"
+                                                  VerticalScrollBarVisibility="Visible"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  PanningMode="VerticalOnly"
+                                                  AutomationProperties.AutomationId="AiStyleReviewAssetScrollViewer"
+                                                  AutomationProperties.Name="本款全部照片，可向下滚动">
+                                        <ItemsControl Margin="0,0,8,0" ItemsSource="{Binding SelectedAiStyle.Assets}" AutomationProperties.AutomationId="AiStyleReviewAssetList">
+                                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Button Height="{Binding DataContext.AiAssetTileHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            Margin="0,0,8,8"
+                                                            Padding="0"
+                                                            Style="{StaticResource CompactButtonStyle}"
+                                                            Command="{Binding DataContext.SelectAiReplacementAssetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            CommandParameter="{Binding}"
+                                                            AutomationProperties.Name="{Binding AutomationName}">
+                                                        <Grid ClipToBounds="True">
+                                                            <Border Background="{StaticResource SurfaceStrongBrush}" CornerRadius="4" />
+                                                            <Image Margin="1" Source="{Binding PreviewPath}" Stretch="UniformToFill" />
+                                                            <Border Height="38" VerticalAlignment="Bottom" Background="#CC171717" CornerRadius="0,0,4,4">
+                                                                <Grid Margin="8,0">
+                                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                                    <TextBlock VerticalAlignment="Center" Foreground="White" FontSize="11" Text="{Binding DisplayName}" />
+                                                                    <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="White" FontSize="11" Text="{Binding SelectionStateText}" />
+                                                                </Grid>
+                                                            </Border>
+                                                        </Grid>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                    <StackPanel Grid.Row="3">
+                                        <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding AiReplacementInstructionText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                        <StackPanel Margin="0,8,0,0" HorizontalAlignment="Right" Orientation="Horizontal" Visibility="{Binding IsAiReplacementActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <Button Margin="0,0,8,0" Style="{StaticResource GhostButtonStyle}" Content="取消替换" Command="{Binding CancelAiReplacementCommand}" />
+                                            <Button Style="{StaticResource PrimaryButtonStyle}" Content="改用这张" Command="{Binding ConfirmAiReplacementCommand}" AutomationProperties.AutomationId="ConfirmAiStyleReplacementButton" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                        <Border Grid.Row="3" Height="56" Margin="0,16,0,0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="8" Height="8" Margin="0,0,8,0" Style="{StaticResource AiStyleStatusDotStyle}" />
+                                <TextBlock Style="{StaticResource CaptionTextStyle}" Text="人工替换只更新本地选图检查点，不会重新发起 AI 请求。" />
+                            </StackPanel>
                         </Border>
                     </Grid>
 
@@ -1885,22 +2534,51 @@
                                         Visibility="{Binding IsCalibrationCanvasPanelVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
                                         AutomationProperties.AutomationId="CalibrationCanvas">
                                     <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="44" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <Border Grid.Row="0"
+                                                Padding="12,6"
+                                                Background="{StaticResource SurfaceSubtleBrush}"
+                                                BorderBrush="{StaticResource BorderBrush}"
+                                                BorderThickness="0,0,0,1">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock VerticalAlignment="Center"
+                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                           Text="普通滚轮浏览 · Ctrl + 滚轮缩放" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <Button Margin="0,0,6,0" Style="{StaticResource CompactButtonStyle}" Content="适合宽度" Click="CalibrationFitWidth_Click" AutomationProperties.AutomationId="CalibrationFitWidthButton" />
+                                                    <Button Margin="0,0,6,0" Style="{StaticResource CompactButtonStyle}" Content="适合页面" Click="CalibrationFitPage_Click" AutomationProperties.AutomationId="CalibrationFitPageButton" />
+                                                    <Button Style="{StaticResource CompactButtonStyle}" Content="100%" Click="CalibrationActualSize_Click" AutomationProperties.AutomationId="CalibrationActualSizeButton" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                        <ScrollViewer x:Name="CalibrationCanvasScrollViewer"
+                                                      Grid.Row="1"
+                                                      Background="{StaticResource CanvasStageBrush}"
+                                                      HorizontalScrollBarVisibility="Auto"
+                                                      VerticalScrollBarVisibility="Auto"
+                                                      CanContentScroll="False"
+                                                      PanningMode="Both"
+                                                      AutomationProperties.AutomationId="CalibrationCanvasScrollViewer">
                                         <Border Margin="16"
-                                                HorizontalAlignment="Stretch"
-                                                VerticalAlignment="Stretch"
-                                                Background="{StaticResource CanvasStageBrush}"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Top"
+                                                Background="#FFFFFF"
                                                 BorderBrush="{StaticResource BorderStrongBrush}"
-                                                BorderThickness="1"
-                                                ClipToBounds="True"
-                                                RenderTransformOrigin="0.5,0.5">
-                                            <Border.RenderTransform>
-                                                <ScaleTransform ScaleX="{Binding CalibrationViewportZoom}"
-                                                                ScaleY="{Binding CalibrationViewportZoom}" />
-                                            </Border.RenderTransform>
-                                            <Viewbox x:Name="CalibrationPreviewViewbox" Stretch="Uniform">
+                                                BorderThickness="1">
                                                 <Grid Width="{Binding CalibrationCanvasWidth}"
                                                       Height="{Binding CalibrationCanvasHeight}"
                                                       Background="#FFFFFF">
+                                                    <Grid.LayoutTransform>
+                                                        <ScaleTransform ScaleX="{Binding CalibrationViewportZoom}"
+                                                                        ScaleY="{Binding CalibrationViewportZoom}" />
+                                                    </Grid.LayoutTransform>
                                                     <Image Source="{Binding CalibrationTemplatePreviewImagePath}"
                                                            Stretch="Fill"
                                                            AutomationProperties.AutomationId="CalibrationTemplatePreviewImage" />
@@ -2022,8 +2700,8 @@
                                                         </TextBlock.Style>
                                                     </TextBlock>
                                                 </Grid>
-                                            </Viewbox>
                                         </Border>
+                                        </ScrollViewer>
                                     </Grid>
                                 </Border>
                                 <Border Grid.Column="4"
@@ -2188,6 +2866,110 @@
                          </Grid>
                     </Grid>
 
+                    <Grid Visibility="{Binding IsSettingsVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                          AutomationProperties.AutomationId="SettingsPage">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="58" />
+                            <RowDefinition Height="24" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource PageTitleTextStyle}"
+                                           Text="设置"
+                                           AutomationProperties.AutomationId="SettingsPageTitle" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Style="{StaticResource BodyTextStyle}"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           Text="管理本机 AI 服务、隐私和运行环境" />
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Grid.Row="2">
+                            <Border Padding="20" Style="{StaticResource SectionCardStyle}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="AI 服务" />
+                                    <TextBlock Margin="0,6,0,0"
+                                               Style="{StaticResource SmallBodyTextStyle}"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               Text="固定使用已配置的 AI 服务；此处只管理本机凭据和上传授权。"
+                                               TextWrapping="Wrap" />
+                                    <Border Margin="0,18,0,0"
+                                            Padding="14,12"
+                                            Background="{StaticResource SurfaceSubtleBrush}"
+                                            BorderBrush="{StaticResource BorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            AutomationProperties.AutomationId="AiUploadConsentCard">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="8" />
+                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Ellipse Width="8"
+                                                     Height="8"
+                                                     VerticalAlignment="Top"
+                                                     Margin="0,6,0,0"
+                                                     Fill="{StaticResource StatusCompletedBrush}" />
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Style="{StaticResource PanelTitleTextStyle}"
+                                                           Text="上传授权"
+                                                           AutomationProperties.AutomationId="AiUploadConsentTitle" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           Style="{StaticResource SmallBodyTextStyle}"
+                                                           Text="{Binding AiUploadConsentStatusText}"
+                                                           AutomationProperties.AutomationId="AiUploadConsentStatus" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           Style="{StaticResource CaptionTextStyle}"
+                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                           Text="{Binding AiUploadConsentDetailText}"
+                                                           TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="3"
+                                                        Margin="16,0,0,0"
+                                                        VerticalAlignment="Center"
+                                                        Orientation="Horizontal">
+                                                <Button Margin="0,0,8,0"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        Content="重新读取"
+                                                        Command="{Binding RefreshAiConsentCommand}"
+                                                        AutomationProperties.AutomationId="RefreshAiConsentButton" />
+                                                <Button Margin="0,0,8,0"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        Content="允许上传压缩图"
+                                                        Command="{Binding GrantAiUploadConsentCommand}"
+                                                        IsEnabled="{Binding CanGrantAiUploadConsent}"
+                                                        AutomationProperties.AutomationId="GrantAiUploadConsentButton" />
+                                                <Button Style="{StaticResource DangerButtonStyle}"
+                                                        Content="撤回授权"
+                                                        Command="{Binding RevokeAiUploadConsentCommand}"
+                                                        IsEnabled="{Binding CanRevokeAiUploadConsent}"
+                                                        AutomationProperties.AutomationId="RevokeAiUploadConsentButton" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                            <Border Margin="0,16,0,0" Padding="20" Style="{StaticResource SectionCardStyle}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="其他分区" />
+                                    <ItemsControl Margin="0,12,0,0" ItemsSource="{Binding AdditionalSettingsRows}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Height="44"
+                                                        BorderBrush="{StaticResource BorderBrush}"
+                                                        BorderThickness="0,0,0,1">
+                                                    <TextBlock VerticalAlignment="Center" Style="{StaticResource BodyTextStyle}" Text="{Binding}" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
                     <Grid Visibility="{Binding IsPlaceholderVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="58" />
@@ -2247,6 +3029,117 @@
                     </Grid>
                 </Grid>
             </ScrollViewer>
+        </Grid>
+
+        <Grid Grid.Row="0"
+              Panel.ZIndex="41"
+              Background="{StaticResource ModalOverlayBrush}"
+              Visibility="{Binding IsAiCandidatePreviewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              AutomationProperties.AutomationId="AiCandidatePreviewDialog"
+              AutomationProperties.Name="查看候选图片">
+            <Border Width="760"
+                    MaxWidth="760"
+                    MaxHeight="720"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource DialogCardStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="16" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="16" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="20" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="查看候选图片" />
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource BodyTextStyle}" Text="{Binding AiCandidatePreview.UsageText}" />
+                    </StackPanel>
+                    <Border Grid.Row="2" MinHeight="280" MaxHeight="440" Background="{StaticResource SurfaceStrongBrush}" CornerRadius="8">
+                        <Image Source="{Binding AiCandidatePreview.PreviewPath}" Stretch="Uniform" AutomationProperties.Name="候选商品图预览" />
+                    </Border>
+                    <StackPanel Grid.Row="4">
+                        <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="这个图片框需要" />
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource BodyTextStyle}" Text="{Binding AiCandidatePreview.SelectionRequirement}" TextWrapping="Wrap" />
+                        <TextBlock Margin="0,10,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding AiCandidatePreview.EvidenceText}" TextWrapping="Wrap" />
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding AiCandidatePreview.AnalysisHint}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Margin="0,0,8,0" Style="{StaticResource SecondaryButtonStyle}" Content="关闭" Command="{Binding CloseAiCandidatePreviewCommand}" AutomationProperties.AutomationId="CloseAiCandidatePreviewButton" />
+                        <Button Margin="0,0,8,0" Style="{StaticResource SecondaryButtonStyle}" Content="检查商品范围" Command="{Binding AnalyzeAiPreviewAssetCommand}" AutomationProperties.AutomationId="AnalyzeAiPreviewAssetButton" />
+                        <Button Style="{StaticResource PrimaryButtonStyle}" Content="{Binding AiCandidatePreview.ChooseText}" Command="{Binding ConfirmAiCandidateSelectionCommand}" AutomationProperties.AutomationId="ConfirmAiCandidateSelectionButton" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="0"
+              Panel.ZIndex="40"
+              Background="{StaticResource ModalOverlayBrush}"
+              Visibility="{Binding IsAiUploadConsentDialogVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              AutomationProperties.AutomationId="AiUploadConsentDialog"
+              AutomationProperties.Name="AI 分析与图片上传授权"
+              AutomationProperties.LiveSetting="Assertive">
+            <Border Width="620"
+                    MaxWidth="620"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource DialogCardStyle}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource SectionTitleTextStyle}"
+                               Text="AI 分析与图片上传授权"
+                               AutomationProperties.AutomationId="AiUploadConsentDialogTitle" />
+                    <TextBlock Margin="0,8,0,0"
+                               Style="{StaticResource BodyTextStyle}"
+                               Text="为了识别商品主体和匹配页面图片框，软件需要把必要的压缩分析副本上传到火山方舟。此授权只需确认一次，之后可在设置中查看或撤回。"
+                               TextWrapping="Wrap" />
+                    <Border Margin="0,18,0,0"
+                            Padding="14,12"
+                            Background="{StaticResource SurfaceSubtleBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource SmallBodyTextStyle}"
+                                       Text="只上传应用生成的必要压缩分析副本" />
+                            <TextBlock Margin="0,7,0,0"
+                                       Style="{StaticResource SmallBodyTextStyle}"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Text="不上传 PSD、原始高清图片、本地路径或正式输出；撤回后不再发起新的 AI 请求，已有本地结果不受影响。"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                    <CheckBox Margin="0,18,0,0"
+                              IsChecked="{Binding AiUploadConsentAcknowledged, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              Content="我已阅读并同意“AI 分析与图片上传授权”"
+                              AutomationProperties.AutomationId="AiUploadConsentAcknowledgement" />
+                    <TextBlock Margin="0,8,0,0"
+                               Style="{StaticResource CaptionTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="该选项默认不勾选。取消不会修改源文件，也不会开始扫描或上传。"
+                               TextWrapping="Wrap" />
+                    <StackPanel Margin="0,22,0,0"
+                                HorizontalAlignment="Right"
+                                Orientation="Horizontal">
+                        <Button Margin="0,0,8,0"
+                                IsCancel="True"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding CancelAiUploadConsentCommand}"
+                                Content="暂不使用 AI"
+                                AutomationProperties.AutomationId="CancelAiUploadConsentButton" />
+                        <Button IsDefault="True"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding ConfirmAiUploadConsentCommand}"
+                                IsEnabled="{Binding CanConfirmAiUploadConsent}"
+                                Content="同意并继续"
+                                AutomationProperties.AutomationId="ConfirmAiUploadConsentButton" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </Grid>
 
         <Grid Grid.Row="0"

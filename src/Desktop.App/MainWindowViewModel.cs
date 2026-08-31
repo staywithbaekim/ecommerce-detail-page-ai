@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Desktop.Application.Templates;
+using Desktop.Application.Ai;
 
 namespace Desktop.App;
 
@@ -20,7 +21,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         ITemplateCalibrationService? templateCalibration = null,
         ITemplatePackageService? templatePackages = null,
         IFolderPicker? folderPicker = null,
-        IBatchInputWorkflow? batchInputWorkflow = null)
+        IBatchInputWorkflow? batchInputWorkflow = null,
+        IAiBatchAnalysisWorkflow? aiBatchAnalysisWorkflow = null)
     {
         NavigationItems =
         [
@@ -45,6 +47,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         ];
         InitializeTemplates(templateWorkspace, templateCalibration, templatePackages);
         InitializeBatchInput(folderPicker, batchInputWorkflow);
+        InitializeAiBatchAnalysis(aiBatchAnalysisWorkflow);
     }
 
     public ObservableCollection<NavigationItemViewModel> NavigationItems { get; }
@@ -69,8 +72,11 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             OnPropertyChanged(nameof(PrimaryActionText));
             OnPropertyChanged(nameof(HasPrimaryAction));
             OnPropertyChanged(nameof(PageRows));
+            OnPropertyChanged(nameof(AdditionalSettingsRows));
             OnPropertyChanged(nameof(IsWorkbenchVisible));
             OnPropertyChanged(nameof(IsBatchInputVisible));
+            OnPropertyChanged(nameof(IsAiAnalysisVisible));
+            OnPropertyChanged(nameof(IsSettingsVisible));
             OnPropertyChanged(nameof(IsTemplateSectionVisible));
             OnPropertyChanged(nameof(IsPlaceholderVisible));
             OnNavigationChanged();
@@ -120,15 +126,29 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         ? ["AI 服务", "Photoshop", "存储与清理", "隐私与诊断", "软件信息"]
         : [];
 
+    public IReadOnlyList<string> AdditionalSettingsRows => SelectedNavigationItem.Key == "settings"
+        ? ["Photoshop", "存储与清理", "隐私与诊断", "软件信息"]
+        : [];
+
     public IReadOnlyList<TaskRowViewModel> ActiveTasks { get; }
 
     public IReadOnlyList<TaskRowViewModel> RecentTasks { get; }
 
-    public bool IsWorkbenchVisible => SelectedNavigationItem.Key == "workbench" && !IsBatchInputVisible;
+    public bool IsWorkbenchVisible => SelectedNavigationItem.Key == "workbench"
+        && !IsBatchInputVisible
+        && !IsAiAnalysisVisible
+        && !IsAiStyleReviewVisible;
 
     public bool IsTemplateSectionVisible => SelectedNavigationItem.Key == "templates";
 
-    public bool IsPlaceholderVisible => !IsWorkbenchVisible && !IsBatchInputVisible && !IsTemplateSectionVisible;
+    public bool IsSettingsVisible => SelectedNavigationItem.Key == "settings";
+
+    public bool IsPlaceholderVisible => !IsWorkbenchVisible
+        && !IsBatchInputVisible
+        && !IsAiAnalysisVisible
+        && !IsAiStyleReviewVisible
+        && !IsSettingsVisible
+        && !IsTemplateSectionVisible;
 
     public bool IsFixtureVisible { get; }
 
@@ -136,6 +156,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
 
     public void Dispose()
     {
+        DisposeAiAutoRefresh();
         _templateDraftWrite.Dispose();
         _batchDraftWrite.Dispose();
         _batchScanCancellation?.Dispose();

@@ -35,6 +35,8 @@ public sealed partial class MainWindowViewModel
 
     public ICommand OpenBatchInputCommand { get; private set; } = null!;
 
+    public ICommand RestoreBatchInputCommand { get; private set; } = null!;
+
     public ICommand CancelBatchInputCommand { get; private set; } = null!;
 
     public ICommand ChooseBatchInputDirectoryCommand { get; private set; } = null!;
@@ -168,6 +170,7 @@ public sealed partial class MainWindowViewModel
         {
             if (SetBatchField(ref _batchIncludeEditablePsd, value))
             {
+                OnPropertyChanged(nameof(BatchOutputPreviewSummary));
                 MarkBatchDraftChanged();
             }
         }
@@ -227,6 +230,15 @@ public sealed partial class MainWindowViewModel
 
     public string BatchPageSelectionSummary => $"已选择 {SelectedBatchPageCount}/{BatchPages.Count} 个页面";
 
+    public IReadOnlyList<string> BatchOutputPreviewFiles => BatchPages
+        .Where(page => page.IsSelected)
+        .Select((page, index) => $"{index + 1:D2}-{page.Name}.jpg")
+        .ToArray();
+
+    public string BatchOutputPreviewSummary => BatchIncludeEditablePsd
+        ? $"每款独立目录 · {SelectedBatchPageCount} 个 JPG + 同名可编辑 PSD"
+        : $"每款独立目录 · {SelectedBatchPageCount} 个 JPG";
+
     public string BatchDraftSaveText => _currentBatchId is null ? "新批次草稿" : "草稿已自动保存";
 
     public bool CanScanBatch => IsBatchConfigurationEditable
@@ -240,6 +252,7 @@ public sealed partial class MainWindowViewModel
         _folderPicker = folderPicker;
         _batchInputWorkflow = batchInputWorkflow;
         OpenBatchInputCommand = new AsyncRelayCommand(OpenBatchInputAsync);
+        RestoreBatchInputCommand = new AsyncRelayCommand(RestoreBatchInputAsync);
         CancelBatchInputCommand = new RelayCommand(CloseBatchInput, () => !IsBatchScanning);
         ChooseBatchInputDirectoryCommand = new AsyncRelayCommand(
             ChooseBatchInputDirectoryAsync,
@@ -279,31 +292,35 @@ public sealed partial class MainWindowViewModel
         };
     }
 
-    private async Task OpenBatchInputAsync()
+    private Task OpenBatchInputAsync() => OpenBatchInputAsync(restoreLatest: false);
+
+    private Task RestoreBatchInputAsync() => OpenBatchInputAsync(restoreLatest: true);
+
+    private async Task OpenBatchInputAsync(bool restoreLatest)
     {
         _batchScreen = BatchWorkspaceScreen.BatchInput;
         NotifyBatchScreenChanged();
         try
         {
             await LoadTemplateLibraryAsync().ConfigureAwait(true);
-            var restored = _batchInputWorkflow is null
+            var restored = !restoreLatest || _batchInputWorkflow is null
                 ? null
                 : await _batchInputWorkflow.RestoreLatestDraftAsync(CancellationToken.None).ConfigureAwait(true);
             _applyingBatchProjection = true;
-            if (restored is null)
+            if (!restoreLatest || restored is null)
             {
                 ResetBatchDraftForNewInput();
             }
 
-            var targetTemplate = TemplateGroups.FirstOrDefault(group => string.Equals(
-                group.GroupId,
-                restored?.TemplateGroupId ?? SelectedBatchTemplate?.GroupId,
-                StringComparison.Ordinal));
+            var targetTemplate = TemplateGroups.FirstOrDefault(group =>
+                group.HasCommittedRevision
+                && string.Equals(
+                    group.GroupId,
+                    restored?.TemplateGroupId ?? SelectedBatchTemplate?.GroupId,
+                    StringComparison.Ordinal));
             if (restored is null)
             {
-                targetTemplate ??= TemplateGroups.FirstOrDefault(group =>
-                    string.Equals(group.Status, "Committed", StringComparison.OrdinalIgnoreCase))
-                    ?? TemplateGroups.FirstOrDefault();
+                targetTemplate ??= TemplateGroups.FirstOrDefault(group => group.HasCommittedRevision);
             }
 
             if (!ReferenceEquals(SelectedBatchTemplate, targetTemplate))
@@ -315,6 +332,18 @@ public sealed partial class MainWindowViewModel
             if (restored is not null)
             {
                 ApplyBatchProjection(restored);
+                if (restored.Status == BatchInputUiStatus.ScanReady && _aiBatchWorkflow is not null)
+                {
+                    var recoveredAnalysis = await _aiBatchWorkflow.RefreshAsync(
+                        restored.BatchId,
+                        CancellationToken.None).ConfigureAwait(true);
+                    if (recoveredAnalysis is not null)
+                    {
+                        ApplyAiProjection(recoveredAnalysis);
+                        _batchScreen = BatchWorkspaceScreen.AiAnalysis;
+                        NotifyBatchScreenChanged();
+                    }
+                }
             }
         }
         catch (IOException)
@@ -376,7 +405,9 @@ public sealed partial class MainWindowViewModel
 
         try
         {
-            var details = await _templateWorkspace.GetDetailsAsync(template.GroupId, CancellationToken.None).ConfigureAwait(true);
+            var details = await _templateWorkspace.GetCommittedDetailsAsync(
+                template.GroupId,
+                CancellationToken.None).ConfigureAwait(true);
             if (!ReferenceEquals(SelectedBatchTemplate, template))
             {
                 return;
@@ -498,6 +529,11 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        if (!await EnsureAiUploadConsentForScanAsync().ConfigureAwait(true))
+        {
+            return;
+        }
+
         if (_batchInputWorkflow is null)
         {
             SetBatchStatus(BatchInputUiStatus.ScanBlocked, "批次扫描服务暂时不可用，请重启应用后重试。");
@@ -516,6 +552,10 @@ public sealed partial class MainWindowViewModel
             var request = CreateBatchSubmission();
             var result = await _batchInputWorkflow.ScanAsync(request, _batchScanCancellation.Token).ConfigureAwait(true);
             ApplyBatchProjection(result);
+            if (result.Status == BatchInputUiStatus.ScanReady && _aiBatchWorkflow is not null)
+            {
+                await StartAiAnalysisAsync(result.BatchId).ConfigureAwait(true);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -595,6 +635,13 @@ public sealed partial class MainWindowViewModel
 
         _isBatchNarrowLayout = narrow;
         OnPropertyChanged(nameof(IsBatchNarrowLayout));
+        OnPropertyChanged(nameof(AiSummaryHeight));
+        OnPropertyChanged(nameof(AiSummaryColumnCount));
+        OnPropertyChanged(nameof(AiStyleRowHeight));
+        OnPropertyChanged(nameof(AiStyleReviewHeight));
+        OnPropertyChanged(nameof(AiRequirementRowHeight));
+        OnPropertyChanged(nameof(AiAssetTileHeight));
+        OnPropertyChanged(nameof(AiZeroOutputPanelWidth));
     }
 
     private void MarkBatchDraftChanged()
@@ -670,6 +717,8 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(AreAllBatchPagesSelected));
         OnPropertyChanged(nameof(CanScanBatch));
         OnPropertyChanged(nameof(BatchTemplateHelperText));
+        OnPropertyChanged(nameof(BatchOutputPreviewFiles));
+        OnPropertyChanged(nameof(BatchOutputPreviewSummary));
         RaiseBatchCommandCanExecuteChanged();
     }
 
@@ -677,7 +726,9 @@ public sealed partial class MainWindowViewModel
     {
         OnPropertyChanged(nameof(IsWorkbenchVisible));
         OnPropertyChanged(nameof(IsBatchInputVisible));
+        OnPropertyChanged(nameof(IsAiAnalysisVisible));
         OnPropertyChanged(nameof(IsPlaceholderVisible));
+        UpdateAiAutoRefresh();
     }
 
     private void SetBatchStatus(BatchInputUiStatus status, string message)
@@ -728,7 +779,9 @@ public sealed partial class MainWindowViewModel
     private enum BatchWorkspaceScreen
     {
         Workbench,
-        BatchInput
+        BatchInput,
+        AiAnalysis,
+        AiStyleReview
     }
 }
 

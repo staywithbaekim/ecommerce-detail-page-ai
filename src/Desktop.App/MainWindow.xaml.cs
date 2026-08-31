@@ -214,7 +214,7 @@ public partial class MainWindow : Window
 
     private void CalibrationCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (DataContext is not MainWindowViewModel { CalibrationPreviewImagePath: not null } viewModel)
+        if (DataContext is not MainWindowViewModel viewModel)
         {
             return;
         }
@@ -227,6 +227,47 @@ public partial class MainWindow : Window
 
         viewModel.AdjustCalibrationViewportZoom(e.Delta);
         e.Handled = true;
+    }
+
+    private void CalibrationFitWidth_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        var availableWidth = Math.Max(1, CalibrationCanvasScrollViewer.ViewportWidth - 32);
+        viewModel.SetCalibrationViewportZoom(availableWidth / Math.Max(1, viewModel.CalibrationCanvasWidth));
+        CalibrationCanvasScrollViewer.ScrollToHorizontalOffset(0);
+        CalibrationCanvasScrollViewer.ScrollToVerticalOffset(0);
+    }
+
+    private void CalibrationFitPage_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        var availableWidth = Math.Max(1, CalibrationCanvasScrollViewer.ViewportWidth - 32);
+        var availableHeight = Math.Max(1, CalibrationCanvasScrollViewer.ViewportHeight - 32);
+        viewModel.SetCalibrationViewportZoom(Math.Min(
+            availableWidth / Math.Max(1, viewModel.CalibrationCanvasWidth),
+            availableHeight / Math.Max(1, viewModel.CalibrationCanvasHeight)));
+        CalibrationCanvasScrollViewer.ScrollToHorizontalOffset(0);
+        CalibrationCanvasScrollViewer.ScrollToVerticalOffset(0);
+    }
+
+    private void CalibrationActualSize_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        viewModel.SetCalibrationViewportZoom(1);
+        CalibrationCanvasScrollViewer.ScrollToHorizontalOffset(0);
+        CalibrationCanvasScrollViewer.ScrollToVerticalOffset(0);
     }
 
     private async void CalibrationCanvas_KeyDown(object sender, KeyEventArgs e)
@@ -485,13 +526,8 @@ public partial class MainWindow : Window
             .ToArray();
     }
 
-    private double GetCalibrationCanvasScale(MainWindowViewModel viewModel)
-    {
-        var widthScale = CalibrationPreviewViewbox.ActualWidth / Math.Max(1, viewModel.CalibrationCanvasWidth);
-        var heightScale = CalibrationPreviewViewbox.ActualHeight / Math.Max(1, viewModel.CalibrationCanvasHeight);
-        return Math.Max(0.0001, Math.Min(widthScale, heightScale))
-            * viewModel.CalibrationViewportZoom;
-    }
+    private static double GetCalibrationCanvasScale(MainWindowViewModel viewModel)
+        => Math.Max(0.0001, viewModel.CalibrationViewportZoom);
 
     private static T? FindItemAt<T>(DependencyObject? source)
         where T : class

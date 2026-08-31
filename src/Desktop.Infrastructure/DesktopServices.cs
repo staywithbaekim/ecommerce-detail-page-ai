@@ -98,6 +98,8 @@ public static class DesktopServices
             new FileAiAnalysisResultStore(
                 provider.GetRequiredService<IFileStore>(),
                 provider.GetRequiredService<IJsonContractValidator>()));
+        services.AddSingleton<IConsentPort>(provider =>
+            provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<VolcArkAiOptions>();
         services.AddSingleton<IAiServicePort>(provider => new VolcArkAiAdapter(
             new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
@@ -105,6 +107,8 @@ public static class DesktopServices
             provider.GetRequiredService<IAiAnalysisCopySource>(),
             provider.GetRequiredService<IJsonContractValidator>(),
             provider.GetRequiredService<VolcArkAiOptions>()));
+        services.AddSingleton<IAiAnalysisSchedulerFactory, AiAnalysisSchedulerFactory>();
+        services.AddSingleton<IAiBatchAnalysisWorkflow, AiBatchAnalysisWorkflow>();
         return services;
     }
 }

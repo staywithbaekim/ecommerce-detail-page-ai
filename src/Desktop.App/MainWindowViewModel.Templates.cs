@@ -41,6 +41,10 @@ public sealed partial class MainWindowViewModel
 
     public ObservableCollection<TemplateLibraryCardViewModel> TemplateGroups { get; } = [];
 
+    public IReadOnlyList<TemplateLibraryCardViewModel> BatchTemplateGroups => TemplateGroups
+        .Where(group => group.HasCommittedRevision)
+        .ToArray();
+
     public ObservableCollection<ImportedPsdRowViewModel> ImportedTemplateFiles { get; } = [];
 
     public ObservableCollection<TemplatePageRowViewModel> TemplatePages { get; } = [];
@@ -318,14 +322,16 @@ public sealed partial class MainWindowViewModel
         get => _calibrationViewportZoom;
         private set
         {
-            if (SetTemplateField(ref _calibrationViewportZoom, Math.Clamp(value, 0.5, 2.5)))
+            if (SetTemplateField(ref _calibrationViewportZoom, Math.Clamp(value, 0.02, 4)))
             {
                 OnPropertyChanged(nameof(CalibrationZoomText));
             }
         }
     }
 
-    public string CalibrationZoomText => $"画布 {Math.Round(CalibrationViewportZoom * 100):0}%";
+    public string CalibrationZoomText => $"缩放 {Math.Round(CalibrationViewportZoom * 100):0}%";
+
+    public void SetCalibrationViewportZoom(double zoom) => CalibrationViewportZoom = zoom;
 
     public void AdjustCalibrationViewportZoom(int wheelDelta)
     {
@@ -631,6 +637,7 @@ public sealed partial class MainWindowViewModel
             RaiseTemplateCommandCanExecuteChanged();
         };
         TemplatePages.CollectionChanged += (_, _) => RaiseTemplateCommandCanExecuteChanged();
+        TemplateGroups.CollectionChanged += (_, _) => OnPropertyChanged(nameof(BatchTemplateGroups));
     }
 
     private void OnNavigationChanged()
@@ -1636,7 +1643,8 @@ public sealed record TemplateLibraryCardViewModel(
     string Name,
     string Meta,
     string UpdatedText,
-    string Status)
+    string Status,
+    bool HasCommittedRevision = false)
 {
     public TemplateLibraryCardViewModel(TemplateLibraryItem item)
         : this(
@@ -1644,7 +1652,8 @@ public sealed record TemplateLibraryCardViewModel(
             item.Name,
             $"{item.PageCount} 个页面 · {item.Status}",
             item.UpdatedAt.ToLocalTime().ToString("MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture),
-            item.Status)
+            item.Status,
+            item.CurrentRevisionId is not null)
     {
     }
 }
@@ -1916,4 +1925,19 @@ internal sealed class AsyncRelayCommand<T>(Func<T?, Task> execute) : ICommand
             CanExecuteChanged?.Invoke(this, EventArgs.Empty);
         }
     }
+}
+
+internal sealed class RelayCommand<T>(Action<T?> execute, Func<T?, bool>? canExecute = null) : ICommand
+    where T : class
+{
+    private readonly Action<T?> _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+    private readonly Func<T?, bool>? _canExecute = canExecute;
+
+    public event EventHandler? CanExecuteChanged;
+
+    public bool CanExecute(object? parameter) => parameter is T candidate && (_canExecute?.Invoke(candidate) ?? true);
+
+    public void Execute(object? parameter) => _execute(parameter as T);
+
+    public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }

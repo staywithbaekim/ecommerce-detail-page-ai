@@ -1500,6 +1500,75 @@ public sealed class AiAnalysisSchedulerTests
     }
 
     [Fact]
+    public async Task MissingConsentPausesBeforeBudgetReservationOrProviderCall()
+    {
+        var store = new MemoryStore();
+        var consent = new TestConsentPort();
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
+            Result("request_01"), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)),
+            consentPort: consent);
+
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        var paused = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.Paused, paused.Disposition);
+        Assert.Equal("AI_UPLOAD_CONSENT_REQUIRED", paused.ErrorCode);
+        Assert.Equal(0, provider.Calls);
+        Assert.Equal(0, scheduler.Budget.RequestCount);
+        Assert.Equal("Queued", (await store.FindRequestByFingerprintAsync(
+            AiAnalysisCacheKeyFactory.Create(Request()), CancellationToken.None))!.Status);
+        Assert.Equal(AiAnalysisSchedulingControlState.Paused, scheduler.ControlState);
+    }
+
+    [Fact]
+    public async Task RevokedConsentPausesWithoutProviderCallAndRegrantResumesPendingWork()
+    {
+        var store = new MemoryStore();
+        var consent = new TestConsentPort
+        {
+            Current = new AiUploadConsentRecord(
+                AiConsentScopes.AnalysisCopy,
+                "consent-revoked",
+                AiUploadConsentState.Revoked,
+                AiConsentPolicy.Version,
+                DateTimeOffset.UtcNow)
+        };
+        var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Completed(
+            Result("request_01"), new AiProviderUsage(1, 1, 2, false), TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)),
+            consentPort: consent);
+
+        await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
+        var paused = await scheduler.ProcessNextAsync(CancellationToken.None);
+        Assert.Equal(AiAnalysisWorkDisposition.Paused, paused.Disposition);
+        Assert.Equal("AI_UPLOAD_CONSENT_REVOKED", paused.ErrorCode);
+        Assert.Equal(0, provider.Calls);
+        Assert.Equal(0, scheduler.Budget.RequestCount);
+
+        consent.Current = await consent.GrantAsync(
+            AiConsentScopes.AnalysisCopy,
+            AiConsentPolicy.Version,
+            CancellationToken.None);
+        await scheduler.ResumeAsync(CancellationToken.None);
+        var completed = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.Completed, completed.Disposition);
+        Assert.Equal(1, provider.Calls);
+        Assert.Equal(1, scheduler.Budget.RequestCount);
+    }
+
+    [Fact]
     public async Task CancelAsyncCancelsOnlyPendingLedgerAndPersistsTerminalControl()
     {
         var store = new MemoryStore();
@@ -1813,6 +1882,48 @@ public sealed class AiAnalysisSchedulerTests
             Seen.Add(request);
             var index = Math.Min(Calls++, _steps.Length - 1);
             return Task.FromResult(_steps[index](request));
+        }
+    }
+
+    private sealed class TestConsentPort : IConsentPort
+    {
+        public AiUploadConsentRecord? Current { get; set; }
+
+        public Task<AiUploadConsentRecord?> GetConsentAsync(
+            string scope,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Current);
+        }
+
+        public Task<AiUploadConsentRecord> GrantAsync(
+            string scope,
+            string policyVersion,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Current = new AiUploadConsentRecord(
+                scope,
+                $"consent-test-{Guid.NewGuid():N}",
+                AiUploadConsentState.Granted,
+                policyVersion,
+                DateTimeOffset.UtcNow);
+            return Task.FromResult(Current);
+        }
+
+        public Task<AiUploadConsentRecord> RevokeAsync(
+            string scope,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Current = new AiUploadConsentRecord(
+                scope,
+                Current?.ConsentId ?? $"consent-test-{Guid.NewGuid():N}",
+                AiUploadConsentState.Revoked,
+                Current?.PolicyVersion ?? AiConsentPolicy.Version,
+                DateTimeOffset.UtcNow);
+            return Task.FromResult(Current);
         }
     }
 
