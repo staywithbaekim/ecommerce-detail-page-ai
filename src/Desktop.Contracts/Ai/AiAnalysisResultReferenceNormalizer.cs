@@ -15,6 +15,13 @@ public static class AiAnalysisResultReferenceNormalizer
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(result);
 
+        // Typed results can come from non-HTTP providers or damaged local
+        // state without first crossing the JSON Schema gate. Validate before
+        // traversing nested collections so null or otherwise malformed
+        // members fail closed with a stable semantic code rather than a
+        // NullReferenceException.
+        AiAnalysisResultSemanticValidator.Validate(result);
+
         var requirementIds = request.Requirements
             .Select(requirement => requirement.RequirementId)
             .ToHashSet(StringComparer.Ordinal);
@@ -61,12 +68,15 @@ public static class AiAnalysisResultReferenceNormalizer
                 SourceAssetId = AssetId(result.SizeTableCandidate.SourceAssetId)
             };
 
-        return result with
+        var normalized = result with
         {
             RequirementMatches = matches,
             VariantGroups = variants,
             SubjectGeometry = geometry,
             SizeTableCandidate = sizeTable
         };
+
+        AiAnalysisResultSemanticValidator.Validate(normalized);
+        return normalized;
     }
 }

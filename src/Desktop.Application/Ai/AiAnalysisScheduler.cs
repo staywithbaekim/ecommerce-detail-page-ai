@@ -548,6 +548,15 @@ public sealed class AiAnalysisScheduler : IDisposable
                     throw new InvalidOperationException(recovered.ReasonCode);
                 }
             }
+
+            // Recovery may finish a pending journal that atomically changes
+            // the request graph and scheduler snapshot. Never continue from
+            // the pre-recovery read: doing so can resurrect an old budget,
+            // control state or pending attempt and duplicate a reservation.
+            state = await _stateStore.LoadSchedulingStateAsync(
+                _stateKey,
+                cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("AI_SCHEDULER_STATE_MISSING_AFTER_RECOVERY");
         }
 
         ValidateBudgetSnapshot(state.Budget);
@@ -1036,7 +1045,10 @@ public sealed class AiAnalysisScheduler : IDisposable
         var results = new List<AiAnalysisScheduleResult>();
         var geometryRequest = firstLayerRequest with
         {
-            RequestId = $"{firstLayerRequest.RequestId}-geometry",
+            RequestId = RefinementRequestId(
+                firstLayerRequest.RequestId,
+                "geometry",
+                selected.Select(asset => asset.AssetId)),
             AnalysisKind = AiAnalysisKind.SelectedAssetGeometry,
             Assets = selected
         };
@@ -1049,7 +1061,10 @@ public sealed class AiAnalysisScheduler : IDisposable
         {
             var sizeRequest = firstLayerRequest with
             {
-                RequestId = $"{firstLayerRequest.RequestId}-size",
+                RequestId = RefinementRequestId(
+                    firstLayerRequest.RequestId,
+                    "size",
+                    selected.Select(asset => asset.AssetId)),
                 AnalysisKind = AiAnalysisKind.SizeTableExtraction,
                 Assets = selected
             };
@@ -1059,15 +1074,30 @@ public sealed class AiAnalysisScheduler : IDisposable
                 cancellationToken).ConfigureAwait(false));
         }
 
-        // Ownership moves from the completed first-layer result to its
-        // selected refinements only after every child has acquired its own
-        // durable lease.  Unselected candidates therefore cannot be uploaded.
-        await ReleaseRequestLeasesAsync(
-            firstLayerRequest,
-            AiAnalysisWorkStage.ProductJointUnderstanding,
-            cancellationToken).ConfigureAwait(false);
+        // Keep the first-layer candidate-pool lease while human replacement
+        // remains possible. A user may confirm A and later switch to B; an
+        // early parent release would delete B's last application-owned copy.
+        // Explicit PlanClosed/cancel/terminal cleanup remains the parent
+        // lease lifecycle boundary.
 
         return results;
+    }
+
+    private static string RefinementRequestId(
+        string firstLayerRequestId,
+        string kind,
+        IEnumerable<string> selectedAssetIds)
+    {
+        var assetSet = string.Join(
+            "\n",
+            selectedAssetIds.Order(StringComparer.Ordinal));
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(
+                    $"{firstLayerRequestId}|{kind}|{assetSet}")))
+            .ToLowerInvariant()[..16];
+        var tail = $"-{kind}-{digest}";
+        var prefixLength = Math.Min(firstLayerRequestId.Length, 128 - tail.Length);
+        return firstLayerRequestId[..prefixLength] + tail;
     }
 
     public async Task<AiAnalysisScheduleResult> ProcessNextAsync(CancellationToken cancellationToken)
@@ -1225,6 +1255,10 @@ public sealed class AiAnalysisScheduler : IDisposable
 
         if (_consentPort is not null)
         {
+            // This read is only an early, user-facing pause check.  It is not
+            // the security boundary because revocation may race it; the
+            // authoritative admission read occurs immediately before budget
+            // reservation below.
             var consent = await _consentPort.GetConsentAsync(
                 AiConsentScopes.AnalysisCopy,
                 cancellationToken).ConfigureAwait(false);
@@ -1250,6 +1284,64 @@ public sealed class AiAnalysisScheduler : IDisposable
             // fail-closed without consuming another attempt.
             await TransitionToAsync(
                 item.Request, AiAnalysisSessionStatus.Queued, cancellationToken).ConfigureAwait(false);
+        }
+
+        // This is the final local admission boundary.  SqliteDesktopStore
+        // implements TryAcquireAsync with the same serialized writer used by
+        // RevokeAsync, so a revoke committed first is observed here and no
+        // budget/provider side effect follows.  Once this read commits, the
+        // request is considered admitted; revocation after that point does
+        // not retroactively cancel an already-admitted provider call.  The
+        // admission operation itself never performs network I/O.
+        if (_consentPort is not null)
+        {
+            AiUploadConsentRecord? admitted;
+            try
+            {
+                admitted = await _consentPort.TryAcquireAsync(
+                    AiConsentScopes.AnalysisCopy,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // The final authorization source is a local security boundary.
+                // If it cannot be read, keep the request queued, consume no
+                // budget and never cross the provider boundary. Persistence is
+                // best-effort because the same storage fault may also prevent
+                // saving the paused scheduler state; the in-process projection
+                // must still stop showing false progress.
+                SetControlState(
+                    AiAnalysisSchedulingControlState.Paused,
+                    "AI_UPLOAD_CONSENT_UNAVAILABLE");
+                try
+                {
+                    await PersistStateAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Ledger remains Queued. A repaired store plus explicit
+                    // Resume/restart can safely re-evaluate admission.
+                }
+                return Failure(
+                    item,
+                    AiAnalysisWorkDisposition.Paused,
+                    "AI_UPLOAD_CONSENT_UNAVAILABLE");
+            }
+            if (admitted?.IsGranted != true)
+            {
+                var reason = admitted?.State == AiUploadConsentState.Revoked
+                    ? "AI_UPLOAD_CONSENT_REVOKED"
+                    : "AI_UPLOAD_CONSENT_REQUIRED";
+                SetControlState(
+                    AiAnalysisSchedulingControlState.Paused,
+                    reason);
+                await PersistStateAsync(cancellationToken).ConfigureAwait(false);
+                return Failure(item, AiAnalysisWorkDisposition.Paused, reason);
+            }
         }
 
         var reservation = await TryReserveRequestBudgetAsync(cancellationToken).ConfigureAwait(false);
@@ -1314,6 +1406,31 @@ public sealed class AiAnalysisScheduler : IDisposable
             }
         }
 
+        if (execution.Outcome == AiProviderOutcome.TerminalError
+            && IsRecoverableCredentialPreflight(execution.Error?.Code))
+        {
+            // These adapter codes are emitted before any HTTP request is
+            // constructed or sent. Keep the logical request queued so fixing
+            // Credential Manager plus an explicit Resume retries only this
+            // failed range; unknown/in-flight outcomes never enter this path.
+            SetControlState(
+                AiAnalysisSchedulingControlState.Paused,
+                execution.Error!.Code);
+            await TransitionToAsync(
+                item.Request,
+                AiAnalysisSessionStatus.RetryableError,
+                persistenceToken,
+                releaseUnusedRequestReservation: true).ConfigureAwait(false);
+            await TransitionToAsync(
+                item.Request,
+                AiAnalysisSessionStatus.Queued,
+                persistenceToken).ConfigureAwait(false);
+            return Failure(
+                item,
+                AiAnalysisWorkDisposition.Paused,
+                execution.Error.Code);
+        }
+
         if (execution.Outcome == AiProviderOutcome.Completed && execution.Result is not null)
         {
             try
@@ -1322,6 +1439,11 @@ public sealed class AiAnalysisScheduler : IDisposable
             }
             catch (Exception exception) when (exception is InvalidDataException or IOException)
             {
+                if (execution.Usage is not null)
+                {
+                    await RecordObservedUsageAsync(item, execution.Usage, persistenceToken)
+                        .ConfigureAwait(false);
+                }
                 return await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, "AI_RESULT_PERSISTENCE_FAILED", AiAnalysisSessionStatus.TerminalError, CancellationToken.None).ConfigureAwait(false);
             }
         }
@@ -1367,10 +1489,24 @@ public sealed class AiAnalysisScheduler : IDisposable
         {
             throw new InvalidDataException("AI_RESULT_REFERENCE_MISMATCH");
         }
+
+        // Validate the typed result before it can cross any persistence
+        // boundary.  The formal result store performs the same check when it
+        // serializes, but the scheduler also supports a legacy in-memory path
+        // without a result store; keeping this guard here ensures malformed
+        // provider output can never advance the ledger/session or create a
+        // reusable cache entry on that path.
+        AiAnalysisResultSemanticValidator.Validate(execution.Result!);
+
         if (_resultStore is null)
         {
             if (_strictResultPersistence)
             {
+                if (execution.Usage is not null)
+                {
+                    await RecordObservedUsageAsync(item, execution.Usage, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 return await CompleteTerminalAsync(
                     item,
                     AiAnalysisWorkDisposition.TerminalError,
@@ -1459,6 +1595,11 @@ public sealed class AiAnalysisScheduler : IDisposable
             null,
             null,
             _timeProvider.GetUtcNow());
+        if (await _store.FindUsageEventAsync(usageRecord.UsageEventId, cancellationToken)
+                .ConfigureAwait(false) is not null)
+        {
+            return;
+        }
         if (_checkpointPort is null)
         {
             await _store.RecordUsageAsync(usageRecord, cancellationToken).ConfigureAwait(false);
@@ -1630,9 +1771,11 @@ public sealed class AiAnalysisScheduler : IDisposable
         AiAnalysisSessionStatus next,
         CancellationToken cancellationToken,
         string? replacedPendingWorkItemId = null,
-        AiAnalysisWorkItem? replacementPending = null)
+        AiAnalysisWorkItem? replacementPending = null,
+        bool releaseUnusedRequestReservation = false)
     {
         await _statePersistenceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        AiAnalysisBudgetSnapshot? budgetBeforeRelease = null;
         try
         {
             var ledger = await _store.FindRequestByFingerprintAsync(
@@ -1641,6 +1784,27 @@ public sealed class AiAnalysisScheduler : IDisposable
                 ?? throw new InvalidOperationException("AI_REQUEST_LEDGER_MISSING");
             var session = await _store.LoadSessionAsync(SessionId(request), cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("AI_SESSION_NOT_FOUND");
+            if (releaseUnusedRequestReservation)
+            {
+                lock (_budgetGate)
+                {
+                    if (_budget.RequestCount <= 0)
+                    {
+                        throw new InvalidOperationException("AI_BUDGET_RESERVATION_MISSING");
+                    }
+
+                    budgetBeforeRelease = _budget;
+                    var requestCount = _budget.RequestCount - 1;
+                    _budget = _budget with
+                    {
+                        RequestCount = requestCount,
+                        HardStopped = _budget.InputTokens >= _budgetPolicy.MaxInputTokens
+                            || _budget.OutputTokens >= _budgetPolicy.MaxOutputTokens
+                            || _budget.EstimatedCost >= _budgetPolicy.MaxEstimatedCost
+                            || requestCount >= _budgetPolicy.MaxRequests
+                    };
+                }
+            }
             if (_checkpointPort is not null)
             {
                 var checkpointResultReference = next is AiAnalysisSessionStatus.Validated or AiAnalysisSessionStatus.ManualReview or AiAnalysisSessionStatus.PlanClosed
@@ -1681,6 +1845,22 @@ public sealed class AiAnalysisScheduler : IDisposable
                 cancellationToken).ConfigureAwait(false);
 
             ApplyPendingMutation(request.RequestId, next.ToString(), replacedPendingWorkItemId, replacementPending);
+            if (releaseUnusedRequestReservation && _stateStore is not null)
+            {
+                await PersistStateCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            if (budgetBeforeRelease is not null)
+            {
+                lock (_budgetGate)
+                {
+                    _budget = budgetBeforeRelease;
+                }
+            }
+
+            throw;
         }
         finally
         {
@@ -1903,6 +2083,11 @@ public sealed class AiAnalysisScheduler : IDisposable
         }
     }
 
+    private static bool IsRecoverableCredentialPreflight(string? errorCode) => errorCode is
+        "AI_PROVIDER_CREDENTIAL_MISSING"
+        or "AI_PROVIDER_CREDENTIAL_UNAVAILABLE"
+        or "AI_PROVIDER_CREDENTIAL_INVALID";
+
     private static AiAnalysisScheduleResult Failure(
         AiAnalysisWorkItem item,
         AiAnalysisWorkDisposition disposition,
@@ -1967,7 +2152,7 @@ public sealed class AiAnalysisScheduler : IDisposable
         {
             var ledger = await _store.FindRequestByFingerprintAsync(
                 AiAnalysisCacheKeyFactory.Create(request), cancellationToken).ConfigureAwait(false);
-            if (ledger is null || !ShouldRetryTerminalLeaseCleanup(request, ledger.Status, historicalRequests))
+            if (ledger is null || !ShouldRetryTerminalLeaseCleanup(request, ledger.Status))
             {
                 continue;
             }
@@ -1981,8 +2166,7 @@ public sealed class AiAnalysisScheduler : IDisposable
 
     private static bool ShouldRetryTerminalLeaseCleanup(
         AiAnalysisRequestV1 request,
-        string status,
-        IReadOnlyList<AiAnalysisRequestV1> historicalRequests)
+        string status)
     {
         if (status is not ("Validated" or "ManualReview" or "PlanClosed"
             or "AiResultUnknown" or "Cancelled" or "TerminalError"))
@@ -1996,15 +2180,11 @@ public sealed class AiAnalysisScheduler : IDisposable
             return true;
         }
 
-        // A successful first-layer result retains its lease until at least one
-        // durable refinement request exists.  EnqueueRefinementAsync persists
-        // the child before releasing this token, so restart can distinguish a
-        // legitimate future refinement from a failed cleanup attempt.
-        return historicalRequests.Any(candidate =>
-            string.Equals(candidate.BatchId, request.BatchId, StringComparison.Ordinal)
-            && string.Equals(candidate.StyleId, request.StyleId, StringComparison.Ordinal)
-            && candidate.RequestId.StartsWith(request.RequestId + "-", StringComparison.Ordinal)
-            && candidate.AnalysisKind is AiAnalysisKind.SelectedAssetGeometry or AiAnalysisKind.SizeTableExtraction);
+        // Validated/ManualReview first-layer results still back the candidate
+        // replacement UI, even if refinement children already exist. Only an
+        // explicit PlanClosed or terminal status can release the complete
+        // candidate-pool lease.
+        return false;
     }
 
     private static AiAnalysisWorkStage StageForAnalysisKind(string analysisKind) => analysisKind switch

@@ -88,21 +88,39 @@ public sealed class AiRenderPlanFactory(
         cancellationToken.ThrowIfCancellationRequested();
         ValidateSnapshot(request.Batch, request.TemplateRevision);
 
+        if (request.Styles.Any(style => style is null)
+            || request.Styles.Select(style => style.StyleId)
+                .Distinct(StringComparer.Ordinal).Count() != request.Styles.Count)
+        {
+            throw new InvalidOperationException("AI_RENDER_STYLE_INPUT_MISMATCH");
+        }
+
         var styles = request.Styles.ToDictionary(style => style.StyleId, StringComparer.Ordinal);
-        if (styles.Count != request.Styles.Count
-            || request.Batch.Styles.Any(style => !styles.ContainsKey(style.StyleId))
+        if (request.Batch.Styles.Any(style => !styles.ContainsKey(style.StyleId))
             || styles.Keys.Any(styleId => request.Batch.Styles.All(style =>
                 !string.Equals(style.StyleId, styleId, StringComparison.Ordinal))))
         {
             throw new InvalidOperationException("AI_RENDER_STYLE_INPUT_MISMATCH");
         }
 
+        if (request.TemplateResources.Any(resource => resource is null)
+            || request.TemplateResources.Select(resource => resource.ResourceId)
+                .Distinct(StringComparer.Ordinal).Count() != request.TemplateResources.Count)
+        {
+            throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_DUPLICATE");
+        }
+
         var templateResources = request.TemplateResources.ToDictionary(
             resource => resource.ResourceId,
             StringComparer.Ordinal);
-        if (templateResources.Count != request.TemplateResources.Count)
+
+        var expectedTemplateResourceIds = request.Batch.TemplateSnapshot.Pages
+            .Select(page => page.TemplateResourceId)
+            .ToHashSet(StringComparer.Ordinal);
+        if (templateResources.Keys.Any(resourceId => !expectedTemplateResourceIds.Contains(resourceId))
+            || expectedTemplateResourceIds.Any(resourceId => !templateResources.ContainsKey(resourceId)))
         {
-            throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_DUPLICATE");
+            throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_SET_MISMATCH");
         }
 
         var revisionPages = request.TemplateRevision.Pages.ToDictionary(
@@ -111,24 +129,71 @@ public sealed class AiRenderPlanFactory(
         var bindingsByPage = request.TemplateRevision.FrameBindings
             .GroupBy(binding => binding.PageId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+        if (request.Batch.Assets.Select(asset => asset.AssetId)
+            .Distinct(StringComparer.Ordinal).Count() != request.Batch.Assets.Length)
+        {
+            throw new InvalidOperationException("AI_RENDER_ASSET_DUPLICATE");
+        }
+
         var assets = request.Batch.Assets.ToDictionary(asset => asset.AssetId, StringComparer.Ordinal);
         var pages = new List<AiRenderPagePreparation>();
+        var selectedSnapshotFrameIds = request.Batch.TemplateSnapshot.Pages
+            .SelectMany(page => page.FrameIds)
+            .ToHashSet(StringComparer.Ordinal);
 
         foreach (var style in request.Batch.Styles.OrderBy(style => style.Order))
         {
             var styleInput = styles[style.StyleId];
-            var selections = styleInput.Selections.ToDictionary(
-                selection => selection.FrameId,
-                StringComparer.Ordinal);
-            if (selections.Count != styleInput.Selections.Count)
+            var styleAssetIds = style.AssetIds.ToHashSet(StringComparer.Ordinal);
+            foreach (var assetId in style.AssetIds)
+            {
+                if (!assets.TryGetValue(assetId, out var asset)
+                    || !string.Equals(asset.StyleId, style.StyleId, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("AI_RENDER_ASSET_STYLE_MISMATCH");
+                }
+
+                ValidateSourceAsset(asset);
+            }
+
+            if (styleInput.SizeTableCandidate is not null)
+            {
+                ValidateSizeTableCandidate(styleInput.SizeTableCandidate, style, styleAssetIds, assets);
+            }
+
+            if (styleInput.Selections.Any(selection => selection is null)
+                || styleInput.Selections.Select(selection => selection.FrameId)
+                    .Distinct(StringComparer.Ordinal).Count() != styleInput.Selections.Count)
             {
                 throw new InvalidOperationException("AI_RENDER_SELECTION_DUPLICATE");
             }
 
-            var styleAssetIds = style.AssetIds.ToHashSet(StringComparer.Ordinal);
+            var selections = styleInput.Selections.ToDictionary(
+                selection => selection.FrameId,
+                StringComparer.Ordinal);
+            if (selections.Keys.Any(frameId => !selectedSnapshotFrameIds.Contains(frameId)))
+            {
+                throw new InvalidOperationException("AI_RENDER_SELECTION_FRAME_MISMATCH");
+            }
+
             foreach (var snapshotPage in request.Batch.TemplateSnapshot.Pages.OrderBy(page => page.Order))
             {
-                var page = revisionPages[snapshotPage.PageId];
+                if (!revisionPages.TryGetValue(snapshotPage.PageId, out var page))
+                {
+                    throw new InvalidOperationException("AI_RENDER_SNAPSHOT_PAGE_MISMATCH");
+                }
+
+                if (!templateResources.TryGetValue(page.TemplateResourceId, out var templateResource))
+                {
+                    throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_NOT_FOUND");
+                }
+
+                ValidateTemplateResourceOwnership(
+                    templateResource,
+                    request.TemplateRevision,
+                    page,
+                    snapshotPage);
+
                 if (page.ContentType == TemplatePageContentType.DynamicSizeTable)
                 {
                     pages.Add(new AiRenderPagePreparation(
@@ -192,16 +257,6 @@ public sealed class AiRenderPlanFactory(
                             geometry.Bottom,
                             geometry.Confidence));
                 }).ToArray();
-
-                if (!templateResources.TryGetValue(page.TemplateResourceId, out var templateResource)
-                    || !string.Equals(templateResource.ResourceId, snapshotPage.TemplateResourceId, StringComparison.Ordinal)
-                    || !string.Equals(
-                        templateResource.StructureSignature,
-                        templateResource.Inspection.StructureSignature,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_MISMATCH");
-                }
 
                 var selectedAssets = selected.Select(selection => assets[selection.AssetId])
                     .DistinctBy(asset => asset.AssetId)
@@ -303,6 +358,84 @@ public sealed class AiRenderPlanFactory(
             }
         }
     }
+
+    private static void ValidateTemplateResourceOwnership(
+        ImportedTemplateResource resource,
+        TemplateRevision revision,
+        TemplatePage page,
+        BatchTemplatePageSnapshot snapshotPage)
+    {
+        if (!string.Equals(resource.ResourceId, page.TemplateResourceId, StringComparison.Ordinal)
+            || !string.Equals(resource.ResourceId, snapshotPage.TemplateResourceId, StringComparison.Ordinal)
+            || !string.Equals(resource.GroupId, revision.GroupId, StringComparison.Ordinal)
+            || !string.Equals(resource.DraftId, revision.RevisionId, StringComparison.Ordinal)
+            || resource.Inspection is null
+            || resource.Length <= 0
+            || resource.Inspection.SizeBytes != resource.Length
+            || !string.Equals(resource.Inspection.FileSha256, resource.Sha256, StringComparison.OrdinalIgnoreCase)
+            || !IsSha256(resource.Sha256)
+            || !IsDigest(resource.StructureSignature)
+            || !string.Equals(
+                resource.StructureSignature,
+                resource.Inspection.StructureSignature,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_OWNERSHIP_MISMATCH");
+        }
+    }
+
+    private static void ValidateSourceAsset(SourceAssetMetadata asset)
+    {
+        var expectedMime = asset.Format switch
+        {
+            SourceImageFormat.Jpeg => "image/jpeg",
+            SourceImageFormat.Png => "image/png",
+            SourceImageFormat.Tiff => "image/tiff",
+            _ => null
+        };
+        if (asset.Readability != AssetReadability.Readable
+            || asset.Length <= 0
+            || asset.PixelWidth <= 0
+            || asset.PixelHeight <= 0
+            || !IsSha256(asset.Sha256)
+            || expectedMime is null
+            || !string.Equals(asset.MimeType, expectedMime, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("AI_RENDER_ASSET_METADATA_MISMATCH");
+        }
+    }
+
+    private static void ValidateSizeTableCandidate(
+        AiSizeTableCandidateV1 candidate,
+        StyleDraft style,
+        HashSet<string> styleAssetIds,
+        Dictionary<string, SourceAssetMetadata> assets)
+    {
+        if (!styleAssetIds.Contains(candidate.SourceAssetId)
+            || !assets.TryGetValue(candidate.SourceAssetId, out var source)
+            || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AI_RENDER_SIZE_TABLE_SOURCE_MISMATCH");
+        }
+
+        if (candidate.Columns is null
+            || candidate.Rows is null
+            || candidate.Columns.Count == 0
+            || candidate.Rows.Count == 0
+            || candidate.Columns.Any(string.IsNullOrWhiteSpace)
+            || !candidate.Rows.All(row => row is not null
+                && row.Count == candidate.Columns.Count))
+        {
+            throw new InvalidOperationException("AI_RENDER_SIZE_TABLE_CANDIDATE_INVALID");
+        }
+    }
+
+    private static bool IsSha256(string? value) => value is { Length: 64 }
+        && value.All(Uri.IsHexDigit);
+
+    private static bool IsDigest(string? value) => value is { Length: 71 }
+        && value.StartsWith("sha256:", StringComparison.Ordinal)
+        && IsSha256(value[7..]);
 
     private static PlanIdentity CreatePlanIdentity(
         BatchDraft batch,

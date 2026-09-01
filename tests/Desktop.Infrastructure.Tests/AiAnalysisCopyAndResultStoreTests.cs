@@ -13,6 +13,8 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class AiAnalysisCopyAndResultStoreTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     [Fact]
     public void CandidateProfileRejectsParameterDriftWithoutANewVersion()
     {
@@ -470,6 +472,48 @@ public sealed class AiAnalysisCopyAndResultStoreTests
         finally { DeleteRoot(root); }
     }
 
+    [Theory]
+    [InlineData("duplicate-rank", "AI_RESULT_REQUIREMENT_RANK_DUPLICATE")]
+    [InlineData("duplicate-asset", "AI_RESULT_REQUIREMENT_ASSET_DUPLICATE")]
+    [InlineData("invalid-geometry", "AI_RESULT_GEOMETRY_INVALID")]
+    [InlineData("ragged-size-table", "AI_RESULT_SIZE_TABLE_SHAPE_INVALID")]
+    public async Task ResultStoreRejectsSemanticShapeOnSaveAndLoad(
+        string mutation,
+        string expectedCode)
+    {
+        var root = NewRoot("ai01-result-semantic-");
+        try
+        {
+            var policy = new LocalAppPathPolicy(root);
+            var files = new AtomicFileStore(policy);
+            var store = new FileAiAnalysisResultStore(
+                files,
+                new Desktop.Contracts.Validation.JsonSchemaContractValidator());
+            var invalid = SemanticResult(mutation);
+
+            var saveException = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                store.SaveAsync("results/request_01", invalid, CancellationToken.None));
+            Assert.Equal(expectedCode, saveException.Message);
+            Assert.False(File.Exists(Path.Combine(root, "results", "request_01.json")));
+
+            // Seed the directory with a valid record, then replace its bytes
+            // with the malformed-but-schema-valid semantic shape. Loading must
+            // apply the same validator and fail closed as well.
+            await store.SaveAsync(
+                "results/request_01",
+                SemanticResult("valid"),
+                CancellationToken.None);
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "results", "request_01.json"),
+                JsonSerializer.Serialize(invalid, JsonOptions));
+
+            var loadException = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                store.LoadAsync("results/request_01", CancellationToken.None));
+            Assert.Equal(expectedCode, loadException.Message);
+        }
+        finally { DeleteRoot(root); }
+    }
+
     [Fact]
     public async Task CopyLeasesSurvivePreparerRestartAndSharedReferencesAreNotOverwritten()
     {
@@ -559,6 +603,67 @@ public sealed class AiAnalysisCopyAndResultStoreTests
             SourceImageFormat.Tiff => "image/tiff",
             _ => throw new ArgumentOutOfRangeException(nameof(format))
         });
+
+    private static AiAnalysisResultV1 SemanticResult(string mutation) => mutation switch
+    {
+        "duplicate-rank" => new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [
+                new AiRequirementMatchV1("frame_01", "asset_01", 1, 0.9m, ["front"]),
+                new AiRequirementMatchV1("frame_01", "asset_02", 1, 0.8m, ["alternate"])
+            ],
+            [], [], null, [],
+            new AiUsageSummaryV1("usage_request_01", 1, 1, 1, null, null)),
+        "duplicate-asset" => new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [
+                new AiRequirementMatchV1("frame_01", "asset_01", 1, 0.9m, ["front"]),
+                new AiRequirementMatchV1("frame_01", "asset_01", 2, 0.8m, ["alternate"])
+            ],
+            [], [], null, [],
+            new AiUsageSummaryV1("usage_request_01", 1, 1, 1, null, null)),
+        "invalid-geometry" => new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [],
+            [],
+            [new AiSubjectGeometryV1("asset_01", 0.6m, 0.2m, 0.6m, 0.9m, 0.9m)],
+            null,
+            [],
+            new AiUsageSummaryV1("usage_request_01", 1, 1, 1, null, null)),
+        "ragged-size-table" => new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [],
+            [],
+            [],
+            new AiSizeTableCandidateV1("asset_01", 0.9m, ["尺码", "胸围"], [["M"]]),
+            [],
+            new AiUsageSummaryV1("usage_request_01", 1, 1, 1, null, null)),
+        "valid" => new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_01",
+            null,
+            "model/proposed",
+            [], [], [], null, [],
+            new AiUsageSummaryV1("usage_request_01", 1, 1, 1, null, null)),
+        _ => throw new ArgumentOutOfRangeException(nameof(mutation), mutation, null)
+    };
 
     private static byte[] CreateImage(
         SourceImageFormat format,

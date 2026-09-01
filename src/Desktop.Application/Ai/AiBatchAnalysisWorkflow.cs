@@ -515,38 +515,18 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             var session = firstLayer is null
                 ? null
                 : await _store.LoadSessionAsync(SessionId(firstLayer), cancellationToken).ConfigureAwait(false);
-            var results = new List<AiAnalysisResultV1>();
-            foreach (var request in context.Requests.Values.Where(request =>
-                         string.Equals(request.StyleId, style.StyleId, StringComparison.Ordinal)))
+            var resultInputs = await LoadStyleResultsAsync(
+                context,
+                style.StyleId,
+                cancellationToken).ConfigureAwait(false);
+            foreach (var input in resultInputs)
             {
-                var ledger = await _store.FindRequestByFingerprintAsync(
-                    AiAnalysisCacheKeyFactory.Create(request),
-                    cancellationToken).ConfigureAwait(false);
-                if (ledger?.UpdatedAt > planCreatedAt)
+                if (input.Ledger?.UpdatedAt > planCreatedAt)
                 {
-                    planCreatedAt = ledger.UpdatedAt;
-                }
-                if (ledger?.ResultReference is null
-                    || ledger.Status is not ("Validated" or "ManualReview" or "PlanClosed"))
-                {
-                    continue;
-                }
-
-                var result = await _results.LoadAsync(
-                    ledger.ResultReference,
-                    cancellationToken).ConfigureAwait(false);
-                if (result is not null)
-                {
-                    results.Add(AiAnalysisResultReferenceNormalizer.Normalize(request, result));
+                    planCreatedAt = input.Ledger.UpdatedAt;
                 }
             }
 
-            var geometryByAsset = results.SelectMany(result => result.SubjectGeometry)
-                .GroupBy(geometry => geometry.AssetId, StringComparer.Ordinal)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group.OrderByDescending(geometry => geometry.Confidence).First(),
-                    StringComparer.Ordinal);
             var selectedRequirements = projection.Styles
                 .Single(item => string.Equals(item.StyleId, style.StyleId, StringComparison.Ordinal))
                 .Pages
@@ -568,12 +548,37 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                     return new AiConfirmedRenderSelection(
                         requirement.RequirementId,
                         assetId,
-                        geometryByAsset.GetValueOrDefault(assetId),
+                        null,
                         revision);
                 })
                 .ToArray();
-            var sizeCandidates = results.Where(result => result.SizeTableCandidate is not null)
-                .Select(result => result.SizeTableCandidate!)
+            var selectedAssetIds = selectedRequirements
+                .Select(selection => selection.AssetId)
+                .ToHashSet(StringComparer.Ordinal);
+            var geometryByAsset = resultInputs
+                .Where(input => input.Result is not null
+                    && input.Request.AnalysisKind is AiAnalysisKind.ProductJointUnderstanding
+                        or AiAnalysisKind.SelectedAssetGeometry
+                    && (input.Request.AnalysisKind == AiAnalysisKind.ProductJointUnderstanding
+                        || input.Request.Assets.Any(asset => selectedAssetIds.Contains(asset.AssetId))))
+                .SelectMany(input => input.Result!.SubjectGeometry)
+                .Where(geometry => selectedAssetIds.Contains(geometry.AssetId))
+                .GroupBy(geometry => geometry.AssetId, StringComparer.Ordinal)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(geometry => geometry.Confidence).First(),
+                    StringComparer.Ordinal);
+            selectedRequirements = selectedRequirements.Select(selection => selection with
+            {
+                SubjectGeometry = geometryByAsset.GetValueOrDefault(selection.AssetId)
+            }).ToArray();
+            var sizeResultInputs = resultInputs.Where(input => input.Result is not null
+                && input.Request.AnalysisKind is AiAnalysisKind.ProductJointUnderstanding
+                    or AiAnalysisKind.SizeTableExtraction)
+                .ToArray();
+            var sizeCandidates = sizeResultInputs
+                .Where(input => input.Result!.SizeTableCandidate is not null)
+                .Select(input => input.Result!.SizeTableCandidate!)
                 .GroupBy(candidate => JsonSerializer.Serialize(new
                 {
                     candidate.SourceAssetId,
@@ -582,10 +587,16 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 }), StringComparer.Ordinal)
                 .Select(group => group.OrderByDescending(candidate => candidate.Confidence).First())
                 .ToArray();
+            var sizeCandidate = sizeCandidates.Length == 1
+                && sizeCandidates[0].Confidence >= 0.8m
+                && !sizeResultInputs.SelectMany(input => input.Result!.Warnings)
+                    .Any(warning => warning.Code == "size_source_conflict")
+                    ? sizeCandidates[0]
+                    : null;
             styleInputs.Add(new AiRenderStyleInput(
                 style.StyleId,
                 selectedRequirements,
-                sizeCandidates.Length == 1 ? sizeCandidates[0] : null));
+                sizeCandidate));
         }
 
         return await _renderPlans.PrepareAsync(
@@ -809,6 +820,14 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 context.Scheduler.Budget.HardStopped);
         var message = controlState switch
         {
+            AiAnalysisSchedulingControlState.Paused when context.Scheduler.ControlReason ==
+                "AI_UPLOAD_CONSENT_UNAVAILABLE"
+                => "无法读取本地上传授权状态；已安全暂停且未发送请求。修复本地存储后可恢复分析。",
+            AiAnalysisSchedulingControlState.Paused when context.Scheduler.ControlReason is
+                "AI_PROVIDER_CREDENTIAL_MISSING"
+                or "AI_PROVIDER_CREDENTIAL_UNAVAILABLE"
+                or "AI_PROVIDER_CREDENTIAL_INVALID"
+                => "本机 AI 凭据尚未就绪；请求未发送。修复凭据后点击恢复即可继续当前失败范围。",
             AiAnalysisSchedulingControlState.Paused when context.Scheduler.ControlReason is
                 "AI_UPLOAD_CONSENT_REQUIRED" or "AI_UPLOAD_CONSENT_REVOKED"
                 => "上传授权未完成或已撤回；请在设置中重新授权后恢复分析。",
@@ -861,11 +880,21 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         AiAnalysisRequestV1? request,
         CancellationToken cancellationToken)
     {
+        var styleResults = await LoadStyleResultsAsync(
+            context,
+            style.StyleId,
+            cancellationToken).ConfigureAwait(false);
         var pages = new List<AiPageAnalysisProjection>();
         foreach (var page in context.TemplateRevision.Pages.Where(page =>
                      page.Enabled && context.Batch.TemplateSnapshot.Pages.Any(snapshot => snapshot.PageId == page.PageId)))
         {
-            pages.Add(await BuildPageProjectionAsync(context, style, page, request, cancellationToken).ConfigureAwait(false));
+            pages.Add(await BuildPageProjectionAsync(
+                context,
+                style,
+                page,
+                request,
+                styleResults,
+                cancellationToken).ConfigureAwait(false));
         }
 
         // A cancelled page is terminal for that page only. It must not make a
@@ -915,6 +944,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         StyleDraft style,
         TemplatePage page,
         AiAnalysisRequestV1? request,
+        IReadOnlyList<StyleResultInput> styleResults,
         CancellationToken cancellationToken)
     {
         var pageBindings = context.TemplateRevision.FrameBindings
@@ -931,8 +961,20 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                     AiRequirementSelectionUiStatus.Waiting, "等待分析"));
         }
 
-        var ledger = await _store.FindRequestByFingerprintAsync(
-            AiAnalysisCacheKeyFactory.Create(request), cancellationToken).ConfigureAwait(false);
+        var firstLayerInput = styleResults.FirstOrDefault(input =>
+            string.Equals(input.Request.RequestId, request.RequestId, StringComparison.Ordinal));
+        var ledger = firstLayerInput?.Ledger;
+        if (firstLayerInput?.Failure == ResultReadFailure.InvalidReference)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "结果引用异常，需要恢复",
+                "分析记录未能对应到当前请求，已阻止选图和生成。",
+                "结果引用异常");
+        }
         if (ledger is null || ledger.Status is "Queued" or "RetryableError")
         {
             var requirementStatus = context.Started
@@ -988,8 +1030,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                     AiRequirementSelectionUiStatus.Unavailable, "结果缺失"));
         }
 
-        var result = await _results.LoadAsync(ledger.ResultReference, cancellationToken).ConfigureAwait(false);
-        if (result is null)
+        if (firstLayerInput is null || firstLayerInput.Failure == ResultReadFailure.Missing)
         {
             return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
                 AiPageUiStatus.SystemError, "结果缺失，需要恢复", "查询状态", [], ["结果文件不可用，未启动生成。"],
@@ -998,22 +1039,30 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                     AiRequirementSelectionUiStatus.Unavailable, "结果缺失"));
         }
 
-        try
+        if (firstLayerInput.Failure == ResultReadFailure.Unreadable)
         {
-            // Compatibility repair for already measured v1 results that were
-            // persisted before transport image aliases were closed over the
-            // producing request. This is an in-memory projection only and
-            // never resends or rewrites the provider result.
-            result = AiAnalysisResultReferenceNormalizer.Normalize(request, result);
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "结果文件不可用，需要恢复",
+                "结果文件损坏或无法读取，未启动生成。",
+                "结果文件不可用");
         }
-        catch (InvalidDataException)
+        if (firstLayerInput.Failure == ResultReadFailure.InvalidReference)
         {
-            return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
-                AiPageUiStatus.SystemError, "结果引用异常，需要恢复", "查询状态", [], ["分析结果未能对应到当前素材，已阻止选图和生成。"],
-                Requirements: BuildRequirementSelections(
-                    context, style, page, pageBindings, [], [],
-                    AiRequirementSelectionUiStatus.Unavailable, "结果引用异常"));
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "结果引用异常，需要恢复",
+                "分析结果未能对应到当前素材，已阻止选图和生成。",
+                "结果引用异常");
         }
+
+        var result = firstLayerInput.Result!;
 
         var allowedFrameIds = pageBindings.Select(binding => binding.FrameId).ToHashSet(StringComparer.Ordinal);
         var matches = result.RequirementMatches
@@ -1034,6 +1083,94 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         var hasMissingRequiredMatch = pageBindings.Any(binding =>
             !matchedRequirementIds.Contains(binding.FrameId)
             && !lockedByRequirement.ContainsKey(binding.FrameId));
+
+        if (page.ContentType == TemplatePageContentType.DynamicSizeTable)
+        {
+            return BuildDynamicSizePageProjection(
+                context,
+                style,
+                page,
+                styleResults,
+                lockedByRequirement);
+        }
+
+        var topMatchByRequirement = matches
+            .GroupBy(match => match.RequirementId, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(match => match.Rank)
+                    .ThenBy(match => match.AssetId, StringComparer.Ordinal)
+                    .First(),
+                StringComparer.Ordinal);
+        var selectedAssetIds = pageBindings.Select(binding =>
+                lockedByRequirement.TryGetValue(binding.FrameId, out var locked)
+                    ? locked.AssetId
+                    : topMatchByRequirement.GetValueOrDefault(binding.FrameId)?.AssetId)
+            .Where(assetId => assetId is not null)
+            .Select(assetId => assetId!)
+            .ToHashSet(StringComparer.Ordinal);
+        var relevantRefinements = styleResults.Where(input =>
+                string.Equals(input.Request.AnalysisKind, AiAnalysisKind.SelectedAssetGeometry, StringComparison.Ordinal)
+                && input.Request.Assets.Any(asset => selectedAssetIds.Contains(asset.AssetId)))
+            .ToArray();
+        var unknownRefinement = relevantRefinements.FirstOrDefault(input =>
+            input.Ledger?.Status == "AiResultUnknown");
+        if (unknownRefinement is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "结果未知，需要恢复",
+                "已选素材的主体分析结果未知，禁止自动重发。",
+                "主体分析结果未知");
+        }
+        var terminalRefinement = relevantRefinements.FirstOrDefault(input =>
+            input.Ledger?.Status == "TerminalError");
+        if (terminalRefinement is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "分析失败，需要恢复",
+                "已选素材的主体分析未能安全完成，请修复后重试。",
+                "主体分析失败");
+        }
+        var relevantRefinementFailure = relevantRefinements.FirstOrDefault(input =>
+            input.Failure != ResultReadFailure.None);
+        if (relevantRefinementFailure is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                relevantRefinementFailure.Failure == ResultReadFailure.InvalidReference
+                    ? "结果引用异常，需要恢复"
+                    : "结果文件不可用，需要恢复",
+                "已选素材的主体分析结果不可用，未启动生成。",
+                "主体分析结果不可用");
+        }
+        var hasActiveGeometryRefinement = relevantRefinements.Any(input =>
+            input.Ledger?.Status is "Queued" or "RetryableError" or "Uploading" or "Analysing");
+
+        var geometryByAsset = styleResults
+            .Where(input => input.Result is not null
+                && input.Request.AnalysisKind is AiAnalysisKind.ProductJointUnderstanding
+                    or AiAnalysisKind.SelectedAssetGeometry)
+            .SelectMany(input => input.Result!.SubjectGeometry)
+            .Where(geometry => selectedAssetIds.Contains(geometry.AssetId))
+            .GroupBy(geometry => geometry.AssetId, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(geometry => geometry.Confidence).First(),
+                StringComparer.Ordinal);
+        var selectedAssetsMissingGeometry = selectedAssetIds
+            .Where(assetId => !geometryByAsset.ContainsKey(assetId))
+            .ToHashSet(StringComparer.Ordinal);
         var candidates = matches.Select(match =>
         {
             var asset = context.Batch.Assets.FirstOrDefault(candidate =>
@@ -1058,12 +1195,26 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                     binding?.SelectionRequirement.Description ?? "商品主体清晰完整，构图适合当前图片框。"),
                 pageName);
         }).ToArray();
-        // The v1 result contract scopes warnings by semantic level
-        // (request/product/requirement/asset/size_table), not by page or frame
-        // identifier. Keep the warning on this page rather than silently
-        // dropping valid contract warnings; page-specific isolation still
-        // comes from the requirement matches and frame bindings above.
-        var warnings = result.Warnings
+        var relevantResults = styleResults.Where(input => input.Result is not null
+            && (input.Request.AnalysisKind == AiAnalysisKind.ProductJointUnderstanding
+                || input.Request.AnalysisKind == AiAnalysisKind.SelectedAssetGeometry
+                && input.Request.Assets.Any(asset => selectedAssetIds.Contains(asset.AssetId))))
+            .ToArray();
+        var hasVariantConflict = relevantResults.SelectMany(input => input.Result!.Warnings)
+            .Any(warning => string.Equals(warning.Code, "variant_conflict", StringComparison.Ordinal))
+            && matches.Length > 0
+            && pageBindings.Any(binding => !lockedByRequirement.ContainsKey(binding.FrameId));
+        var hasUnconfirmedLowConfidence = pageBindings.Any(binding =>
+            !lockedByRequirement.ContainsKey(binding.FrameId)
+            && topMatchByRequirement.TryGetValue(binding.FrameId, out var selected)
+            && selected.Confidence < 0.8m);
+        var warnings = relevantResults
+            .SelectMany(input => input.Result!.Warnings)
+            .Where(warning => IsNormalPageWarningRelevant(
+                warning,
+                matches.Length > 0,
+                hasMissingRequiredMatch,
+                hasVariantConflict))
             .Select(warning => ToWarningText(warning.Code))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
@@ -1079,21 +1230,33 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             warnings = warnings.Append("必需图片框缺少可信匹配，请选择候选或补充素材。")
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
-        var businessWarning = hasMissingRequiredMatch
-            || result.Warnings.Any(warning => warning.Code is "asset_missing"
-                or "variant_conflict"
-                or "size_source_conflict");
-        var hasUnconfirmedLowConfidence = candidates.Any(candidate =>
-            candidate.Confidence < 0.8m
-            && !lockedByRequirement.ContainsKey(candidate.RequirementId));
+        if (hasUnconfirmedLowConfidence)
+        {
+            warnings = warnings.Append("首选素材匹配置信度较低，请人工确认并锁定。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        if (selectedAssetsMissingGeometry.Count > 0)
+        {
+            warnings = warnings.Append("已选素材仍需完成主体边界分析，完成前不会进入生成。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        if (hasActiveGeometryRefinement)
+        {
+            warnings = warnings.Append("已选素材正在进行主体边界分析，完成后将自动更新此页。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        var businessWarning = hasMissingRequiredMatch || hasVariantConflict;
         var status = businessWarning
             ? AiPageUiStatus.BusinessError
-            : manualNeedsLock || hasUnconfirmedLowConfidence
+            : hasActiveGeometryRefinement
+                ? AiPageUiStatus.Analysing
+                : manualNeedsLock || hasUnconfirmedLowConfidence || selectedAssetsMissingGeometry.Count > 0
                 ? AiPageUiStatus.ReviewRequired
                 : AiPageUiStatus.Ready;
         var statusText = status switch
         {
             AiPageUiStatus.Ready => "可生成",
+            AiPageUiStatus.Analysing => "主体分析中",
             AiPageUiStatus.ReviewRequired => "待人工确认",
             AiPageUiStatus.BusinessError => "需要修复",
             _ => "待处理"
@@ -1105,10 +1268,16 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             pageName,
             status,
             statusText,
-            status == AiPageUiStatus.Ready ? "已通过" : "处理此页",
+            status switch
+            {
+                AiPageUiStatus.Ready => "已通过",
+                AiPageUiStatus.Analysing => "分析中",
+                _ => "处理此页"
+            },
             candidates,
             warnings,
-            manualNeedsLock || hasUnconfirmedLowConfidence,
+            manualNeedsLock || hasUnconfirmedLowConfidence || selectedAssetsMissingGeometry.Count > 0
+                || hasActiveGeometryRefinement,
             BuildRequirementSelections(
                 context,
                 style,
@@ -1118,6 +1287,376 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 lockedByRequirement.Values,
                 AiRequirementSelectionUiStatus.Missing,
                 "待人工选择"));
+    }
+
+    private async Task<StyleResultInput[]> LoadStyleResultsAsync(
+        BatchContext context,
+        string styleId,
+        CancellationToken cancellationToken)
+    {
+        var inputs = new List<StyleResultInput>();
+        var styleRequests = context.Requests.Values
+            .Where(request => string.Equals(request.StyleId, styleId, StringComparison.Ordinal))
+            .OrderBy(request => request.RequestId, StringComparer.Ordinal)
+            .ToArray();
+        var firstLayerRequest = styleRequests.FirstOrDefault(request =>
+            string.Equals(
+                request.AnalysisKind,
+                AiAnalysisKind.ProductJointUnderstanding,
+                StringComparison.Ordinal));
+        foreach (var request in styleRequests)
+        {
+            var expectedFingerprint = AiAnalysisCacheKeyFactory.Create(request);
+            var ledger = await _store.FindRequestByFingerprintAsync(
+                expectedFingerprint,
+                cancellationToken).ConfigureAwait(false);
+            if (ledger is not null
+                && (!string.Equals(ledger.RequestId, request.RequestId, StringComparison.Ordinal)
+                    || !string.Equals(ledger.Fingerprint, expectedFingerprint, StringComparison.Ordinal)
+                    || !string.Equals(ledger.BatchId, request.BatchId, StringComparison.Ordinal)
+                    || !string.Equals(ledger.StyleId, request.StyleId, StringComparison.Ordinal)))
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.InvalidReference));
+                continue;
+            }
+
+            if (request.AnalysisKind is AiAnalysisKind.SelectedAssetGeometry
+                    or AiAnalysisKind.SizeTableExtraction
+                && (firstLayerRequest is null
+                    || !IsRefinementClosedOverParent(firstLayerRequest, request)))
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.InvalidReference));
+                continue;
+            }
+
+            if (ledger is null
+                || ledger.Status is not ("Validated" or "ManualReview" or "PlanClosed"))
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.None));
+                continue;
+            }
+
+            if (ledger.ResultReference is null)
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.Missing));
+                continue;
+            }
+
+            AiAnalysisResultV1? result;
+            try
+            {
+                // Successful ledgers can outlive a removed, malformed, locked,
+                // or ACL-inaccessible result file. Keep those local storage
+                // faults as data for the page projection; cancellation must
+                // still propagate to the caller.
+                result = await _results.LoadAsync(
+                    ledger.ResultReference,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is
+                InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.Unreadable));
+                continue;
+            }
+
+            if (result is null)
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.Missing));
+                continue;
+            }
+
+            if (!string.Equals(result.RequestId, request.RequestId, StringComparison.Ordinal)
+                || !string.Equals(
+                    result.ModelConfigVersion,
+                    request.ModelConfigVersion,
+                    StringComparison.Ordinal))
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.InvalidReference));
+                continue;
+            }
+
+            try
+            {
+                // Compatibility repair for already measured v1 results that
+                // predate transport-alias closure. This is in-memory only: it
+                // never rewrites the durable result or resends the request.
+                var normalized = AiAnalysisResultReferenceNormalizer.Normalize(request, result);
+                inputs.Add(new(request, ledger, normalized, ResultReadFailure.None));
+            }
+            catch (InvalidDataException exception) when (
+                AiAnalysisResultSemanticValidator.IsSemanticError(exception))
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.Unreadable));
+            }
+            catch (InvalidDataException)
+            {
+                inputs.Add(new(request, ledger, null, ResultReadFailure.InvalidReference));
+            }
+        }
+
+        return inputs.ToArray();
+    }
+
+    private static bool IsRefinementClosedOverParent(
+        AiAnalysisRequestV1 parent,
+        AiAnalysisRequestV1 child)
+    {
+        var refinementKind = child.AnalysisKind switch
+        {
+            AiAnalysisKind.SelectedAssetGeometry => "geometry",
+            AiAnalysisKind.SizeTableExtraction => "size",
+            _ => null
+        };
+        if (refinementKind is null
+            || child.Assets.Count == 0
+            || !string.Equals(
+                child.RequestId,
+                ExpectedRefinementRequestId(parent.RequestId, refinementKind, child.Assets.Select(asset => asset.AssetId)),
+                StringComparison.Ordinal)
+            || !string.Equals(child.SchemaVersion, parent.SchemaVersion, StringComparison.Ordinal)
+            || !string.Equals(child.DocumentKind, parent.DocumentKind, StringComparison.Ordinal)
+            || !string.Equals(child.CorrelationId, parent.CorrelationId, StringComparison.Ordinal)
+            || !string.Equals(child.ProductId, parent.ProductId, StringComparison.Ordinal)
+            || !string.Equals(child.BatchId, parent.BatchId, StringComparison.Ordinal)
+            || !string.Equals(child.StyleId, parent.StyleId, StringComparison.Ordinal)
+            || !string.Equals(child.TemplateSnapshotId, parent.TemplateSnapshotId, StringComparison.Ordinal)
+            || !string.Equals(child.TemplateRevisionId, parent.TemplateRevisionId, StringComparison.Ordinal)
+            || !string.Equals(child.ModelConfigVersion, parent.ModelConfigVersion, StringComparison.Ordinal)
+            || !string.Equals(child.PromptContractVersion, parent.PromptContractVersion, StringComparison.Ordinal)
+            || !string.Equals(child.ResponseSchemaVersion, parent.ResponseSchemaVersion, StringComparison.Ordinal)
+            || !string.Equals(child.CompressionProfileVersion, parent.CompressionProfileVersion, StringComparison.Ordinal)
+            || !string.Equals(child.ConsentId, parent.ConsentId, StringComparison.Ordinal)
+            || !string.Equals(child.RequirementsDigest, parent.RequirementsDigest, StringComparison.Ordinal)
+            || !child.Requirements.SequenceEqual(parent.Requirements))
+        {
+            return false;
+        }
+
+        var parentAssets = parent.Assets.ToDictionary(asset => asset.AssetId, StringComparer.Ordinal);
+        return child.Assets.Select(asset => asset.AssetId).Distinct(StringComparer.Ordinal).Count()
+                == child.Assets.Count
+            && child.Assets.All(asset => parentAssets.TryGetValue(asset.AssetId, out var expected)
+                && asset == expected);
+    }
+
+    private static string ExpectedRefinementRequestId(
+        string parentRequestId,
+        string kind,
+        IEnumerable<string> assetIds)
+    {
+        var assetSet = string.Join("\n", assetIds.Order(StringComparer.Ordinal));
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes($"{parentRequestId}|{kind}|{assetSet}")))
+            .ToLowerInvariant()[..16];
+        var tail = $"-{kind}-{digest}";
+        var prefixLength = Math.Min(parentRequestId.Length, 128 - tail.Length);
+        return parentRequestId[..prefixLength] + tail;
+    }
+
+    private static AiPageAnalysisProjection BuildDynamicSizePageProjection(
+        BatchContext context,
+        StyleDraft style,
+        TemplatePage page,
+        IReadOnlyList<StyleResultInput> styleResults,
+        IReadOnlyDictionary<string, AiLockedSelection> lockedByRequirement)
+    {
+        var pageBindings = context.TemplateRevision.FrameBindings
+            .Where(binding => string.Equals(binding.PageId, page.PageId, StringComparison.Ordinal))
+            .OrderBy(binding => binding.FrameId, StringComparer.Ordinal)
+            .ToArray();
+        var sizeRefinements = styleResults.Where(input =>
+                string.Equals(input.Request.AnalysisKind, AiAnalysisKind.SizeTableExtraction, StringComparison.Ordinal))
+            .ToArray();
+        var unknownSizeResult = sizeRefinements.FirstOrDefault(input =>
+            input.Ledger?.Status == "AiResultUnknown");
+        if (unknownSizeResult is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "结果未知，需要恢复",
+                "尺码来源分析结果未知，禁止自动重发。",
+                "尺码分析结果未知");
+        }
+        var terminalSizeResult = sizeRefinements.FirstOrDefault(input =>
+            input.Ledger?.Status == "TerminalError");
+        if (terminalSizeResult is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "分析失败，需要恢复",
+                "尺码来源分析未能安全完成，请修复后重试。",
+                "尺码分析失败");
+        }
+        var failedSizeResult = sizeRefinements.FirstOrDefault(input =>
+            input.Failure != ResultReadFailure.None);
+        if (failedSizeResult is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                failedSizeResult.Failure == ResultReadFailure.InvalidReference
+                    ? "结果引用异常，需要恢复"
+                    : "结果文件不可用，需要恢复",
+                "尺码来源分析结果不可用，未启动生成。",
+                "尺码分析结果不可用");
+        }
+        var hasActiveSizeRefinement = sizeRefinements.Any(input =>
+            input.Ledger?.Status is "Queued" or "RetryableError" or "Uploading" or "Analysing");
+
+        var styleAssetIds = style.AssetIds.ToHashSet(StringComparer.Ordinal);
+        var relevantResults = styleResults.Where(input => input.Result is not null
+            && input.Request.AnalysisKind is AiAnalysisKind.ProductJointUnderstanding
+                or AiAnalysisKind.SizeTableExtraction)
+            .ToArray();
+        var sizeCandidates = relevantResults
+            .Select(input => input.Result!.SizeTableCandidate)
+            .Where(candidate => candidate is not null && styleAssetIds.Contains(candidate.SourceAssetId))
+            .Select(candidate => candidate!)
+            .GroupBy(candidate => JsonSerializer.Serialize(new
+            {
+                candidate.SourceAssetId,
+                candidate.Columns,
+                candidate.Rows
+            }), StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(candidate => candidate.Confidence).First())
+            .ToArray();
+        var hasProviderConflict = relevantResults
+            .SelectMany(input => input.Result!.Warnings)
+            .Any(warning => string.Equals(warning.Code, "size_source_conflict", StringComparison.Ordinal));
+        var warnings = relevantResults
+            .SelectMany(input => input.Result!.Warnings)
+            .Where(warning => warning.Scope == "size_table"
+                || warning.Code == "size_source_conflict")
+            .Select(warning => ToWarningText(warning.Code))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        AiPageUiStatus status;
+        string statusText;
+        string actionText;
+        if (hasActiveSizeRefinement)
+        {
+            status = AiPageUiStatus.Analysing;
+            statusText = "尺码分析中";
+            actionText = "分析中";
+            warnings = warnings.Append("正在确认尺码表来源与结构，完成后将自动更新此页。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        else if (sizeCandidates.Length == 0)
+        {
+            status = AiPageUiStatus.BusinessError;
+            statusText = "需要修复";
+            actionText = "确认尺码来源";
+            warnings = warnings.Append("未找到可可靠提取的尺码表来源，此页不会进入生成。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        else if (hasProviderConflict || sizeCandidates.Length > 1)
+        {
+            status = AiPageUiStatus.BusinessError;
+            statusText = "需要修复";
+            actionText = "确认尺码来源";
+            warnings = warnings.Append("存在多个内容不同的尺码表来源，请先选择唯一来源。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        else if (sizeCandidates[0].Confidence < 0.8m)
+        {
+            status = AiPageUiStatus.BusinessError;
+            statusText = "需要修复";
+            actionText = "检查尺码数据";
+            warnings = warnings.Append("尺码表结构无法可靠解析，禁止猜测后生成。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        else
+        {
+            // AI-01 closes the structured candidate and provenance only.
+            // SIZE-01 owns deterministic rasterization and is intentionally
+            // not impersonated as a generatable page here.
+            status = AiPageUiStatus.ReviewRequired;
+            statusText = "等待尺码页生成能力";
+            actionText = "等待 SIZE-01";
+            warnings = warnings.Append("尺码数据与唯一来源已确认，等待 SIZE-01 确定性绘制。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+
+        return new AiPageAnalysisProjection(
+            context.Batch.BatchId,
+            style.StyleId,
+            page.PageId,
+            page.Name,
+            status,
+            statusText,
+            actionText,
+            [],
+            warnings,
+            RequiresManualConfiguration: true,
+            Requirements: BuildRequirementSelections(
+                context,
+                style,
+                page,
+                pageBindings,
+                [],
+                lockedByRequirement.Values,
+                AiRequirementSelectionUiStatus.Missing,
+                "待确认尺码来源"));
+    }
+
+    private static AiPageAnalysisProjection ResultFailureProjection(
+        BatchContext context,
+        StyleDraft style,
+        TemplatePage page,
+        IReadOnlyList<FrameBinding> pageBindings,
+        string statusText,
+        string warningText,
+        string requirementStatusText) => new(
+            context.Batch.BatchId,
+            style.StyleId,
+            page.PageId,
+            page.Name,
+            AiPageUiStatus.SystemError,
+            statusText,
+            "查询状态",
+            [],
+            [warningText],
+            Requirements: BuildRequirementSelections(
+                context,
+                style,
+                page,
+                pageBindings,
+                [],
+                [],
+                AiRequirementSelectionUiStatus.Unavailable,
+                requirementStatusText));
+
+    private static bool IsNormalPageWarningRelevant(
+        AiWarningV1 warning,
+        bool hasMatches,
+        bool hasMissingRequiredMatch,
+        bool hasVariantConflict)
+    {
+        if (warning.Code == "low_confidence"
+            || warning.Code == "size_source_conflict"
+            || warning.Scope == "size_table")
+        {
+            return false;
+        }
+
+        return warning.Code switch
+        {
+            "asset_missing" => hasMissingRequiredMatch,
+            "variant_conflict" => hasVariantConflict,
+            _ => warning.Scope is "request" or "product"
+                || hasMatches
+                || hasMissingRequiredMatch
+        };
     }
 
     private static AiBatchUiStatus DetermineBatchStatus(
@@ -1372,6 +1911,20 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         ?? throw new InvalidOperationException("AI_REQUEST_NOT_FOUND");
 
     private static string SessionId(AiAnalysisRequestV1 request) => $"session-{request.RequestId}";
+
+    private enum ResultReadFailure
+    {
+        None = 0,
+        Missing,
+        Unreadable,
+        InvalidReference
+    }
+
+    private sealed record StyleResultInput(
+        AiAnalysisRequestV1 Request,
+        AiRequestLedgerEntry? Ledger,
+        AiAnalysisResultV1? Result,
+        ResultReadFailure Failure);
 
     private sealed class BatchContext(
         BatchDraft batch,

@@ -59,4 +59,47 @@ public sealed class AiConsentStoreTests
 
         Assert.Null(await store.GetConsentAsync(AiConsentScopes.AnalysisCopy, CancellationToken.None));
     }
+
+    [Fact]
+    public async Task AdmissionReadIsAtomicWithRevokeAndDoesNotCreateConsentEvents()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+
+        var granted = await store.GrantAsync(
+            AiConsentScopes.AnalysisCopy,
+            AiConsentPolicy.Version,
+            CancellationToken.None);
+        var admitted = await store.TryAcquireAsync(
+            AiConsentScopes.AnalysisCopy,
+            CancellationToken.None);
+
+        Assert.NotNull(admitted);
+        Assert.Equal(AiUploadConsentState.Granted, admitted!.State);
+        Assert.Equal(granted.ConsentId, admitted.ConsentId);
+
+        var revoked = await store.RevokeAsync(
+            AiConsentScopes.AnalysisCopy,
+            CancellationToken.None);
+        var denied = await store.TryAcquireAsync(
+            AiConsentScopes.AnalysisCopy,
+            CancellationToken.None);
+
+        Assert.Equal(AiUploadConsentState.Revoked, revoked.State);
+        Assert.NotNull(denied);
+        Assert.Equal(AiUploadConsentState.Revoked, denied!.State);
+
+        await using var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = new DesktopDataOptions(directory.Path).DatabasePath,
+                Pooling = false
+            }.ToString());
+        await connection.OpenAsync();
+        await using var count = connection.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM ai_upload_consent_events WHERE scope = $scope;";
+        count.Parameters.AddWithValue("$scope", AiConsentScopes.AnalysisCopy);
+        Assert.Equal(2L, (long)(await count.ExecuteScalarAsync())!);
+    }
 }

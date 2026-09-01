@@ -50,9 +50,9 @@ git diff --check
 
 产品负责人已批准“一次性上传授权交互”：不新增登录/账号/云授权系统；F-01 首次使用配置或首次点击“扫描并分析”时显示一次默认未勾选的“AI 分析与图片上传授权”说明和同意操作，明确仅上传必要的压缩分析副本到火山方舟，不上传 PSD、原始高清图片、本地路径或正式输出；日常批次不重复弹窗。S-01 显示已授权/已撤回并可撤回/重新授权，撤回后禁止新 AI 请求，已有本地结果保留，重新授权后才可继续。`consent-{batchId}` 仅为请求关联标识。
 
-实现已将授权生产者建模为供应商无关 `IConsentPort`（架构决策见 `docs/架构决策/ADR-019-AI上传授权状态边界.md`）：应用内允许/撤回操作由 `SqliteDesktopStore` 在 SQLite v12 `ai_upload_consents` 当前状态表与 `ai_upload_consent_events` 追加事件表中以同一事务写入 `Granted/Revoked`、作用域 `ai-analysis-copy`、版本 `ai-upload-consent/v1`、consent ID 和时间。`AiBatchAnalysisWorkflow.StartAsync` 入队前强制授权；scheduler 在预算预留、请求转为 `Uploading` 和 provider 调用前再次检查。缺失/撤回均返回 `AI_UPLOAD_CONSENT_REQUIRED`/`AI_UPLOAD_CONSENT_REVOKED`，保持 ledger `Queued`，不消耗预算、不调用 provider、不改写未知结果。跨重启当前状态和事件历史可恢复；重新授权后 `ResumeAsync` 可继续原待处理请求。
+实现已将授权生产者建模为供应商无关 `IConsentPort`（架构决策见 `docs/架构决策/ADR-019-AI上传授权状态边界.md`）：应用内允许/撤回操作由 `SqliteDesktopStore` 在 SQLite v12 `ai_upload_consents` 当前状态表与 `ai_upload_consent_events` 追加事件表中以同一事务写入 `Granted/Revoked`、作用域 `ai-analysis-copy`、版本 `ai-upload-consent/v1`、consent ID 和时间。`AiBatchAnalysisWorkflow.StartAsync` 入队前强制授权；scheduler 在预算预留前通过 `IAiUploadAdmissionPort.TryAcquireAsync` 执行与撤回共用 writer/事务的最终准入读取，再转为 `Uploading`/调用 provider。缺失/撤回均返回 `AI_UPLOAD_CONSENT_REQUIRED`/`AI_UPLOAD_CONSENT_REVOKED`，保持 ledger `Queued`，不消耗预算、不调用 provider、不改写未知结果；准入先提交后撤回不回滚已准入请求，事务不跨 HTTP。跨重启当前状态和事件历史可恢复；重新授权后 `ResumeAsync` 可继续原待处理请求。
 
-自动化证据：`AiConsentStoreTests` 覆盖授权/撤回跨重启、consent ID 保留、事件历史数量和缺失默认空；`AiAnalysisSchedulerTests` 覆盖缺失授权、撤回授权和重新授权恢复，验证 provider 调用数/预算请求数在 fail-closed 前为 0。完整 solution 回归及迁移验证见上文命令结果与 `docs/任务/AI-01纵向实现任务书.md` 实施记录。
+自动化证据：`AiConsentStoreTests` 覆盖授权/撤回跨重启、consent ID 保留、事件历史数量和缺失默认空，以及已撤回准入读取拒绝且不追加事件；`AiAnalysisSchedulerTests` 覆盖缺失授权、撤回授权、重新授权恢复、“首次读取 Granted 后撤回”的受控竞态和“准入先提交后撤回仍完成”的边界，验证 provider 调用数/预算请求数在 fail-closed 前为 0。完整 solution 回归及迁移验证见上文命令结果与 `docs/任务/AI-01纵向实现任务书.md` 实施记录。
 
 ## S5 衔接状态
 

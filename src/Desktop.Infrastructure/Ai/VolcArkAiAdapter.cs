@@ -80,7 +80,34 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             ValidateRequest(request, _options.MaxAssetsPerRequest);
             cancellationToken.ThrowIfCancellationRequested();
 
-            var credential = await _credentialSource.GetCredentialAsync(cancellationToken).ConfigureAwait(false);
+            string? credential;
+            try
+            {
+                credential = await _credentialSource.GetCredentialAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return Failure(AiProviderOutcome.Cancelled, "AI_REQUEST_CANCELLED", false, "分析已取消。", stopwatch);
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or InvalidDataException
+                    or InvalidOperationException
+                    or UnauthorizedAccessException
+                    or System.ComponentModel.Win32Exception)
+            {
+                // Credential Manager/storage failures happen before an HTTP
+                // request exists. Expose a stable actionable code instead of
+                // allowing a platform exception to escape to the scheduler
+                // and be misclassified as an in-flight unknown result. Never
+                // include the native error text, target name or credential.
+                return Failure(
+                    AiProviderOutcome.TerminalError,
+                    "AI_PROVIDER_CREDENTIAL_UNAVAILABLE",
+                    false,
+                    "无法读取本机 AI 凭据，请检查凭据管理器后重试。",
+                    stopwatch);
+            }
             if (string.IsNullOrWhiteSpace(credential))
             {
                 return Failure(
@@ -186,6 +213,14 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                 {
                     return Failure(AiProviderOutcome.AiResultUnknown, "AI_PROVIDER_NETWORK_UNKNOWN", false, "网络中断，供应商处理结果未知，请查询或人工确认后再继续。", stopwatch);
                 }
+                catch (IOException)
+                {
+                    // Some custom/native handlers surface a transport break as
+                    // IOException rather than HttpRequestException.  The HTTP
+                    // boundary has already been crossed, so never reinterpret
+                    // it as a missing local analysis copy or a safe retry.
+                    return Failure(AiProviderOutcome.AiResultUnknown, "AI_PROVIDER_NETWORK_UNKNOWN", false, "网络中断，供应商处理结果未知，请查询或人工确认后再继续。", stopwatch);
+                }
 
                 using (response)
                 {
@@ -208,6 +243,23 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                     catch (InvalidDataException)
                     {
                         return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_TOO_LARGE", false, "供应商响应过大，已安全拒绝。", stopwatch);
+                    }
+                    catch (HttpRequestException)
+                    {
+                        // Headers were received, but the body stream failed.
+                        // The provider may already have accepted the request,
+                        // so this is unresolved evidence rather than a safe
+                        // retry. Keep the same stable network code used for a
+                        // transport failure before headers.
+                        return Failure(AiProviderOutcome.AiResultUnknown, "AI_PROVIDER_NETWORK_UNKNOWN", false, "网络中断，供应商处理结果未知，请查询或人工确认后再继续。", stopwatch);
+                    }
+                    catch (IOException)
+                    {
+                        // A socket/file-stream read can surface as IOException
+                        // depending on the HttpMessageHandler. Once the HTTP
+                        // response exists, fail closed as unknown instead of
+                        // misclassifying it as an unavailable analysis copy.
+                        return Failure(AiProviderOutcome.AiResultUnknown, "AI_PROVIDER_NETWORK_UNKNOWN", false, "网络中断，供应商处理结果未知，请查询或人工确认后再继续。", stopwatch);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
@@ -474,6 +526,11 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             try
             {
                 result = AiAnalysisResultReferenceNormalizer.Normalize(request, result);
+            }
+            catch (InvalidDataException exception) when (AiAnalysisResultSemanticValidator.IsSemanticError(exception))
+            {
+                EmitDiagnostic(shape.Build("semantic"));
+                return Failure(AiProviderOutcome.TerminalError, "AI_PROVIDER_RESPONSE_INVALID", false, "供应商返回的分析结果结构不一致，已安全拒绝。", stopwatch);
             }
             catch (InvalidDataException)
             {

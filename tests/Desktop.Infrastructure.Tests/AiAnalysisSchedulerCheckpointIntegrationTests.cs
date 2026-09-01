@@ -1,3 +1,6 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using Desktop.Application.Ai;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
@@ -10,6 +13,218 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
 {
+    [Fact]
+    public async Task MissingAdapterCredentialPausesWithoutHttpAndResumeCompletesExactlyOnceAfterRepair()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ai01-credential-resume-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var options = new DesktopDataOptions(root);
+        var request = AdapterRequest();
+        var credential = new MutableCredentialSource();
+        using var handler = new CountingStubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(AdapterSuccessBody(request), Encoding.UTF8, "application/json")
+        });
+        using var httpClient = new HttpClient(handler);
+
+        try
+        {
+            await using var store = new SqliteDesktopStore(options);
+            await store.InitializeAsync();
+            var files = new AtomicFileStore(new LocalAppPathPolicy(root));
+            using var coordinator = new AiAnalysisCheckpointCoordinator(
+                store,
+                new AiAnalysisStateManifestStore(files),
+                TimeProvider.System);
+            using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+            var adapter = new VolcArkAiAdapter(
+                httpClient,
+                credential,
+                new InMemoryAnalysisCopySource(),
+                new JsonSchemaContractValidator());
+            using var scheduler = Scheduler(store, files, coordinator, queue, adapter);
+
+            Assert.Equal(
+                AiAnalysisWorkDisposition.Enqueued,
+                (await scheduler.EnqueueAsync(
+                    request,
+                    AiAnalysisWorkStage.ProductJointUnderstanding,
+                    CancellationToken.None)).Disposition);
+
+            var paused = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+            Assert.Equal(AiAnalysisWorkDisposition.Paused, paused.Disposition);
+            Assert.Equal("AI_PROVIDER_CREDENTIAL_MISSING", paused.ErrorCode);
+            Assert.Equal(AiAnalysisSchedulingControlState.Paused, scheduler.ControlState);
+            Assert.Equal(0, handler.CallCount);
+            Assert.Equal(0, scheduler.Budget.RequestCount);
+            Assert.Equal(
+                "Queued",
+                (await store.FindRequestByFingerprintAsync(
+                    AiAnalysisCacheKeyFactory.Create(request),
+                    CancellationToken.None))!.Status);
+            Assert.Equal(
+                AiAnalysisSessionStatus.Queued,
+                (await store.LoadSessionAsync("session-" + request.RequestId, CancellationToken.None))!.Status);
+            Assert.Equal(
+                0,
+                (await store.LoadSchedulingStateAsync("batch-batch_01", CancellationToken.None))!.Budget.RequestCount);
+
+            credential.Set("test-key");
+            await scheduler.ResumeAsync(CancellationToken.None);
+            var completed = await scheduler.ProcessNextAsync(CancellationToken.None);
+
+            Assert.Equal(AiAnalysisWorkDisposition.Completed, completed.Disposition);
+            Assert.Equal(AiAnalysisSchedulingControlState.Running, scheduler.ControlState);
+            Assert.Equal(1, handler.CallCount);
+            Assert.Equal(1, scheduler.Budget.RequestCount);
+            Assert.Equal(
+                "Validated",
+                (await store.FindRequestByFingerprintAsync(
+                    AiAnalysisCacheKeyFactory.Create(request),
+                    CancellationToken.None))!.Status);
+            Assert.Empty(
+                (await store.LoadSchedulingStateAsync("batch-batch_01", CancellationToken.None))!.PendingItems);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task CrashAfterCredentialReservationReleaseRestartsWithoutDoubleCountingOrSecondHttp()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ai01-credential-crash-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var options = new DesktopDataOptions(root);
+        var request = AdapterRequest();
+        var credential = new MutableCredentialSource();
+        using var handler = new CountingStubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(AdapterSuccessBody(request), Encoding.UTF8, "application/json")
+        });
+        using var httpClient = new HttpClient(handler);
+
+        try
+        {
+            await using (var store = new SqliteDesktopStore(options))
+            {
+                await store.InitializeAsync();
+                var files = new AtomicFileStore(new LocalAppPathPolicy(root));
+                using var coordinator = new AiAnalysisCheckpointCoordinator(
+                    store,
+                    new AiAnalysisStateManifestStore(files),
+                    TimeProvider.System);
+                var crashAfterRelease = new FailCredentialQueuedCheckpointPort(coordinator);
+                using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+                var adapter = new VolcArkAiAdapter(
+                    httpClient,
+                    credential,
+                    new InMemoryAnalysisCopySource(),
+                    new JsonSchemaContractValidator());
+                using var scheduler = new AiAnalysisScheduler(
+                    adapter,
+                    store,
+                    queue,
+                    new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)),
+                    stateStore: store,
+                    stateKey: "batch-batch_01",
+                    resultStore: new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator()),
+                    checkpointPort: crashAfterRelease);
+
+                Assert.Equal(
+                    AiAnalysisWorkDisposition.Enqueued,
+                    (await scheduler.EnqueueAsync(
+                        request,
+                        AiAnalysisWorkStage.ProductJointUnderstanding,
+                        CancellationToken.None)).Disposition);
+
+                var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    scheduler.ProcessNextAsync(CancellationToken.None));
+
+                Assert.Equal("TEST_CRASH_AFTER_CREDENTIAL_RELEASE", exception.Message);
+                Assert.Equal(0, handler.CallCount);
+                Assert.Equal(0, scheduler.Budget.RequestCount);
+                Assert.Equal(
+                    "RetryableError",
+                    (await store.FindRequestByFingerprintAsync(
+                        AiAnalysisCacheKeyFactory.Create(request),
+                        CancellationToken.None))!.Status);
+                var persisted = await store.LoadSchedulingStateAsync(
+                    "batch-batch_01",
+                    CancellationToken.None);
+                Assert.NotNull(persisted);
+                Assert.Equal(0, persisted!.Budget.RequestCount);
+                Assert.Equal(AiAnalysisSchedulingControlState.Paused, persisted.ControlState);
+                Assert.Equal("AI_PROVIDER_CREDENTIAL_MISSING", persisted.ControlReason);
+            }
+
+            credential.Set("test-key");
+            await using var reopened = new SqliteDesktopStore(options);
+            await reopened.InitializeAsync();
+            var reopenedFiles = new AtomicFileStore(new LocalAppPathPolicy(root));
+            using var reopenedCoordinator = new AiAnalysisCheckpointCoordinator(
+                reopened,
+                new AiAnalysisStateManifestStore(reopenedFiles),
+                TimeProvider.System);
+            var recoveredState = await reopened.LoadSchedulingStateAsync(
+                "batch-batch_01",
+                CancellationToken.None);
+            Assert.NotNull(recoveredState);
+            var recoveryStateStore = new RecoverySwitchingSchedulingStateStore(
+                reopened,
+                recoveredState! with
+                {
+                    Budget = recoveredState.Budget with { RequestCount = 1 },
+                    ControlState = AiAnalysisSchedulingControlState.Running,
+                    ControlReason = null
+                });
+            var recoveryCheckpoint = new RecoverySwitchingCheckpointPort(
+                reopenedCoordinator,
+                recoveryStateStore);
+            using var reopenedQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+            var reopenedAdapter = new VolcArkAiAdapter(
+                httpClient,
+                credential,
+                new InMemoryAnalysisCopySource(),
+                new JsonSchemaContractValidator());
+            using var reopenedScheduler = new AiAnalysisScheduler(
+                reopenedAdapter,
+                reopened,
+                reopenedQueue,
+                new AiAnalysisBudgetPolicy(4, 1000, 1000, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)),
+                stateStore: recoveryStateStore,
+                stateKey: "batch-batch_01",
+                resultStore: new FileAiAnalysisResultStore(reopenedFiles, new JsonSchemaContractValidator()),
+                checkpointPort: recoveryCheckpoint);
+
+            Assert.Equal(0, await reopenedScheduler.RestoreAsync(CancellationToken.None));
+            Assert.True(recoveryStateStore.LoadCount >= 2);
+            Assert.Equal(0, reopenedScheduler.Budget.RequestCount);
+            Assert.Equal(
+                "Queued",
+                (await reopened.FindRequestByFingerprintAsync(
+                    AiAnalysisCacheKeyFactory.Create(request),
+                    CancellationToken.None))!.Status);
+
+            await reopenedScheduler.ResumeAsync(CancellationToken.None);
+            var completed = await reopenedScheduler.ProcessNextAsync(CancellationToken.None);
+
+            Assert.Equal(AiAnalysisWorkDisposition.Completed, completed.Disposition);
+            Assert.Equal(1, handler.CallCount);
+            Assert.Equal(1, reopenedScheduler.Budget.RequestCount);
+            Assert.Empty(
+                (await reopened.LoadSchedulingStateAsync(
+                    "batch-batch_01",
+                    CancellationToken.None))!.PendingItems);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     [Fact]
     public async Task SelectionLockPersistsAcrossRefreshAndSchedulerRestart()
     {
@@ -486,6 +701,60 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
         [new AiAssetInputV1("asset_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copy_01")],
         [new AiRequirementInputV1("frame_01", "商品图", "居中", true)]);
 
+    private static AiAnalysisRequestV1 AdapterRequest()
+    {
+        var copyDigest = "sha256:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(new byte[] { 1, 2, 3 }))
+            .ToLowerInvariant();
+        return Request() with
+        {
+            CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV1,
+            Assets =
+            [
+                Request().Assets[0] with
+                {
+                    AnalysisCopyDigest = copyDigest,
+                    AnalysisCopyLength = 3,
+                    AnalysisCopyMimeType = "image/jpeg",
+                    AnalysisCopyCompressionProfile = AiAnalysisCopyProfiles.WicBoundedV1
+                }
+            ]
+        };
+    }
+
+    private static string AdapterSuccessBody(AiAnalysisRequestV1 request)
+    {
+        var result = new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            request.RequestId,
+            null,
+            request.ModelConfigVersion,
+            [new AiRequirementMatchV1("frame_01", "asset_01", 1, 0.98m, ["SUBJECT_COMPLETE"])],
+            [],
+            [],
+            null,
+            [],
+            new AiUsageSummaryV1("usage_" + request.RequestId, 3, 4, 1, null, null));
+        return JsonSerializer.Serialize(new
+        {
+            id = "resp_test_01",
+            status = "completed",
+            output = new[]
+            {
+                new
+                {
+                    type = "message",
+                    content = new[]
+                    {
+                        new { type = "output_text", text = JsonSerializer.Serialize(result) }
+                    }
+                }
+            },
+            usage = new { input_tokens = 3, output_tokens = 4, total_tokens = 7 }
+        });
+    }
+
     private static AiAnalysisRequestV1 Request(int index)
     {
         var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
@@ -536,6 +805,64 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
         }
     }
 
+    private sealed class MutableCredentialSource : IAiCredentialSource
+    {
+        private string? _credential;
+
+        public void Set(string credential) => Volatile.Write(ref _credential, credential);
+
+        public ValueTask<string?> GetCredentialAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Volatile.Read(ref _credential));
+        }
+    }
+
+    private sealed class InMemoryAnalysisCopySource : IAiAnalysisCopySource
+    {
+        private static readonly byte[] Content = [1, 2, 3];
+        private static readonly string Digest = "sha256:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(Content)).ToLowerInvariant();
+
+        public Task<AiAnalysisCopy> OpenAsync(
+            string analysisCopyReference,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new AiAnalysisCopy(
+                analysisCopyReference,
+                "image/jpeg",
+                10,
+                10,
+                Content,
+                Digest,
+                Content.Length,
+                AiAnalysisCopyProfiles.WicBoundedV1));
+        }
+
+        public Task ReleaseAsync(string analysisCopyReference, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class CountingStubHandler(
+        Func<CancellationToken, HttpResponseMessage> responder) : HttpMessageHandler
+    {
+        private int _callCount;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _callCount);
+            return Task.FromResult(responder(cancellationToken));
+        }
+    }
+
     private sealed class FailQueuedRetryCheckpointPort(IAiAnalysisCheckpointPort inner) : IAiAnalysisCheckpointPort
     {
         private int _failed;
@@ -559,6 +886,80 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
         public Task<AiAnalysisCheckpointResult> RecoverAsync(
             string batchId,
             CancellationToken cancellationToken) => inner.RecoverAsync(batchId, cancellationToken);
+    }
+
+    private sealed class FailCredentialQueuedCheckpointPort(IAiAnalysisCheckpointPort inner)
+        : IAiAnalysisCheckpointPort
+    {
+        private int _failed;
+
+        public Task<AiAnalysisCheckpointResult> CommitAsync(
+            AiAnalysisCheckpointCommand command,
+            CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref _failed) == 0
+                && command.SchedulerState?.ControlReason == "AI_PROVIDER_CREDENTIAL_MISSING"
+                && command.Graphs.Any(graph =>
+                    graph.ExpectedRequestStatus == "RetryableError"
+                    && graph.Request.Status == "Queued")
+                && Interlocked.Exchange(ref _failed, 1) == 0)
+            {
+                throw new InvalidOperationException("TEST_CRASH_AFTER_CREDENTIAL_RELEASE");
+            }
+
+            return inner.CommitAsync(command, cancellationToken);
+        }
+
+        public Task<AiAnalysisCheckpointResult> RecoverAsync(
+            string batchId,
+            CancellationToken cancellationToken) => inner.RecoverAsync(batchId, cancellationToken);
+    }
+
+    private sealed class RecoverySwitchingSchedulingStateStore(
+        IAiAnalysisSchedulingStateStore inner,
+        AiAnalysisSchedulingState staleState) : IAiAnalysisSchedulingStateStore
+    {
+        private int _useRecovered;
+        private int _loadCount;
+
+        public int LoadCount => Volatile.Read(ref _loadCount);
+
+        public void UseRecoveredState() => Volatile.Write(ref _useRecovered, 1);
+
+        public Task<AiAnalysisSchedulingState?> LoadSchedulingStateAsync(
+            string stateKey,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _loadCount);
+            return Volatile.Read(ref _useRecovered) == 0
+                ? Task.FromResult<AiAnalysisSchedulingState?>(staleState)
+                : inner.LoadSchedulingStateAsync(stateKey, cancellationToken);
+        }
+
+        public Task SaveSchedulingStateAsync(
+            string stateKey,
+            AiAnalysisSchedulingState state,
+            CancellationToken cancellationToken) =>
+            inner.SaveSchedulingStateAsync(stateKey, state, cancellationToken);
+    }
+
+    private sealed class RecoverySwitchingCheckpointPort(
+        IAiAnalysisCheckpointPort inner,
+        RecoverySwitchingSchedulingStateStore stateStore) : IAiAnalysisCheckpointPort
+    {
+        public Task<AiAnalysisCheckpointResult> CommitAsync(
+            AiAnalysisCheckpointCommand command,
+            CancellationToken cancellationToken) => inner.CommitAsync(command, cancellationToken);
+
+        public async Task<AiAnalysisCheckpointResult> RecoverAsync(
+            string batchId,
+            CancellationToken cancellationToken)
+        {
+            var result = await inner.RecoverAsync(batchId, cancellationToken).ConfigureAwait(false);
+            stateStore.UseRecoveredState();
+            return result;
+        }
     }
 
     private sealed class BlockingProvider(int expectedCalls) : IAiServicePort, IDisposable

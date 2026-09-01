@@ -353,11 +353,63 @@ public sealed class VolcArkAiAdapterTests
         Assert.Equal("AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", execution.Error!.Code);
     }
 
+    [Fact]
+    public async Task RejectsSemanticResultWithDuplicateRequirementRank()
+    {
+        var request = RequestWithTwoAssets();
+        var result = StructuredResult(
+            request.RequestId,
+            request.ModelConfigVersion,
+            [
+                new AiRequirementMatchV1("frame_01", "asset_01", 1, 0.98m, ["front"]),
+                new AiRequirementMatchV1("frame_01", "asset_02", 1, 0.87m, ["alternate"])
+            ]);
+
+        var (execution, diagnostic) = await ExecuteStructuredResultAsync(result, request);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_INVALID", execution.Error!.Code);
+        Assert.Equal("semantic", diagnostic!.FailureStage);
+    }
+
+    [Fact]
+    public async Task RejectsSemanticResultWithInvalidSubjectGeometry()
+    {
+        var result = StructuredResult(
+            geometry: [new AiSubjectGeometryV1("asset_01", 0.5m, 0.2m, 0.5m, 0.9m, 0.9m)]);
+
+        var (execution, diagnostic) = await ExecuteStructuredResultAsync(result);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_INVALID", execution.Error!.Code);
+        Assert.Equal("semantic", diagnostic!.FailureStage);
+    }
+
+    [Fact]
+    public async Task RejectsSemanticResultWithRaggedSizeTable()
+    {
+        var result = StructuredResult(sizeTable: new AiSizeTableCandidateV1(
+            "asset_01",
+            0.9m,
+            ["尺码", "胸围"],
+            [["M"]]));
+
+        var (execution, diagnostic) = await ExecuteStructuredResultAsync(result);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_RESPONSE_INVALID", execution.Error!.Code);
+        Assert.Equal("semantic", diagnostic!.FailureStage);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, AiProviderOutcome.TerminalError, "AI_PROVIDER_BAD_REQUEST")]
     [InlineData(HttpStatusCode.Unauthorized, AiProviderOutcome.TerminalError, "AI_PROVIDER_AUTH_FAILED")]
     [InlineData((HttpStatusCode)429, AiProviderOutcome.RetryableError, "AI_PROVIDER_RATE_LIMITED")]
+    [InlineData(HttpStatusCode.InternalServerError, AiProviderOutcome.RetryableError, "AI_PROVIDER_TEMPORARY_FAILURE")]
     [InlineData(HttpStatusCode.BadGateway, AiProviderOutcome.RetryableError, "AI_PROVIDER_TEMPORARY_FAILURE")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, AiProviderOutcome.RetryableError, "AI_PROVIDER_TEMPORARY_FAILURE")]
+    [InlineData(HttpStatusCode.GatewayTimeout, AiProviderOutcome.RetryableError, "AI_PROVIDER_TEMPORARY_FAILURE")]
+    [InlineData((HttpStatusCode)599, AiProviderOutcome.RetryableError, "AI_PROVIDER_TEMPORARY_FAILURE")]
     public async Task MapsHttpFailuresToStableOutcomes(
         HttpStatusCode statusCode,
         AiProviderOutcome outcome,
@@ -374,6 +426,58 @@ public sealed class VolcArkAiAdapterTests
     }
 
     [Fact]
+    public async Task TransportNetworkFailureIsUnknownAndNeverMarkedRetryable()
+    {
+        var handler = new StubHandler(
+            (Func<CancellationToken, HttpResponseMessage>)(_ =>
+                throw new HttpRequestException("simulated offline transport")));
+        var adapter = CreateAdapter(handler, new FakeCopySource());
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        // The request crossed the HTTP boundary, so a dropped connection may
+        // have been accepted by the provider.  Keep it unresolved and never
+        // let the scheduler treat it as a safe retry.
+        Assert.Equal(AiProviderOutcome.AiResultUnknown, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_NETWORK_UNKNOWN", execution.Error!.Code);
+        Assert.False(execution.Error.Retryable);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task NativeTransportIOExceptionIsUnknownAndNotMisclassifiedAsLocalCopyFailure()
+    {
+        var handler = new StubHandler(
+            (Func<CancellationToken, HttpResponseMessage>)(_ =>
+                throw new IOException("simulated native transport break")));
+        var adapter = CreateAdapter(handler, new FakeCopySource());
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.AiResultUnknown, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_NETWORK_UNKNOWN", execution.Error!.Code);
+        Assert.False(execution.Error.Retryable);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task ResponseBodyTransportFailureIsUnknownAndNeverRetried()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ThrowingReadContent()
+        });
+        var adapter = CreateAdapter(handler, new FakeCopySource());
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.AiResultUnknown, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_NETWORK_UNKNOWN", execution.Error!.Code);
+        Assert.False(execution.Error.Retryable);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
     public async Task MissingCredentialDoesNotSendRequest()
     {
         var handler = new StubHandler((Func<CancellationToken, HttpResponseMessage>)(_ =>
@@ -385,6 +489,26 @@ public sealed class VolcArkAiAdapterTests
         Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
         Assert.Equal("AI_PROVIDER_CREDENTIAL_MISSING", execution.Error!.Code);
         Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task CredentialStoreFailureIsStableAndDoesNotSendRequest()
+    {
+        var handler = new StubHandler((Func<CancellationToken, HttpResponseMessage>)(_ =>
+            throw new InvalidOperationException("should not send")));
+        var adapter = new VolcArkAiAdapter(
+            new HttpClient(handler),
+            new ThrowingCredentialSource(),
+            new FakeCopySource(),
+            new JsonSchemaContractValidator());
+
+        var execution = await adapter.AnalyzeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AiProviderOutcome.TerminalError, execution.Outcome);
+        Assert.Equal("AI_PROVIDER_CREDENTIAL_UNAVAILABLE", execution.Error!.Code);
+        Assert.False(execution.Error.Retryable);
+        Assert.Equal(0, handler.CallCount);
+        Assert.DoesNotContain("credential", execution.Error.UserAction, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -828,6 +952,59 @@ public sealed class VolcArkAiAdapterTests
             compressionProfile)],
         [new AiRequirementInputV1("frame_01", "主图", "居中", true)]);
 
+    private static AiAnalysisRequestV1 RequestWithTwoAssets()
+    {
+        var request = Request();
+        return request with
+        {
+            Assets =
+            [
+                request.Assets[0],
+                request.Assets[0] with
+                {
+                    AssetId = "asset_02",
+                    ContentHash = "sha256:" + new string('c', 64),
+                    AnalysisCopyReference = "copy_02"
+                }
+            ]
+        };
+    }
+
+    private static AiAnalysisResultV1 StructuredResult(
+        string requestId = "request_01",
+        string modelConfigVersion = "model/proposed",
+        IReadOnlyList<AiRequirementMatchV1>? matches = null,
+        IReadOnlyList<AiSubjectGeometryV1>? geometry = null,
+        AiSizeTableCandidateV1? sizeTable = null) => new(
+        AiAnalysisProtocol.ResultSchemaVersion,
+        "result",
+        requestId,
+        null,
+        modelConfigVersion,
+        matches ?? [],
+        [],
+        geometry ?? [],
+        sizeTable,
+        [],
+        new AiUsageSummaryV1("usage_" + requestId, 3, 4, 1, null, null));
+
+    private static async Task<(AiAnalysisExecutionResult Execution, AiResponseShapeDiagnostic? Diagnostic)> ExecuteStructuredResultAsync(
+        AiAnalysisResultV1 result,
+        AiAnalysisRequestV1? request = null)
+    {
+        AiResponseShapeDiagnostic? diagnostic = null;
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(SuccessBody(result), Encoding.UTF8, "application/json")
+        });
+        var adapter = CreateAdapter(
+            handler,
+            new FakeCopySource(),
+            options: new VolcArkAiOptions(ResponseShapeDiagnosticSink: value => diagnostic = value));
+        var execution = await adapter.AnalyzeAsync(request ?? Request(), CancellationToken.None);
+        return (execution, diagnostic);
+    }
+
     private static string SuccessBody()
     {
         var result = new AiAnalysisResultV1(
@@ -961,5 +1138,29 @@ public sealed class VolcArkAiAdapterTests
     {
         protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context) => await stream.WriteAsync(new byte[length]);
         protected override bool TryComputeLength(out long lengthValue) { lengthValue = -1; return false; }
+    }
+
+    private sealed class ThrowingCredentialSource : IAiCredentialSource
+    {
+        public ValueTask<string?> GetCredentialAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new IOException("simulated credential store failure");
+        }
+    }
+
+    private sealed class ThrowingReadContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            throw new IOException("simulated response stream failure");
+
+        protected override bool TryComputeLength(out long lengthValue)
+        {
+            lengthValue = -1;
+            return false;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromException<Stream>(new IOException("simulated response stream failure"));
     }
 }

@@ -40,6 +40,15 @@ public sealed class AiRenderPlanFactoryTests
         Assert.Equal(page.PlanDigest, root.GetProperty("plan_digest").GetString());
         Assert.Equal("asset_front", root.GetProperty("targets")[0]
             .GetProperty("asset_resource_id").GetString());
+        var source = root.GetProperty("resources").EnumerateArray().Single(resource =>
+            string.Equals(
+                resource.GetProperty("resource_id").GetString(),
+                "asset_front",
+                StringComparison.Ordinal));
+        Assert.Equal("high_resolution_render_source", source.GetProperty("role").GetString());
+        Assert.Equal(new string('b', 64), source.GetProperty("sha256").GetString());
+        Assert.Equal(128, source.GetProperty("byte_length").GetInt64());
+        Assert.Equal("image/jpeg", source.GetProperty("media_type").GetString());
         Assert.DoesNotContain(fixture.Batch.InputRoot, page.RenderPlanJson!, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("analysis-copy", page.RenderPlanJson!, StringComparison.OrdinalIgnoreCase);
         Assert.True(new RenderPlanValidator(new JsonSchemaContractValidator())
@@ -114,6 +123,93 @@ public sealed class AiRenderPlanFactoryTests
     }
 
     [Theory]
+    [InlineData("group")]
+    [InlineData("revision")]
+    [InlineData("length")]
+    [InlineData("file-digest")]
+    [InlineData("structure")]
+    public async Task TemplateResourceMustCloseOverFrozenPageAndInspection(string mutation)
+    {
+        var fixture = Fixture();
+        var resource = mutation switch
+        {
+            "group" => fixture.Resource with { GroupId = "group_other" },
+            "revision" => fixture.Resource with { DraftId = "revision_other" },
+            "length" => fixture.Resource with
+            {
+                Inspection = fixture.Resource.Inspection with { SizeBytes = fixture.Resource.Length + 1 }
+            },
+            "file-digest" => fixture.Resource with
+            {
+                Inspection = fixture.Resource.Inspection with { FileSha256 = new string('f', 64) }
+            },
+            "structure" => fixture.Resource with
+            {
+                StructureSignature = "sha256:" + new string('f', 64)
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation))
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Factory(new TestAvailability(true))
+            .PrepareAsync(new AiRenderPlanPreparationRequest(
+                fixture.Batch,
+                fixture.Revision,
+                [resource],
+                [new AiRenderStyleInput("style_01", [Selection()])],
+                fixture.Now), CancellationToken.None));
+
+        Assert.Equal("AI_RENDER_TEMPLATE_RESOURCE_OWNERSHIP_MISMATCH", error.Message);
+    }
+
+    [Fact]
+    public async Task DynamicSizeCandidateMustReferenceAnAssetOwnedByTheStyle()
+    {
+        var fixture = DynamicSizeFixture();
+        var foreignCandidate = new AiSizeTableCandidateV1(
+            "asset_foreign",
+            0.99m,
+            ["尺码", "胸围"],
+            [["M", "96"]]);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Factory(new TestAvailability(true))
+            .PrepareAsync(new AiRenderPlanPreparationRequest(
+                fixture.Batch,
+                fixture.Revision,
+                [fixture.Resource],
+                [new AiRenderStyleInput("style_01", [], foreignCandidate)],
+                fixture.Now), CancellationToken.None));
+
+        Assert.Equal("AI_RENDER_SIZE_TABLE_SOURCE_MISMATCH", error.Message);
+    }
+
+    [Fact]
+    public async Task ValidDynamicSizeCandidateStopsBeforeSizeRasterizerAndPhotoshop()
+    {
+        var fixture = DynamicSizeFixture();
+        var availability = new TestAvailability(true);
+        var candidate = new AiSizeTableCandidateV1(
+            "asset_front",
+            0.99m,
+            ["尺码", "胸围"],
+            [["M", "96"]]);
+
+        var result = await Factory(availability).PrepareAsync(new AiRenderPlanPreparationRequest(
+            fixture.Batch,
+            fixture.Revision,
+            [fixture.Resource],
+            [new AiRenderStyleInput("style_01", [], candidate)],
+            fixture.Now), CancellationToken.None);
+
+        Assert.Equal(AiRenderPreparationStatus.UserActionRequired, result.Status);
+        Assert.Equal("AI_RENDER_NO_EXECUTABLE_PAGE", result.ReasonCode);
+        var page = Assert.Single(result.Pages);
+        Assert.Equal(AiRenderPagePreparationStatus.AwaitingSizeTableRasterization, page.Status);
+        Assert.Equal("AI_SIZE_TABLE_RASTERIZER_PENDING", page.ReasonCode);
+        Assert.False(page.HasPlan);
+        Assert.Equal(0, availability.Calls);
+    }
+
+    [Theory]
     [InlineData("digest")]
     [InlineData("orphan-resource")]
     [InlineData("wrong-role")]
@@ -181,7 +277,9 @@ public sealed class AiRenderPlanFactoryTests
         new AiSubjectGeometryV1("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.95m),
         1);
 
-    private static RenderFixture Fixture()
+    private static RenderFixture DynamicSizeFixture() => Fixture(dynamicSize: true);
+
+    private static RenderFixture Fixture(bool dynamicSize = false)
     {
         var now = new DateTimeOffset(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
         var page = TemplatePage.Create(
@@ -189,7 +287,9 @@ public sealed class AiRenderPlanFactoryTests
             "revision_01",
             0,
             "详情页",
-            TemplatePageContentType.NormalComposition,
+            dynamicSize
+                ? TemplatePageContentType.DynamicSizeTable
+                : TemplatePageContentType.NormalComposition,
             TemplateGenerationMode.OncePerProduct,
             null,
             true,
@@ -211,13 +311,14 @@ public sealed class AiRenderPlanFactoryTests
             [],
             SelectionRequirement.Create("商品主体清晰完整，构图适合当前图片框。"),
             LayoutIntent.Create("subject_complete", 1, 0, 0, TemplateRect.Create(0, 0, 790, 1252)));
+        IReadOnlyList<FrameBinding> bindings = dynamicSize ? [] : [binding];
         var revision = Commit(TemplateRevision.CreateDraft(
             "revision_01",
             "group_01",
             1,
             now,
             [page],
-            [binding]));
+            bindings));
         var snapshot = BatchTemplateSnapshot.Create(
             "snapshot_01",
             "batch_01",

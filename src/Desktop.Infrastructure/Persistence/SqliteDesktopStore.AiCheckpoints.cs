@@ -1104,7 +1104,9 @@ public sealed partial class SqliteDesktopStore
         }
 
         var next = command.SchedulerState;
-        if (next.Budget.RequestCount < previous.Budget.RequestCount
+        var requestReservationReleased = next.Budget.RequestCount < previous.Budget.RequestCount
+            && IsCredentialPreflightReservationRelease(command, previous, next);
+        if ((next.Budget.RequestCount < previous.Budget.RequestCount && !requestReservationReleased)
             || next.Budget.InputTokens < previous.Budget.InputTokens
             || next.Budget.OutputTokens < previous.Budget.OutputTokens
             || next.Budget.EstimatedCost < previous.Budget.EstimatedCost)
@@ -1156,5 +1158,61 @@ public sealed partial class SqliteDesktopStore
                 throw new InvalidOperationException("AI_CHECKPOINT_PRIOR_SCHEDULER_PENDING_OMITTED");
             }
         }
+    }
+
+    private static bool IsCredentialPreflightReservationRelease(
+        AiAnalysisCheckpointCommand command,
+        AiAnalysisSchedulingState previous,
+        AiAnalysisSchedulingState next)
+    {
+        // RequestCount normally remains monotonic because crossing the HTTP
+        // boundary may be billable even when no result is available.  The
+        // only exception is the adapter's three credential checks: all are
+        // guaranteed to return before an HttpRequestMessage is constructed.
+        // The scheduler commits Analysing -> RetryableError and this one-count
+        // release in the same checkpoint so a crash before the subsequent
+        // ordinary RetryableError -> Queued hop still restores budget zero.
+        // The exception cannot be reused by 401 responses, unknown outcomes
+        // or generic terminal failures.
+        if (previous.Budget.RequestCount != next.Budget.RequestCount + 1
+            || previous.Budget.InputTokens != next.Budget.InputTokens
+            || previous.Budget.OutputTokens != next.Budget.OutputTokens
+            || previous.Budget.EstimatedCost != next.Budget.EstimatedCost
+            || previous.Budget.WarningReached != next.Budget.WarningReached
+            || previous.Budget.HardStopped != next.Budget.HardStopped
+            || previous.ControlState != AiAnalysisSchedulingControlState.Running
+            || previous.ControlReason is not null
+            || next.ControlState != AiAnalysisSchedulingControlState.Paused
+            || next.ControlReason is not (
+                "AI_PROVIDER_CREDENTIAL_MISSING"
+                or "AI_PROVIDER_CREDENTIAL_UNAVAILABLE"
+                or "AI_PROVIDER_CREDENTIAL_INVALID"))
+        {
+            return false;
+        }
+
+        var releasedGraphs = command.Graphs.Where(graph =>
+                graph.ExpectedRequestStatus == AiAnalysisSessionStatus.Analysing.ToString()
+                && graph.Request.Status == AiAnalysisSessionStatus.RetryableError.ToString()
+                && graph.ExpectedSessionStatus == AiAnalysisSessionStatus.Analysing
+                && graph.Session.Status == AiAnalysisSessionStatus.RetryableError
+                && graph.Usage is null
+                && graph.Cache is null)
+            .ToArray();
+        if (releasedGraphs.Length != 1)
+        {
+            return false;
+        }
+
+        var releasedRequestId = releasedGraphs[0].Request.RequestId;
+        return previous.PendingItems.Any(item =>
+                string.Equals(item.Request.RequestId, releasedRequestId, StringComparison.Ordinal))
+            && next.PendingItems.Any(item =>
+                string.Equals(item.Request.RequestId, releasedRequestId, StringComparison.Ordinal))
+            && command.Graphs.Where(graph =>
+                    !string.Equals(graph.Request.RequestId, releasedRequestId, StringComparison.Ordinal))
+                .All(graph =>
+                    string.Equals(graph.ExpectedRequestStatus, graph.Request.Status, StringComparison.Ordinal)
+                    && graph.ExpectedSessionStatus == graph.Session.Status);
     }
 }

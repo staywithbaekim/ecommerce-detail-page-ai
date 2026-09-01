@@ -28,6 +28,7 @@ public sealed class FileAiAnalysisResultStore : IAiAnalysisResultStore
         var json = JsonSerializer.Serialize(result, JsonOptions);
         var validation = _validator.Validate(ContractDocumentKind.AiAnalysis, json);
         if (!validation.IsValid) throw new InvalidDataException("AI_RESULT_CONTRACT_INVALID");
+        AiAnalysisResultSemanticValidator.Validate(result);
         await _files.WriteAtomicallyAsync(resultReference + ".json", JsonSerializer.SerializeToUtf8Bytes(result, JsonOptions), cancellationToken).ConfigureAwait(false);
     }
 
@@ -42,6 +43,7 @@ public sealed class FileAiAnalysisResultStore : IAiAnalysisResultStore
                 ?? throw new JsonException();
             if (!_validator.Validate(ContractDocumentKind.AiAnalysis, JsonSerializer.Serialize(json, JsonOptions)).IsValid)
                 throw new InvalidDataException("AI_RESULT_CONTRACT_INVALID");
+            AiAnalysisResultSemanticValidator.Validate(json);
             if (!string.Equals(resultReference, "results/" + json.RequestId, StringComparison.Ordinal))
                 throw new InvalidDataException("AI_RESULT_REQUEST_REFERENCE_MISMATCH");
             return json;

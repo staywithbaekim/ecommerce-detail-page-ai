@@ -184,7 +184,7 @@ public sealed record AiUploadConsentRecord(
 /// V1 consent boundary. Implementations are local and durable; a future
 /// gateway may replace the producer without changing AI request contracts.
 /// </summary>
-public interface IConsentPort
+public interface IConsentPort : IAiUploadAdmissionPort
 {
     Task<AiUploadConsentRecord?> GetConsentAsync(
         string scope,
@@ -196,6 +196,22 @@ public interface IConsentPort
         CancellationToken cancellationToken);
 
     Task<AiUploadConsentRecord> RevokeAsync(
+        string scope,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Atomic, provider-neutral request-admission read. Implementations must
+/// linearize this read with <see cref="IConsentPort.RevokeAsync"/> and must
+/// not perform network I/O. A granted record is the point at which a request
+/// is admitted to the local scheduler; a revocation committed after that
+/// point does not retroactively cancel that admission. Every consent producer
+/// implements this operation; there is no legacy read-only fallback at the
+/// scheduler boundary.
+/// </summary>
+public interface IAiUploadAdmissionPort
+{
+    Task<AiUploadConsentRecord?> TryAcquireAsync(
         string scope,
         CancellationToken cancellationToken);
 }

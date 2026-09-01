@@ -49,14 +49,55 @@ public sealed partial class SqliteDesktopStore : IConsentPort
         CancellationToken cancellationToken)
     {
         ValidateConsentScope(scope);
-        var existing = await GetConsentAsync(scope, cancellationToken).ConfigureAwait(false);
-        var record = new AiUploadConsentRecord(
-            scope,
-            existing?.ConsentId ?? $"consent-{Guid.NewGuid():N}",
-            AiUploadConsentState.Revoked,
-            existing?.PolicyVersion ?? AiConsentPolicy.Version,
-            DateTimeOffset.UtcNow);
-        return await SaveConsentAsync(record, cancellationToken).ConfigureAwait(false);
+        return await _writer.ExecuteAsync(
+            async (connection, token) =>
+            {
+                await using var transaction = connection.BeginTransaction(
+                    System.Data.IsolationLevel.Serializable,
+                    deferred: false);
+                var existing = await ReadConsentAsync(connection, transaction, scope, token)
+                    .ConfigureAwait(false);
+                var record = new AiUploadConsentRecord(
+                    scope,
+                    existing?.ConsentId ?? $"consent-{Guid.NewGuid():N}",
+                    AiUploadConsentState.Revoked,
+                    existing?.PolicyVersion ?? AiConsentPolicy.Version,
+                    DateTimeOffset.UtcNow);
+                await SaveConsentInTransactionAsync(connection, transaction, record, token)
+                    .ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return record;
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Performs the final local authorization read at the request admission
+    /// boundary. The operation is serialized by the same SQLite writer and
+    /// transaction used by <see cref="RevokeAsync"/>; no provider or network
+    /// code runs while this transaction is active.
+    /// </summary>
+    public Task<AiUploadConsentRecord?> TryAcquireAsync(
+        string scope,
+        CancellationToken cancellationToken)
+    {
+        ValidateConsentScope(scope);
+        return _writer.ExecuteAsync(
+            async (connection, token) =>
+            {
+                // `deferred: false` emits BEGIN IMMEDIATE. Although this
+                // operation only reads the row, taking the writer lock here
+                // makes the snapshot linearizable with RevokeAsync (which
+                // uses the same transaction shape) across store instances.
+                await using var transaction = connection.BeginTransaction(
+                    System.Data.IsolationLevel.Serializable,
+                    deferred: false);
+                var record = await ReadConsentAsync(connection, transaction, scope, token)
+                    .ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return record;
+            },
+            cancellationToken);
     }
 
     private Task<AiUploadConsentRecord> SaveConsentAsync(
@@ -68,40 +109,69 @@ public sealed partial class SqliteDesktopStore : IConsentPort
                 await using var transaction = (SqliteTransaction)await connection
                     .BeginTransactionAsync(token)
                     .ConfigureAwait(false);
-                await using (var current = connection.CreateCommand())
-                {
-                    current.Transaction = transaction;
-                    current.CommandText = """
-                        INSERT INTO ai_upload_consents(scope, consent_id, state, policy_version, changed_at)
-                        VALUES($scope, $consent_id, $state, $policy_version, $changed_at)
-                        ON CONFLICT(scope) DO UPDATE SET
-                            consent_id = excluded.consent_id,
-                            state = excluded.state,
-                            policy_version = excluded.policy_version,
-                            changed_at = excluded.changed_at;
-                        """;
-                    AddConsentParameters(current, record);
-                    await current.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-                }
-
-                await using (var history = connection.CreateCommand())
-                {
-                    history.Transaction = transaction;
-                    history.CommandText = """
-                        INSERT INTO ai_upload_consent_events(
-                            event_id, scope, consent_id, state, policy_version, occurred_at)
-                        VALUES($event_id, $scope, $consent_id, $state, $policy_version, $occurred_at);
-                        """;
-                    history.Parameters.AddWithValue("$event_id", $"consent-event-{Guid.NewGuid():N}");
-                    AddConsentParameters(history, record, includeScope: true, includeState: true, includeChangedAt: false);
-                    history.Parameters.AddWithValue("$occurred_at", record.ChangedAt.ToString("O"));
-                    await history.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-                }
-
+                await SaveConsentInTransactionAsync(connection, transaction, record, token)
+                    .ConfigureAwait(false);
                 await transaction.CommitAsync(token).ConfigureAwait(false);
                 return record;
             },
             cancellationToken);
+
+    private static async Task SaveConsentInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        AiUploadConsentRecord record,
+        CancellationToken cancellationToken)
+    {
+        await using (var current = connection.CreateCommand())
+        {
+            current.Transaction = transaction;
+            current.CommandText = """
+                INSERT INTO ai_upload_consents(scope, consent_id, state, policy_version, changed_at)
+                VALUES($scope, $consent_id, $state, $policy_version, $changed_at)
+                ON CONFLICT(scope) DO UPDATE SET
+                    consent_id = excluded.consent_id,
+                    state = excluded.state,
+                    policy_version = excluded.policy_version,
+                    changed_at = excluded.changed_at;
+                """;
+            AddConsentParameters(current, record);
+            await current.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using (var history = connection.CreateCommand())
+        {
+            history.Transaction = transaction;
+            history.CommandText = """
+                INSERT INTO ai_upload_consent_events(
+                    event_id, scope, consent_id, state, policy_version, occurred_at)
+                VALUES($event_id, $scope, $consent_id, $state, $policy_version, $occurred_at);
+                """;
+            history.Parameters.AddWithValue("$event_id", $"consent-event-{Guid.NewGuid():N}");
+            AddConsentParameters(history, record, includeScope: true, includeState: true, includeChangedAt: false);
+            history.Parameters.AddWithValue("$occurred_at", record.ChangedAt.ToString("O"));
+            await history.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<AiUploadConsentRecord?> ReadConsentAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string scope,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT scope, consent_id, state, policy_version, changed_at
+            FROM ai_upload_consents
+            WHERE scope = $scope;
+            """;
+        command.Parameters.AddWithValue("$scope", scope);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadConsent(reader)
+            : null;
+    }
 
     private static AiUploadConsentRecord ReadConsent(SqliteDataReader reader)
     {
