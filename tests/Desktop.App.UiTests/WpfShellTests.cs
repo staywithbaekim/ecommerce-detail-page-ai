@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Desktop.Application.Ai;
+using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
 using Xunit.Abstractions;
 
@@ -18,6 +19,222 @@ public sealed class WpfShellTests
     public WpfShellTests(ITestOutputHelper output)
     {
         _output = output;
+    }
+
+    [Fact]
+    public void SizeTableEditorPreservesLegalSymbolsAndBlocksTrueEmptyCells()
+    {
+        var document = new SizeTableEditorDocument(
+            "size_01",
+            "batch_01",
+            "style_01",
+            "page_01",
+            "asset_size",
+            "sha256:" + new string('a', 64),
+            0,
+            SizeTableEditorStatus.Valid,
+            [new("col_001", "尺码"), new("col_002", "袖长")],
+            [new("row_001", ["L", "/"]), new("row_002", ["XL", "/"])]);
+        var editor = new SizeTableEditorState();
+        editor.Load(document, sourcePreviewPath: null);
+
+        Assert.False(editor.CanSave);
+        editor.Rows[0].Cells[1].SourceText = "";
+        Assert.False(editor.CanSave);
+        Assert.Contains("不能保存", editor.StatusMessage, StringComparison.Ordinal);
+        editor.Rows[0].Cells[1].SourceText = "\\";
+        Assert.True(editor.CanSave);
+        Assert.True(editor.TryBuild(out var edited));
+        Assert.Equal("\\", edited.Rows[0].Cells[1]);
+
+        editor.AddColumn();
+        Assert.False(editor.CanSave);
+        foreach (var row in editor.Rows) row.Cells[^1].SourceText = "-";
+        Assert.True(editor.CanSave);
+    }
+
+    [Fact]
+    public void DynamicSizeTableEditorRendersSourceGridAndTemplatePreviewAtWideAndNarrowSizes()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+
+            var samplePath = Path.GetFullPath(Path.Combine(
+                AppContext.BaseDirectory,
+                "..", "..", "..", "..", "..", "..",
+                "需求样本", "SIZE-01金标", "真实来源",
+                "size-real-a-577fa4d19f919a7a.jpg"));
+            var sizeWorkflow = new RecordingSizeTableEditingWorkflow(
+                new SizeTableEditorDocument(
+                    "size_gold_a",
+                    "batch_gold_a",
+                    "style_gold_a",
+                    "page_size",
+                    "asset_size_gold_a",
+                    "sha256:" + new string('a', 64),
+                    0,
+                    SizeTableEditorStatus.Valid,
+                    [
+                        new("col_001", "尺码"),
+                        new("col_002", "衣长"),
+                        new("col_003", "胸围"),
+                        new("col_004", "肩宽"),
+                        new("col_005", "袖长")
+                    ],
+                    [
+                        new("row_001", ["L", "61", "102", "40", "/"]),
+                        new("row_002", ["XL", "62", "107", "41", "/"]),
+                        new("row_003", ["2XL", "63", "112", "42", "/"]),
+                        new("row_004", ["3XL", "64", "117", "43", "/"]),
+                        new("row_005", ["4XL", "65", "122", "44", "/"]),
+                        new("row_006", ["5XL", "66", "127", "45", "/"])
+                    ]));
+            var aiWorkflow = new RecordingAiBatchAnalysisWorkflow
+            {
+                RenderPreparation = new AiRenderPlanPreparation(
+                    "batch_gold_a",
+                    AiRenderPreparationStatus.WaitingForPhotoshop,
+                    "PHOTOSHOP_FORMAL_ADAPTER_NOT_AVAILABLE",
+                    [new AiRenderPagePreparation(
+                        "style_gold_a",
+                        "page_size",
+                        AiRenderPagePreparationStatus.ReadyToRender,
+                        "AI_SIZE_TABLE_VALID",
+                        "{\"page_type\":\"dynamic_size_table\"}",
+                        "sha256:" + new string('b', 64))])
+            };
+            var projection = new AiBatchAnalysisProjection(
+                "batch_gold_a",
+                AiBatchUiStatus.Ready,
+                "分析完成",
+                "开始生成",
+                1,
+                1,
+                1,
+                1,
+                [new AiStyleAnalysisProjection(
+                    "batch_gold_a",
+                    "style_gold_a",
+                    "真实金标款式 A",
+                    AiStyleUiStatus.Ready,
+                    "可生成",
+                    [new AiPageAnalysisProjection(
+                        "batch_gold_a",
+                        "style_gold_a",
+                        "page_size",
+                        "动态尺码页",
+                        AiPageUiStatus.Ready,
+                        "可生成",
+                        "开始生成",
+                        [new AiCandidateProjection(
+                            "batch_gold_a",
+                            "style_gold_a",
+                            "size_table_source",
+                            "asset_size_gold_a",
+                            "市场尺码图",
+                            1,
+                            0.99m,
+                            ["clear_subject"],
+                            true,
+                            "尺码表来源",
+                            samplePath,
+                            "清晰动态尺码来源",
+                            "动态尺码页")],
+                        [],
+                        Requirements:
+                        [new AiRequirementSelectionProjection(
+                            "batch_gold_a",
+                            "style_gold_a",
+                            "page_size",
+                            "动态尺码页",
+                            "size_table_source",
+                            "市场尺码图",
+                            "清晰动态尺码来源",
+                            AiRequirementSelectionUiStatus.ManualLocked,
+                            "人工选用 · 已锁定",
+                            "asset_size_gold_a",
+                            samplePath)])],
+                    1,
+                    [new AiStyleAssetProjection(
+                        "batch_gold_a",
+                        "style_gold_a",
+                        "asset_size_gold_a",
+                        samplePath,
+                        0)])],
+                AiAnalysisSchedulingControlState.Running,
+                null);
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: aiWorkflow,
+                sizeTableEditingWorkflow: sizeWorkflow);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                ApplyAiProjection(viewModel, projection);
+                SetAiScreen(viewModel);
+                FlushLayout(window);
+
+                viewModel.PrepareRenderingCommand.Execute(null);
+                FlushLayout(window);
+                var page = Assert.Single(Assert.Single(viewModel.ResultStyleGroups).Pages);
+                Assert.True(page.IsSizeTablePage);
+                viewModel.OpenResultPageCommand.Execute(page);
+                FlushLayout(window);
+                Assert.True(FindByAutomationId<Button>(window, "EditSizeTableDataButton").IsVisible);
+
+                viewModel.OpenSizeTableEditorCommand.Execute(page);
+                FlushLayout(window);
+                Assert.True(viewModel.IsSizeTableEditorVisible);
+                Assert.Equal(Visibility.Visible, FindByAutomationId<Grid>(window, "SizeTableEditorDialog").Visibility);
+                Assert.True(FindByAutomationId<Border>(window, "SizeTableSourcePanel").IsVisible);
+                Assert.True(FindByAutomationId<Border>(window, "SizeTableStructuredGridPanel").IsVisible);
+                Assert.True(FindByAutomationId<Border>(window, "SizeTableTemplatePreviewPanel").IsVisible);
+                Assert.Equal("/", viewModel.SizeTableEditor.Rows[0].Cells[^1].SourceText);
+                Assert.False(FindByAutomationId<Button>(window, "SaveSizeTableButton").IsEnabled);
+
+                viewModel.SizeTableEditor.Rows[0].Cells[^1].SourceText = "\\";
+                FlushLayout(window);
+                Assert.True(FindByAutomationId<Button>(window, "SaveSizeTableButton").IsEnabled);
+                viewModel.SizeTableEditor.Rows[0].Cells[^1].SourceText = "";
+                FlushLayout(window);
+                Assert.False(FindByAutomationId<Button>(window, "SaveSizeTableButton").IsEnabled);
+                Assert.Contains("不能保存", viewModel.SizeTableEditor.StatusMessage, StringComparison.Ordinal);
+
+                SetWindowSize(window, 1440, 900);
+                AssertEditorBounds(window);
+                SetWindowSize(window, 1100, 760);
+                AssertEditorBounds(window);
+                _output.WriteLine(
+                    $"O-03 editor wide/narrow bounds passed; actual DPI {VisualTreeHelper.GetDpi(window).DpiScaleX:P0}.");
+            }
+            finally
+            {
+                viewModel.Dispose();
+                window.Close();
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    private static void AssertEditorBounds(Window window)
+    {
+        var dialog = FindByAutomationId<Grid>(window, "SizeTableEditorDialog");
+        var bounds = dialog
+            .TransformToAncestor(window)
+            .TransformBounds(new Rect(dialog.RenderSize));
+        Assert.True(bounds.Left >= 0, "尺码编辑弹层超出窗口左边界。");
+        Assert.True(bounds.Right <= window.ActualWidth + 0.5, "尺码编辑弹层超出窗口右边界。");
+        Assert.True(bounds.Top >= 0, "尺码编辑弹层超出窗口上边界。");
+        Assert.True(bounds.Bottom <= window.ActualHeight + 0.5, "尺码编辑弹层超出窗口下边界。");
     }
 
     private static readonly string[] ExpectedAutomationIds =
@@ -1577,6 +1794,38 @@ public sealed class WpfShellTests
             PrepareRenderingCount++;
             return Task.FromResult(RenderPreparation
                 ?? throw new InvalidOperationException("TEST_RENDER_PREPARATION_MISSING"));
+        }
+    }
+
+    private sealed class RecordingSizeTableEditingWorkflow(SizeTableEditorDocument document)
+        : ISizeTableEditingWorkflow
+    {
+        public int LoadCount { get; private set; }
+
+        public int SaveCount { get; private set; }
+
+        public Task<SizeTableEditorLoadResult> LoadAsync(
+            string batchId,
+            string styleId,
+            string pageId,
+            CancellationToken cancellationToken)
+        {
+            LoadCount++;
+            return Task.FromResult(new SizeTableEditorLoadResult(
+                SizeTableEditorLoadStatus.Loaded,
+                document,
+                null));
+        }
+
+        public Task<SizeTableEditorSaveResult> SaveAsync(
+            SizeTableEditorSaveCommand command,
+            CancellationToken cancellationToken)
+        {
+            SaveCount++;
+            return Task.FromResult(new SizeTableEditorSaveResult(
+                SizeTableEditorSaveStatus.Saved,
+                document with { Revision = command.ExpectedRevision + 1 },
+                null));
         }
     }
 }

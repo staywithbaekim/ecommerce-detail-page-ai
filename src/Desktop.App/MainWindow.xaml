@@ -1772,9 +1772,16 @@
                                     <TextBlock Margin="0,4,0,16" Style="{StaticResource CaptionTextStyle}" Text="AI-01 只交付计划边界；正式单页修复属于 REPAIR-01。" TextWrapping="Wrap" />
                                     <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="移动与缩放" />
                                     <Slider Margin="0,8,0,16" IsEnabled="False" Value="50" AutomationProperties.Name="页面缩放，尚未启用" />
-                                    <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="自然语言调整" />
-                                    <TextBox Height="72" Margin="0,8,0,8" IsEnabled="False" Text="尚未启用" AutomationProperties.Name="自然语言调整，尚未启用" />
-                                    <Button Style="{StaticResource SecondaryButtonStyle}" Content="在 Photoshop 中编辑此页" IsEnabled="False" AutomationProperties.AutomationId="EditResultPageInPhotoshopButton" />
+                                     <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="自然语言调整" />
+                                     <TextBox Height="72" Margin="0,8,0,8" IsEnabled="False" Text="尚未启用" AutomationProperties.Name="自然语言调整，尚未启用" />
+                                     <Button Margin="0,0,0,8"
+                                             Style="{StaticResource SecondaryButtonStyle}"
+                                             Content="编辑尺码数据"
+                                             Command="{Binding OpenSizeTableEditorCommand}"
+                                             CommandParameter="{Binding SelectedResultPage}"
+                                             Visibility="{Binding SelectedResultPage.IsSizeTablePage, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                             AutomationProperties.AutomationId="EditSizeTableDataButton" />
+                                     <Button Style="{StaticResource SecondaryButtonStyle}" Content="在 Photoshop 中编辑此页" IsEnabled="False" AutomationProperties.AutomationId="EditResultPageInPhotoshopButton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -3301,6 +3308,166 @@
                     </Grid>
                 </Grid>
             </ScrollViewer>
+        </Grid>
+
+        <Grid Grid.Row="0"
+              Panel.ZIndex="40"
+              Background="{StaticResource ModalOverlayBrush}"
+              Visibility="{Binding IsSizeTableEditorVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              AutomationProperties.AutomationId="SizeTableEditorDialog"
+              AutomationProperties.Name="编辑尺码数据"
+              AutomationProperties.LiveSetting="Assertive">
+            <Border Width="1080"
+                    Height="680"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Padding="20"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="54" />
+                        <RowDefinition Height="12" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="64" />
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource PageTitleTextStyle}" Text="编辑尺码数据" />
+                            <TextBlock Margin="0,3,0,0" Style="{StaticResource CaptionTextStyle}" Text="只保留来源原文；/、\、- 都是合法内容，真正空单元格不能保存。" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Width="76"
+                                Height="34"
+                                Style="{StaticResource GhostButtonStyle}"
+                                Content="关闭"
+                                Command="{Binding CloseSizeTableEditorCommand}"
+                                AutomationProperties.AutomationId="CloseSizeTableEditorButton" />
+                    </Grid>
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="236" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="256" />
+                        </Grid.ColumnDefinitions>
+                        <Border Padding="14" Style="{StaticResource SectionCardStyle}" AutomationProperties.AutomationId="SizeTableSourcePanel">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="72" /></Grid.RowDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="来源参考" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="只读，不修改市场尺码图" />
+                                </StackPanel>
+                                <Border Grid.Row="1" Background="{StaticResource SurfaceStrongBrush}" CornerRadius="5" ClipToBounds="True">
+                                    <Grid>
+                                        <Image Margin="8" Source="{Binding SizeTableEditor.SourcePreviewPath}" Stretch="Uniform" Visibility="{Binding SizeTableEditor.HasSourcePreview, Converter={StaticResource BooleanToVisibilityConverter}}" AutomationProperties.Name="只读市场尺码图" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource CaptionTextStyle}" Text="来源预览不可用；仍保留 hash 引用" Visibility="{Binding SizeTableEditor.HasNoSourcePreview, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    </Grid>
+                                </Border>
+                                <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="{Binding SizeTableEditor.SourceSummary}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="0,4,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding SizeTableEditor.RevisionText}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <Border Grid.Column="2" Padding="14" Style="{StaticResource SectionCardStyle}" AutomationProperties.AutomationId="SizeTableStructuredGridPanel">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="44" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="结构化表格" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="选中表头或行后可删除；键盘可逐格输入中文。" />
+                                </StackPanel>
+                                <ListBox Grid.Row="1"
+                                         ItemsSource="{Binding SizeTableEditor.Columns}"
+                                         SelectedItem="{Binding SizeTableEditor.SelectedColumn, Mode=TwoWay}"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                         BorderThickness="0"
+                                         AutomationProperties.AutomationId="SizeTableHeaderList">
+                                    <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBox Width="116" Height="34" Margin="0,0,4,0" Padding="8,5" Text="{Binding SourceText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="尺码表表头" />
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <ListBox Grid.Row="2"
+                                         ItemsSource="{Binding SizeTableEditor.Rows}"
+                                         SelectedItem="{Binding SizeTableEditor.SelectedRow, Mode=TwoWay}"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Visible"
+                                         AutomationProperties.AutomationId="SizeTableRowList">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <ItemsControl ItemsSource="{Binding Cells}" AutomationProperties.Name="{Binding AccessibilityName}">
+                                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBox Width="116" Height="34" Margin="0,2,4,2" Padding="8,5" Text="{Binding SourceText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="尺码单元格" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <Grid Grid.Row="3" Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Width="72" Margin="0,0,6,0" Style="{StaticResource SecondaryButtonStyle}" Content="加一行" Command="{Binding AddSizeTableRowCommand}" AutomationProperties.AutomationId="AddSizeTableRowButton" />
+                                        <Button Width="72" Style="{StaticResource SecondaryButtonStyle}" Content="删此行" Command="{Binding RemoveSizeTableRowCommand}" AutomationProperties.AutomationId="RemoveSizeTableRowButton" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                        <Button Width="72" Margin="0,0,6,0" Style="{StaticResource SecondaryButtonStyle}" Content="加一列" Command="{Binding AddSizeTableColumnCommand}" AutomationProperties.AutomationId="AddSizeTableColumnButton" />
+                                        <Button Width="72" Style="{StaticResource SecondaryButtonStyle}" Content="删此列" Command="{Binding RemoveSizeTableColumnCommand}" AutomationProperties.AutomationId="RemoveSizeTableColumnButton" />
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                        <Border Grid.Column="4" Padding="14" Style="{StaticResource SectionCardStyle}" AutomationProperties.AutomationId="SizeTableTemplatePreviewPanel">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="模板样式预览" />
+                                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="结构预览；保存后确定性生成 PNG" />
+                                </StackPanel>
+                                <Border Grid.Row="1" Padding="12" Background="White" BorderBrush="#FF98A2B3" BorderThickness="1" CornerRadius="4">
+                                    <StackPanel>
+                                        <TextBlock HorizontalAlignment="Center" FontSize="16" FontWeight="SemiBold" Foreground="#FF101828" Text="尺码表" />
+                                        <ItemsControl Margin="0,12,0,0" ItemsSource="{Binding SizeTableEditor.Rows}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <ItemsControl ItemsSource="{Binding Cells}">
+                                                        <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="1" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate><Border MinWidth="38" Padding="3" BorderBrush="#FF98A2B3" BorderThickness="0,0,1,1"><TextBlock HorizontalAlignment="Center" FontSize="11" Foreground="#FF101828" Text="{Binding SourceText}" TextTrimming="CharacterEllipsis" /></Border></DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Grid Grid.Row="3" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock VerticalAlignment="Center" Style="{StaticResource SmallBodyTextStyle}" Text="{Binding SizeTableEditor.StatusMessage}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                        <Button Grid.Column="1"
+                                Width="172"
+                                Height="38"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Content="{Binding SizeTableEditor.SaveButtonText}"
+                                Command="{Binding SaveSizeTableCommand}"
+                                AutomationProperties.AutomationId="SaveSizeTableButton" />
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
 
         <Grid Grid.Row="0"

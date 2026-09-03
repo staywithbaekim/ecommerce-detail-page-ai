@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Desktop.Application.Rendering;
+using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Ai;
 using Desktop.Domain.Inputs;
@@ -33,7 +34,14 @@ public sealed record AiConfirmedRenderSelection(
 public sealed record AiRenderStyleInput(
     string StyleId,
     IReadOnlyList<AiConfirmedRenderSelection> Selections,
-    AiSizeTableCandidateV1? SizeTableCandidate = null);
+    AiSizeTableCandidateV1? SizeTableCandidate = null,
+    IReadOnlyList<AiPreparedSizeTablePage>? PreparedSizeTablePages = null,
+    string? SizeTableReasonCode = null);
+
+public sealed record AiPreparedSizeTablePage(
+    string PageId,
+    Desktop.Domain.SizeTables.SizeTable Table,
+    SizeTableRasterizedResource RasterizedResource);
 
 public sealed record AiRenderPlanPreparationRequest(
     BatchDraft Batch,
@@ -78,7 +86,8 @@ public interface IAiRenderPlanFactory
 /// </summary>
 public sealed class AiRenderPlanFactory(
     ITemplateRenderPlanBuilder planBuilder,
-    IPhotoshopAvailabilityPort photoshopAvailability) : IAiRenderPlanFactory
+    IPhotoshopAvailabilityPort photoshopAvailability,
+    ISizeTableRenderPlanBuilder? sizeTablePlanBuilder = null) : IAiRenderPlanFactory
 {
     public async Task<AiRenderPlanPreparation> PrepareAsync(
         AiRenderPlanPreparationRequest request,
@@ -161,6 +170,17 @@ public sealed class AiRenderPlanFactory(
                 ValidateSizeTableCandidate(styleInput.SizeTableCandidate, style, styleAssetIds, assets);
             }
 
+            var preparedSizeTables = styleInput.PreparedSizeTablePages ?? [];
+            if (preparedSizeTables.Any(prepared => prepared is null)
+                || preparedSizeTables.Select(prepared => prepared.PageId)
+                    .Distinct(StringComparer.Ordinal).Count() != preparedSizeTables.Count)
+            {
+                throw new InvalidOperationException("AI_RENDER_SIZE_TABLE_PREPARATION_DUPLICATE");
+            }
+            var preparedSizeTablesByPage = preparedSizeTables.ToDictionary(
+                prepared => prepared.PageId,
+                StringComparer.Ordinal);
+
             if (styleInput.Selections.Any(selection => selection is null)
                 || styleInput.Selections.Select(selection => selection.FrameId)
                     .Distinct(StringComparer.Ordinal).Count() != styleInput.Selections.Count)
@@ -196,15 +216,61 @@ public sealed class AiRenderPlanFactory(
 
                 if (page.ContentType == TemplatePageContentType.DynamicSizeTable)
                 {
+                    if (preparedSizeTablesByPage.TryGetValue(page.PageId, out var prepared))
+                    {
+                        ValidatePreparedSizeTable(
+                            prepared,
+                            request.Batch,
+                            style,
+                            page,
+                            styleAssetIds,
+                            assets);
+                        if (sizeTablePlanBuilder is null)
+                        {
+                            throw new InvalidOperationException("AI_SIZE_TABLE_RENDER_PLAN_BUILDER_MISSING");
+                        }
+
+                        var sizeIdentity = CreateSizeTablePlanIdentity(
+                            request.Batch,
+                            page,
+                            style,
+                            prepared,
+                            request.CreatedAt);
+                        var sizeJson = sizeTablePlanBuilder.Build(
+                            request.TemplateRevision,
+                            page,
+                            templateResource,
+                            new SizeTableRenderPlanRequest(
+                                sizeIdentity.PlanId,
+                                sizeIdentity.IdempotencyKey,
+                                sizeIdentity.CorrelationId,
+                                request.Batch.BatchId,
+                                style.StyleId,
+                                sizeIdentity.ArtifactSetId,
+                                $"{style.Order + 1:D3}-{page.Order + 1:D2}.jpg",
+                                request.Batch.IncludeEditablePsd,
+                                request.Batch.IncludeEditablePsd
+                                    ? $"{style.Order + 1:D3}-{page.Order + 1:D2}.psd"
+                                    : null,
+                                request.CreatedAt,
+                                prepared.Table,
+                                prepared.RasterizedResource));
+                        using var sizeDocument = JsonDocument.Parse(sizeJson);
+                        pages.Add(new AiRenderPagePreparation(
+                            style.StyleId,
+                            page.PageId,
+                            AiRenderPagePreparationStatus.ReadyToRender,
+                            "AI_RENDER_PLAN_VALID",
+                            sizeJson,
+                            sizeDocument.RootElement.GetProperty("plan_digest").GetString()));
+                        continue;
+                    }
+
                     pages.Add(new AiRenderPagePreparation(
                         style.StyleId,
                         page.PageId,
-                        styleInput.SizeTableCandidate is null
-                            ? AiRenderPagePreparationStatus.BusinessBlocked
-                            : AiRenderPagePreparationStatus.AwaitingSizeTableRasterization,
-                        styleInput.SizeTableCandidate is null
-                            ? "AI_SIZE_TABLE_CANDIDATE_MISSING"
-                            : "AI_SIZE_TABLE_RASTERIZER_PENDING"));
+                        SizeTablePageStatus(styleInput),
+                        SizeTablePageReason(styleInput)));
                     continue;
                 }
 
@@ -430,6 +496,58 @@ public sealed class AiRenderPlanFactory(
         }
     }
 
+    private static AiRenderPagePreparationStatus SizeTablePageStatus(AiRenderStyleInput input) =>
+        input.SizeTableReasonCode switch
+        {
+            "SIZE_TABLE_REVIEW_REQUIRED" or "SIZE_TABLE_INVALID" or "SIZE_TABLE_SOURCE_CONFLICT"
+                or "SIZE_TABLE_STATE_CORRUPT" or "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED" =>
+                AiRenderPagePreparationStatus.BusinessBlocked,
+            _ when input.SizeTableCandidate is null => AiRenderPagePreparationStatus.BusinessBlocked,
+            _ => AiRenderPagePreparationStatus.AwaitingSizeTableRasterization
+        };
+
+    private static string SizeTablePageReason(AiRenderStyleInput input) =>
+        input.SizeTableReasonCode switch
+        {
+            "SIZE_TABLE_REVIEW_REQUIRED" => "SIZE_TABLE_REVIEW_REQUIRED",
+            "SIZE_TABLE_INVALID" => "SIZE_TABLE_INVALID",
+            "SIZE_TABLE_SOURCE_CONFLICT" => "SIZE_TABLE_SOURCE_CONFLICT",
+            "SIZE_TABLE_STATE_CORRUPT" => "SIZE_TABLE_STATE_CORRUPT",
+            "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED" => "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED",
+            _ when input.SizeTableCandidate is null => "AI_SIZE_TABLE_CANDIDATE_MISSING",
+            _ => "AI_SIZE_TABLE_RASTERIZER_PENDING"
+        };
+
+    private static void ValidatePreparedSizeTable(
+        AiPreparedSizeTablePage prepared,
+        BatchDraft batch,
+        StyleDraft style,
+        TemplatePage page,
+        HashSet<string> styleAssetIds,
+        Dictionary<string, SourceAssetMetadata> assets)
+    {
+        var table = prepared.Table;
+        if (!string.Equals(prepared.PageId, page.PageId, StringComparison.Ordinal)
+            || !string.Equals(table.BatchId, batch.BatchId, StringComparison.Ordinal)
+            || !string.Equals(table.StyleId, style.StyleId, StringComparison.Ordinal)
+            || !string.Equals(table.PageId, page.PageId, StringComparison.Ordinal)
+            || !table.CanSave
+            || !styleAssetIds.Contains(table.Source.AssetId)
+            || !assets.TryGetValue(table.Source.AssetId, out var source)
+            || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal)
+            || !string.Equals(
+                "sha256:" + source.Sha256.ToLowerInvariant(),
+                table.Source.ContentDigest,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                prepared.RasterizedResource.TableDataDigest,
+                table.DataDigest,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AI_RENDER_SIZE_TABLE_PREPARATION_MISMATCH");
+        }
+    }
+
     private static bool IsSha256(string? value) => value is { Length: 64 }
         && value.All(Uri.IsHexDigit);
 
@@ -463,6 +581,36 @@ public sealed class AiRenderPlanFactory(
                     selection.SubjectGeometry.Bottom,
                     selection.SubjectGeometry.Confidence
                 }),
+            created_at = createdAt
+        });
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(preimage)))
+            .ToLowerInvariant();
+        return new PlanIdentity(
+            $"plan_{digest[..24]}",
+            $"render/{batch.BatchId}/{style.StyleId}/{page.PageId}/{digest[..16]}",
+            $"corr_{digest[24..48]}",
+            $"artifact_{digest[40..64]}");
+    }
+
+    private static PlanIdentity CreateSizeTablePlanIdentity(
+        BatchDraft batch,
+        TemplatePage page,
+        StyleDraft style,
+        AiPreparedSizeTablePage prepared,
+        DateTimeOffset createdAt)
+    {
+        var preimage = JsonSerializer.Serialize(new
+        {
+            batch_id = batch.BatchId,
+            snapshot_id = batch.TemplateSnapshot.SnapshotId,
+            rules_digest = batch.TemplateSnapshot.RulesDigest,
+            style_id = style.StyleId,
+            page_id = page.PageId,
+            size_table_id = prepared.Table.TableId,
+            size_table_revision = prepared.Table.Revision,
+            structured_data_digest = prepared.Table.DataDigest,
+            raster_resource_id = prepared.RasterizedResource.ResourceId,
+            raster_sha256 = prepared.RasterizedResource.Sha256,
             created_at = createdAt
         });
         var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(preimage)))

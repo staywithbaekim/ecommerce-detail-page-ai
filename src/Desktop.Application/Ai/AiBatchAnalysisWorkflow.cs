@@ -3,7 +3,9 @@ using Desktop.Domain.Ai;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.Templates;
 using Desktop.Application.Inputs;
+using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
+using Desktop.Domain.SizeTables;
 using System.Collections.Concurrent;
 using System.Text.Json;
 
@@ -320,6 +322,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     private readonly IConsentPort _consent;
     private readonly ITemplateResourceRepository? _templateResources;
     private readonly IAiRenderPlanFactory? _renderPlans;
+    private readonly ISizeTableRepository? _sizeTables;
+    private readonly ISizeTableRasterizer? _sizeTableRasterizer;
     private readonly ConcurrentDictionary<string, BatchContext> _contexts = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _contextGate = new(1, 1);
     private readonly CancellationTokenSource _backgroundCancellation = new();
@@ -345,7 +349,9 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         IAiAnalysisSchedulerFactory schedulerFactory,
         IConsentPort consent,
         ITemplateResourceRepository? templateResources = null,
-        IAiRenderPlanFactory? renderPlans = null)
+        IAiRenderPlanFactory? renderPlans = null,
+        ISizeTableRepository? sizeTables = null,
+        ISizeTableRasterizer? sizeTableRasterizer = null)
     {
         _batches = batches ?? throw new ArgumentNullException(nameof(batches));
         _templates = templates ?? throw new ArgumentNullException(nameof(templates));
@@ -356,6 +362,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         _consent = consent ?? throw new ArgumentNullException(nameof(consent));
         _templateResources = templateResources;
         _renderPlans = renderPlans;
+        _sizeTables = sizeTables;
+        _sizeTableRasterizer = sizeTableRasterizer;
     }
 
     public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken cancellationToken) =>
@@ -587,16 +595,32 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 }), StringComparer.Ordinal)
                 .Select(group => group.OrderByDescending(candidate => candidate.Confidence).First())
                 .ToArray();
-            var sizeCandidate = sizeCandidates.Length == 1
-                && sizeCandidates[0].Confidence >= 0.8m
-                && !sizeResultInputs.SelectMany(input => input.Result!.Warnings)
-                    .Any(warning => warning.Code == "size_source_conflict")
-                    ? sizeCandidates[0]
-                    : null;
+            var hasProviderConflict = sizeResultInputs.SelectMany(input => input.Result!.Warnings)
+                .Any(warning => warning.Code == "size_source_conflict");
+            var sizeCandidate = sizeCandidates.Length == 1 && !hasProviderConflict
+                ? sizeCandidates[0]
+                : null;
+            var preparedSizePages = Array.Empty<AiPreparedSizeTablePage>();
+            string? sizeTableReason = null;
+            if (context.TemplateRevision.Pages.Any(page =>
+                    page.ContentType == TemplatePageContentType.DynamicSizeTable))
+            {
+                var preparation = await PrepareSizeTablesAsync(
+                    context,
+                    style,
+                    sizeCandidates,
+                    hasProviderConflict,
+                    planCreatedAt,
+                    cancellationToken).ConfigureAwait(false);
+                preparedSizePages = preparation.Pages;
+                sizeTableReason = preparation.ReasonCode;
+            }
             styleInputs.Add(new AiRenderStyleInput(
                 style.StyleId,
                 selectedRequirements,
-                sizeCandidate));
+                sizeCandidate,
+                preparedSizePages,
+                sizeTableReason));
         }
 
         return await _renderPlans.PrepareAsync(
@@ -608,6 +632,158 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 planCreatedAt),
             cancellationToken).ConfigureAwait(false);
     }
+
+    private async Task<PreparedSizeTableResult> PrepareSizeTablesAsync(
+        BatchContext context,
+        StyleDraft style,
+        AiSizeTableCandidateV1[] candidates,
+        bool hasProviderConflict,
+        DateTimeOffset createdAt,
+        CancellationToken cancellationToken)
+    {
+        if (hasProviderConflict)
+        {
+            return new PreparedSizeTableResult([], "SIZE_TABLE_SOURCE_CONFLICT");
+        }
+        if (candidates.Length == 0)
+        {
+            return new PreparedSizeTableResult([], "SIZE_TABLE_SOURCE_MISSING");
+        }
+        if (_sizeTables is null || _sizeTableRasterizer is null)
+        {
+            return new PreparedSizeTableResult([], "AI_SIZE_TABLE_RASTERIZER_PENDING");
+        }
+
+        var manifest = ProjectManifest(context.Batch);
+        var prepared = new List<AiPreparedSizeTablePage>();
+        string? blockingReason = null;
+        foreach (var page in context.TemplateRevision.Pages
+                     .Where(page => page.ContentType == TemplatePageContentType.DynamicSizeTable)
+                     .OrderBy(page => page.Order))
+        {
+            var result = SizeTableService.Prepare(new PrepareSizeTableCommand(
+                manifest,
+                style.StyleId,
+                page.PageId,
+                candidates,
+                null,
+                0,
+                createdAt));
+            if (result.Table is null)
+            {
+                blockingReason = result.ReasonCode;
+                continue;
+            }
+
+            var table = result.Table;
+            var persisted = await _sizeTables.LoadAsync(
+                context.Batch.BatchId,
+                style.StyleId,
+                page.PageId,
+                cancellationToken).ConfigureAwait(false);
+            if (persisted.Status == SizeTableLoadStatus.RecoveryRequired)
+            {
+                blockingReason = "SIZE_TABLE_STATE_CORRUPT";
+                continue;
+            }
+            if (persisted.Table is not null)
+            {
+                if (!string.Equals(
+                        persisted.Table.Source.ContentDigest,
+                        table.Source.ContentDigest,
+                        StringComparison.Ordinal))
+                {
+                    blockingReason = "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED";
+                    continue;
+                }
+                table = persisted.Table;
+            }
+            else
+            {
+                var save = await _sizeTables.SaveAsync(table, null, cancellationToken).ConfigureAwait(false);
+                if (save.Status != SizeTableSaveStatus.Saved)
+                {
+                    blockingReason = save.ReasonCode ?? "SIZE_TABLE_STATE_CORRUPT";
+                    continue;
+                }
+            }
+
+            if (!table.CanSave)
+            {
+                blockingReason = table.Status == SizeTableStatus.ReviewRequired
+                    ? "SIZE_TABLE_REVIEW_REQUIRED"
+                    : "SIZE_TABLE_INVALID";
+                continue;
+            }
+
+            var raster = await _sizeTableRasterizer.RasterizeAsync(
+                new SizeTableRasterizationRequest(
+                    table,
+                    TemplateBoundRasterStyle(context.TemplateRevision.RuleDigest!)),
+                cancellationToken).ConfigureAwait(false);
+            prepared.Add(new AiPreparedSizeTablePage(page.PageId, table, raster));
+        }
+
+        return new PreparedSizeTableResult(
+            prepared.ToArray(),
+            blockingReason ?? (prepared.Count > 0 ? "SIZE_TABLE_VALID" : "SIZE_TABLE_SOURCE_MISSING"));
+    }
+
+    private static AssetManifestV1 ProjectManifest(BatchDraft batch) => new(
+        AssetManifestProtocol.Version,
+        $"manifest_{batch.BatchId}",
+        batch.BatchId,
+        batch.InputType == BatchInputType.SingleStyle ? "single_style" : "style_directory_batch",
+        new AssetManifestTemplateSnapshot(
+            batch.TemplateSnapshot.SnapshotId,
+            batch.TemplateSnapshot.RevisionId,
+            batch.TemplateSnapshot.RulesDigest,
+            batch.TemplateSnapshot.Pages.OrderBy(page => page.Order).Select(page => page.PageId).ToArray()),
+        batch.Styles.OrderBy(style => style.Order).Select(style => new AssetManifestStyle(
+            style.StyleId,
+            style.DefaultStyleCode,
+            style.SourceDirectoryRelativePath,
+            style.Order,
+            style.AssetIds.ToArray())).ToArray(),
+        batch.Assets.OrderBy(asset => asset.SourceRelativePath, StringComparer.Ordinal).Select(asset =>
+            new AssetManifestAsset(
+                asset.AssetId,
+                asset.StyleId,
+                asset.SourceRelativePath,
+                asset.FileName,
+                asset.Length,
+                asset.Sha256,
+                asset.PixelWidth,
+                asset.PixelHeight,
+                asset.Format.ToString().ToLowerInvariant(),
+                asset.MimeType,
+                asset.Readability == AssetReadability.Readable ? "readable" : "unreadable")).ToArray(),
+        batch.ManifestDigest ?? throw new InvalidOperationException("SIZE_TABLE_MANIFEST_MISSING"),
+        batch.UpdatedAt);
+
+    private static SizeTableRasterStyle TemplateBoundRasterStyle(string rulesDigest)
+    {
+        var suffix = rulesDigest.StartsWith("sha256:", StringComparison.Ordinal)
+            ? new string(rulesDigest.AsSpan(7, 16))
+            : throw new InvalidOperationException("SIZE_TABLE_TEMPLATE_RULES_DIGEST_INVALID");
+        return SizeTableRasterStyle.Create(
+            $"template_{suffix}_v1",
+            "dynamic_grid_v1",
+            "Microsoft YaHei UI",
+            24,
+            1000,
+            56,
+            24,
+            12,
+            "#FFFFFFFF",
+            "#FFF2F4F7",
+            "#FF101828",
+            "#FF98A2B3");
+    }
+
+    private sealed record PreparedSizeTableResult(
+        AiPreparedSizeTablePage[] Pages,
+        string ReasonCode);
 
     private async Task<AiBatchAnalysisProjection> ControlAsync(
         string batchId,

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Desktop.Application.Templates;
 using Desktop.Application.Ai;
+using Desktop.Application.SizeTables;
 
 namespace Desktop.App;
 
@@ -22,7 +23,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         ITemplatePackageService? templatePackages = null,
         IFolderPicker? folderPicker = null,
         IBatchInputWorkflow? batchInputWorkflow = null,
-        IAiBatchAnalysisWorkflow? aiBatchAnalysisWorkflow = null)
+        IAiBatchAnalysisWorkflow? aiBatchAnalysisWorkflow = null,
+        ISizeTableEditingWorkflow? sizeTableEditingWorkflow = null)
     {
         NavigationItems =
         [
@@ -48,6 +50,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         InitializeTemplates(templateWorkspace, templateCalibration, templatePackages);
         InitializeBatchInput(folderPicker, batchInputWorkflow);
         InitializeAiBatchAnalysis(aiBatchAnalysisWorkflow);
+        InitializeSizeTableEditor(sizeTableEditingWorkflow);
     }
 
     public ObservableCollection<NavigationItemViewModel> NavigationItems { get; }
@@ -164,6 +167,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
     public void Dispose()
     {
         DisposeAiAutoRefresh();
+        SizeTableEditor.PropertyChanged -= SizeTableEditor_PropertyChanged;
         _templateDraftWrite.Dispose();
         _batchDraftWrite.Dispose();
         _batchScanCancellation?.Dispose();

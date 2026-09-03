@@ -2,15 +2,18 @@ using System.Text.Json;
 using Desktop.Application.Ai;
 using Desktop.Application.Psd;
 using Desktop.Application.Rendering;
+using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Inputs;
+using Desktop.Domain.SizeTables;
 using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Ai;
 using Desktop.Infrastructure.Bridge;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Persistence;
+using Desktop.Infrastructure.SizeTables;
 
 namespace Desktop.Infrastructure.Tests;
 
@@ -276,6 +279,103 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.Equal(AiRenderPreparationStatus.WaitingForPhotoshop, preparation.Status);
         Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, Assert.Single(preparation.Pages).Status);
         Assert.Equal(2, provider.Calls);
+    }
+
+    [Fact]
+    public async Task TrustedSizeCandidatePersistsRasterizesAndBuildsDynamicRenderPlan()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now, includeDynamicSizePage: true);
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_size_vertical");
+
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new ScenarioProvider(request => Result(
+            request,
+            matches: [new("frame_render_integration", "asset_front", 1, 0.96m, ["front_view"])],
+            geometry: [new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)],
+            sizeTable: new(
+                "asset_front",
+                0.99m,
+                ["尺码", "衣长", "胸围", "肩宽", "袖长"],
+                [["L", "61", "102", "40", "/"], ["XL", "62", "107", "41", "/"]])));
+        var validator = new RenderPlanValidator(new JsonSchemaContractValidator());
+        var plans = new AiRenderPlanFactory(
+            new TemplateRenderPlanBuilder(validator),
+            new UnavailablePhotoshopAvailabilityPort(),
+            new SizeTableRenderPlanBuilder(validator));
+        using var sizeRepository = new SizeTableFileRepository(files);
+        var rasterizer = new WpfSizeTableRasterizer(files);
+        using var workflow = Workflow(
+            store,
+            resultStore,
+            provider,
+            store,
+            plans,
+            sizeRepository,
+            rasterizer);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        _ = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            projection => projection.Styles.SelectMany(style => style.Pages)
+                .Any(page => page.PageId == "page_render_size"
+                    && page.Status == AiPageUiStatus.ReviewRequired));
+        var preparation = await workflow.PrepareRenderingAsync(
+            fixture.Batch.BatchId,
+            CancellationToken.None);
+
+        Assert.Equal(AiRenderPreparationStatus.WaitingForPhotoshop, preparation.Status);
+        Assert.All(preparation.Pages, page => Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status));
+        var sizePage = preparation.Pages.Single(page => page.PageId == "page_render_size");
+        using var document = JsonDocument.Parse(sizePage.RenderPlanJson!);
+        Assert.Equal("dynamic_size_table", document.RootElement.GetProperty("document")
+            .GetProperty("content_type").GetString());
+        Assert.Equal("/", document.RootElement.GetProperty("size_table")
+            .GetProperty("rows")[0].GetProperty("cells").GetProperty("col_005").GetString());
+        var persisted = await sizeRepository.LoadAsync(
+            fixture.Batch.BatchId,
+            "style_render_integration",
+            "page_render_size",
+            CancellationToken.None);
+        Assert.Equal(SizeTableLoadStatus.Loaded, persisted.Status);
+        Assert.Equal(SizeTableStatus.Valid, persisted.Table!.Status);
+        Assert.NotEmpty(Directory.EnumerateFiles(directory.Path, "*.png", SearchOption.AllDirectories));
+
+        var firstNormalDigest = preparation.Pages.Single(page =>
+            page.PageId == "page_render_integration").PlanDigest;
+        var firstSizeDigest = sizePage.PlanDigest;
+        var editedRows = persisted.Table.Rows.Select((row, rowIndex) => SizeTableRow.Create(
+            row.RowId,
+            row.Cells.Select((cell, columnIndex) => SizeTableCell.Create(
+                cell.ColumnId,
+                rowIndex == 0 && columnIndex == 4 ? "\\" : cell.SourceText)))).ToArray();
+        var edited = persisted.Table.Edit(
+            persisted.Table.Revision,
+            persisted.Table.Columns,
+            editedRows,
+            persisted.Table.UpdatedAt.AddMinutes(1));
+        Assert.Equal(
+            SizeTableSaveStatus.Saved,
+            (await sizeRepository.SaveAsync(edited, persisted.Table.Revision, CancellationToken.None)).Status);
+
+        var regenerated = await workflow.PrepareRenderingAsync(
+            fixture.Batch.BatchId,
+            CancellationToken.None);
+        Assert.Equal(firstNormalDigest, regenerated.Pages.Single(page =>
+            page.PageId == "page_render_integration").PlanDigest);
+        Assert.NotEqual(firstSizeDigest, regenerated.Pages.Single(page =>
+            page.PageId == "page_render_size").PlanDigest);
+        Assert.Equal("\\", JsonDocument.Parse(regenerated.Pages.Single(page =>
+                page.PageId == "page_render_size").RenderPlanJson!).RootElement
+            .GetProperty("size_table").GetProperty("rows")[0]
+            .GetProperty("cells").GetProperty("col_005").GetString());
     }
 
     [Fact]
@@ -647,7 +747,9 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         IAiAnalysisResultStore results,
         IAiServicePort provider,
         ITemplateResourceRepository? templateResources = null,
-        IAiRenderPlanFactory? renderPlans = null) => new(
+        IAiRenderPlanFactory? renderPlans = null,
+        ISizeTableRepository? sizeTables = null,
+        ISizeTableRasterizer? sizeTableRasterizer = null) => new(
             store,
             store,
             store,
@@ -656,7 +758,9 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
             new TestSchedulerFactory(store, results, provider),
             store,
             templateResources,
-            renderPlans);
+            renderPlans,
+            sizeTables,
+            sizeTableRasterizer);
 
     private static async Task<AiBatchAnalysisProjection> WaitForProjectionAsync(
         AiBatchAnalysisWorkflow workflow,

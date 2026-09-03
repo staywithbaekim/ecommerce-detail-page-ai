@@ -5,6 +5,7 @@ using Desktop.Application.Files;
 using Desktop.Application.Inputs;
 using Desktop.Application.Psd;
 using Desktop.Application.Rendering;
+using Desktop.Application.SizeTables;
 using Desktop.Application.Tasks;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Validation;
@@ -16,6 +17,7 @@ using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Inputs;
 using Desktop.Infrastructure.Persistence;
 using Desktop.Infrastructure.Psd;
+using Desktop.Infrastructure.SizeTables;
 using Desktop.Infrastructure.Templates;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -37,8 +39,12 @@ public static class DesktopServices
         services.AddSingleton<IJsonContractValidator>(provider => provider.GetRequiredService<JsonSchemaContractValidator>());
         services.AddSingleton<IRenderPlanValidator, RenderPlanValidator>();
         services.AddSingleton<ITemplateRenderPlanBuilder, TemplateRenderPlanBuilder>();
+        services.AddSingleton<ISizeTableRenderPlanBuilder, SizeTableRenderPlanBuilder>();
         services.AddSingleton<IPhotoshopAvailabilityPort, UnavailablePhotoshopAvailabilityPort>();
         services.AddSingleton<IAiRenderPlanFactory, AiRenderPlanFactory>();
+        services.AddSingleton<ISizeTableRepository, SizeTableFileRepository>();
+        services.AddSingleton<ISizeTableEditingWorkflow, SizeTableEditingWorkflow>();
+        services.AddSingleton<ISizeTableRasterizer, WpfSizeTableRasterizer>();
 
         services.AddSingleton<SqliteDesktopStore>();
         services.AddSingleton<ITaskEventStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());

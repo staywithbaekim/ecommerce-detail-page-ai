@@ -372,6 +372,7 @@ public sealed class ResultPageCardViewModel
         string detailText,
         string previewPath,
         bool hasFormalOutput,
+        bool isSizeTablePage,
         IReadOnlyList<ResultCandidateViewModel> candidates)
     {
         StyleId = styleId;
@@ -383,6 +384,7 @@ public sealed class ResultPageCardViewModel
         DetailText = detailText;
         PreviewPath = previewPath;
         HasFormalOutput = hasFormalOutput;
+        IsSizeTablePage = isSizeTablePage;
         Candidates = candidates;
     }
 
@@ -397,6 +399,7 @@ public sealed class ResultPageCardViewModel
     public bool HasPreview => !string.IsNullOrWhiteSpace(PreviewPath);
     public bool HasNoPreview => !HasPreview;
     public bool HasFormalOutput { get; }
+    public bool IsSizeTablePage { get; }
     public string OutputBoundaryText => HasFormalOutput
         ? "正式输出已登记"
         : "当前为已确认源图参考，不是生成结果";
@@ -439,6 +442,8 @@ public sealed class ResultPageCardViewModel
             status.DetailText,
             preview,
             hasFormalOutput,
+            page.ReasonCode.Contains("SIZE_TABLE", StringComparison.Ordinal)
+                || page.RenderPlanJson?.Contains("\"dynamic_size_table\"", StringComparison.Ordinal) == true,
             candidates);
     }
 

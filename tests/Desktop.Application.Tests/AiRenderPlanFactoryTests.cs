@@ -3,10 +3,12 @@ using System.Text.Json.Nodes;
 using Desktop.Application.Ai;
 using Desktop.Application.Psd;
 using Desktop.Application.Rendering;
+using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Inputs;
+using Desktop.Domain.SizeTables;
 using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Tests;
@@ -209,6 +211,58 @@ public sealed class AiRenderPlanFactoryTests
         Assert.Equal(0, availability.Calls);
     }
 
+    [Fact]
+    public async Task PreparedDynamicSizeResourceBuildsRendererNeutralPlan()
+    {
+        var fixture = DynamicSizeFixture();
+        var availability = new TestAvailability(true);
+        var validator = new RenderPlanValidator(new JsonSchemaContractValidator());
+        var table = ReadySizeTable(fixture.Now);
+        var resource = new SizeTableRasterizedResource(
+            "size_raster_0123456789abcdef01234567",
+            "deterministic_size_table",
+            "image/png",
+            new string('c', 64),
+            4096,
+            1000,
+            420,
+            table.DataDigest,
+            "gold_v1",
+            "dynamic_grid_v1",
+            "batches/batch_01/size-tables/style_01/page_01/resources/private.png");
+        var factory = new AiRenderPlanFactory(
+            new TemplateRenderPlanBuilder(validator),
+            availability,
+            new SizeTableRenderPlanBuilder(validator));
+
+        var result = await factory.PrepareAsync(new AiRenderPlanPreparationRequest(
+            fixture.Batch,
+            fixture.Revision,
+            [fixture.Resource],
+            [new AiRenderStyleInput(
+                "style_01",
+                [],
+                null,
+                [new AiPreparedSizeTablePage("page_01", table, resource)])],
+            fixture.Now), CancellationToken.None);
+
+        Assert.Equal(AiRenderPreparationStatus.ReadyToRender, result.Status);
+        var page = Assert.Single(result.Pages);
+        Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status);
+        Assert.True(page.HasPlan);
+        Assert.Equal(1, availability.Calls);
+        using var document = JsonDocument.Parse(page.RenderPlanJson!);
+        var root = document.RootElement;
+        Assert.Equal("dynamic_size_table", root.GetProperty("document").GetProperty("content_type").GetString());
+        Assert.Empty(root.GetProperty("targets").EnumerateArray());
+        Assert.Equal("/", root.GetProperty("size_table").GetProperty("rows")[0]
+            .GetProperty("cells").GetProperty("col_002").GetString());
+        Assert.Equal("deterministic_size_table", root.GetProperty("resources")[1]
+            .GetProperty("role").GetString());
+        Assert.DoesNotContain(resource.OwnedRelativePath, page.RenderPlanJson!, StringComparison.Ordinal);
+        Assert.True(validator.Validate(page.RenderPlanJson!).IsValid);
+    }
+
     [Theory]
     [InlineData("digest")]
     [InlineData("orphan-resource")]
@@ -278,6 +332,18 @@ public sealed class AiRenderPlanFactoryTests
         1);
 
     private static RenderFixture DynamicSizeFixture() => Fixture(dynamicSize: true);
+
+    private static SizeTable ReadySizeTable(DateTimeOffset now)
+    {
+        var candidate = SizeTableCandidate.Create(
+            "candidate_01",
+            SizeTableSource.Create("asset_front", new string('b', 64)),
+            0.99m,
+            ["尺码", "袖长"],
+            [["L", "/"], ["XL", "/"]]);
+        return SizeTable.FromCandidate(
+            "size_01", "batch_01", "style_01", "page_01", candidate, now);
+    }
 
     private static RenderFixture Fixture(bool dynamicSize = false)
     {
