@@ -60,6 +60,85 @@ public sealed class TemplateRenderPlanBuilderTests
         Assert.Equal("TPL_RENDER_SOURCE_MISSING", missing.Code);
     }
 
+    [Fact]
+    public void LearnedBindingRequiresExplicitTargetBatchSelection()
+    {
+        var page = TemplatePage.Create(
+            "page_render",
+            "revision_render",
+            0,
+            "主图页",
+            TemplatePageContentType.NormalComposition,
+            TemplateGenerationMode.OncePerProduct,
+            null,
+            true,
+            "resource_template");
+        var learned = FrameBinding.Create(
+            "frame_render",
+            "page_render",
+            LayerPath.Create([2]),
+            ExpectedLayerEvidence.Create(
+                257,
+                "registered_frame",
+                true,
+                false,
+                false,
+                false,
+                byte.MaxValue,
+                "normal",
+                LayerStructureSignature.Create("sha256:" + new string('b', 64))),
+            [],
+            SelectionRequirement.Create(
+                "请选择目标款商品图。",
+                [
+                    SelectionCriterion.Create("asset_id", "asset_reference"),
+                    SelectionCriterion.Create("reference_only", "true")
+                ]),
+            LayoutIntent.Create("subject_complete", 1, 0, 0, TemplateRect.Create(0, 0, 790, 1252)));
+        var revision = Commit(TemplateRevision.CreateDraft(
+            "revision_render",
+            "group_render",
+            1,
+            DateTimeOffset.UtcNow,
+            [page],
+            [learned]));
+        var builder = new TemplateRenderPlanBuilder(
+            new RenderPlanValidator(new JsonSchemaContractValidator()));
+        var geometry = new TemplateRenderSubjectGeometry(
+            "asset_target", 0m, 0m, 1m, 1m, 1m);
+        var request = new TemplateRenderPlanRequest(
+            "plan_learned",
+            "batch_learned_page_01",
+            "corr_learned",
+            "batch_learned",
+            "product_learned",
+            "artifact_learned",
+            "01-detail.jpg",
+            false,
+            null,
+            new DateTimeOffset(2026, 9, 5, 0, 0, 0, TimeSpan.Zero),
+            [new TemplateRenderSource("asset_reference", new string('c', 64), 32)]);
+
+        var missing = Assert.Throws<TemplateRuleViolationException>(() =>
+            builder.Build(revision, page, Resource(), request));
+        Assert.Equal("TPL_RENDER_SELECTIONS_INCOMPLETE", missing.Code);
+
+        var json = builder.Build(
+            revision,
+            page,
+            Resource(),
+            request with
+            {
+                Sources = [new TemplateRenderSource("asset_target", new string('e', 64), 48)],
+                ConfirmedSelections = [new TemplateRenderSelection("frame_render", "asset_target", geometry)]
+            });
+        using var document = JsonDocument.Parse(json);
+        Assert.Equal(
+            "asset_target",
+            document.RootElement.GetProperty("targets")[0].GetProperty("asset_resource_id").GetString());
+        Assert.DoesNotContain("asset_reference", json, StringComparison.Ordinal);
+    }
+
     private static FrameBinding Binding() => FrameBinding.Create(
         "frame_render",
         "page_render",

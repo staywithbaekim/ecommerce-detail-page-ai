@@ -69,6 +69,8 @@ public sealed partial class MainWindowViewModel
 
     public ICommand RemoveTemplatePageCommand { get; private set; } = null!;
 
+    public ICommand RemoveImportedPsdCommand { get; private set; } = null!;
+
     public ICommand AbandonTemplateDraftCommand { get; private set; } = null!;
 
     public ICommand KeepExistingDuplicateCommand { get; private set; } = null!;
@@ -121,7 +123,8 @@ public sealed partial class MainWindowViewModel
 
     public bool IsTemplateCalibrationPendingVisible => _templateScreen == TemplateScreen.CalibrationPending;
 
-    public bool IsTemplateCalibrationVisible => _templateScreen == TemplateScreen.Calibration;
+    public bool IsTemplateCalibrationVisible => _templateScreen is TemplateScreen.Calibration
+        or TemplateScreen.ReferenceLearning;
 
     public bool IsTemplateDialogVisible
     {
@@ -220,14 +223,18 @@ public sealed partial class MainWindowViewModel
 
     public TemplateCalibrationDraftView? CalibrationDraft { get; private set; }
 
-    public string? CalibrationPreviewImagePath => CalibrationDraft?.SelectedAssetId is { } assetId
-        ? CalibrationDraft.Assets.FirstOrDefault(asset => string.Equals(
-            asset.AssetId,
-            assetId,
-            StringComparison.Ordinal))?.SourceReference
-        : null;
+    public string? CalibrationPreviewImagePath => IsReferenceLearningReviewMode
+        ? SelectedReferenceLearningPhoto?.SourcePath
+        : CalibrationDraft?.SelectedAssetId is { } assetId
+            ? CalibrationDraft.Assets.FirstOrDefault(asset => string.Equals(
+                asset.AssetId,
+                assetId,
+                StringComparison.Ordinal))?.SourceReference
+            : null;
 
-    public string? CalibrationTemplatePreviewImagePath => CalibrationDraft?.TemplatePreviewSourceReference;
+    public string? CalibrationTemplatePreviewImagePath => IsReferenceLearningReviewMode
+        ? SelectedTemplatePage?.PreviewSourceReference
+        : CalibrationDraft?.TemplatePreviewSourceReference;
 
     public string CalibrationAssetActionText => SelectedCalibrationFrame?.IsRegistered == true
         ? "更换素材"
@@ -238,31 +245,51 @@ public sealed partial class MainWindowViewModel
         get
         {
             var index = SelectedTemplatePage is null ? -1 : TemplatePages.IndexOf(SelectedTemplatePage);
-            return index < 0 ? "校准" : $"校准 {index + 1}/{TemplatePages.Count}";
+            var prefix = IsReferenceLearningReviewMode ? "学习复核" : "校准";
+            return index < 0 ? prefix : $"{prefix} {index + 1}/{TemplatePages.Count}";
         }
     }
 
-    public bool CanEditCalibration => CalibrationDraft is { IsReadOnly: false, IsBlocked: false };
+    public bool CanEditCalibration => IsReferenceLearningReviewMode
+        ? CurrentReferenceLearningDocument is not null
+            && CurrentReferenceLearningDocument.State is not (ReferenceLearningState.Cancelled
+                or ReferenceLearningState.Committed
+                or ReferenceLearningState.Blocked)
+        : CalibrationDraft is { IsReadOnly: false, IsBlocked: false };
 
-    public bool CanClearCalibrationAsset => CanEditCalibration
+    public bool CanClearCalibrationAsset => !IsReferenceLearningReviewMode && CanEditCalibration
         && SelectedCalibrationFrame is { } frame
         && (frame.IsRegistered || frame.HasPersistedBinding);
 
-    public double CalibrationCanvasWidth => CalibrationDraft?.CanvasWidth ?? 790;
+    public double CalibrationCanvasWidth => IsReferenceLearningReviewMode
+        ? CurrentReferenceLearningDocument?.Canvas.Width ?? 790
+        : CalibrationDraft?.CanvasWidth ?? 790;
 
-    public double CalibrationCanvasHeight => CalibrationDraft?.CanvasHeight ?? 1252;
+    public double CalibrationCanvasHeight => IsReferenceLearningReviewMode
+        ? CurrentReferenceLearningDocument?.Canvas.Height ?? 1252
+        : CalibrationDraft?.CanvasHeight ?? 1252;
 
-    public double CalibrationFrameLeft => SelectedCalibrationFrame?.Left ?? 0;
+    public double CalibrationFrameLeft => IsReferenceLearningReviewMode
+        ? SelectedReferenceLearningFrame?.Left ?? 0
+        : SelectedCalibrationFrame?.Left ?? 0;
 
-    public double CalibrationFrameTop => SelectedCalibrationFrame?.Top ?? 0;
+    public double CalibrationFrameTop => IsReferenceLearningReviewMode
+        ? SelectedReferenceLearningFrame?.Top ?? 0
+        : SelectedCalibrationFrame?.Top ?? 0;
 
-    public double CalibrationFrameWidth => SelectedCalibrationFrame?.Width ?? 1;
+    public double CalibrationFrameWidth => IsReferenceLearningReviewMode
+        ? SelectedReferenceLearningFrame?.Width ?? 1
+        : SelectedCalibrationFrame?.Width ?? 1;
 
-    public double CalibrationFrameHeight => SelectedCalibrationFrame?.Height ?? 1;
+    public double CalibrationFrameHeight => IsReferenceLearningReviewMode
+        ? SelectedReferenceLearningFrame?.Height ?? 1
+        : SelectedCalibrationFrame?.Height ?? 1;
 
-    public string CalibrationFrameDisplayName => SelectedCalibrationFrame is { } frame
-        ? string.IsNullOrWhiteSpace(frame.LayerName) ? "当前图片框" : frame.LayerName
-        : "未选择";
+    public string CalibrationFrameDisplayName => IsReferenceLearningReviewMode
+        ? SelectedReferenceLearningFrame?.LayerName ?? "未选择"
+        : SelectedCalibrationFrame is { } frame
+            ? string.IsNullOrWhiteSpace(frame.LayerName) ? "当前图片框" : frame.LayerName
+            : "未选择";
 
     private TemplateFrameProjection? SelectedCalibrationFrame => CalibrationDraft?.Frames.FirstOrDefault(frame =>
         string.Equals(frame.FrameId, CalibrationFrameIdInput, StringComparison.Ordinal));
@@ -288,6 +315,12 @@ public sealed partial class MainWindowViewModel
         {
             if (SetTemplateField(ref _calibrationFrameIdInput, value))
             {
+                if (IsReferenceLearningReviewMode
+                    && SelectedReferenceLearningFrame?.FrameId != value)
+                {
+                    SelectReferenceLearningFrame(value);
+                    return;
+                }
                 NotifyCalibrationFrameChanged();
             }
         }
@@ -314,7 +347,14 @@ public sealed partial class MainWindowViewModel
     public string CalibrationRequirementInput
     {
         get => _calibrationRequirementInput;
-        set => SetTemplateField(ref _calibrationRequirementInput, value);
+        set
+        {
+            if (SetTemplateField(ref _calibrationRequirementInput, value))
+            {
+                OnPropertyChanged(nameof(CanAcceptReferenceLearningFrame));
+                RaiseReferenceLearningCommands();
+            }
+        }
     }
 
     public double CalibrationViewportZoom
@@ -325,6 +365,7 @@ public sealed partial class MainWindowViewModel
             if (SetTemplateField(ref _calibrationViewportZoom, Math.Clamp(value, 0.02, 4)))
             {
                 OnPropertyChanged(nameof(CalibrationZoomText));
+                OnPropertyChanged(nameof(CalibrationFooterMetaText));
             }
         }
     }
@@ -349,7 +390,9 @@ public sealed partial class MainWindowViewModel
 
     public bool HasImportedTemplateFiles => ImportedTemplateFiles.Count > 0;
 
-    public bool CanContinuePageSettings => HasImportedTemplateFiles && !TemplateBusy;
+    public bool CanContinuePageSettings => HasImportedTemplateFiles
+        && !TemplateBusy
+        && (!IsReferenceLearningModeSelected || HasReferenceLearningPhotoDirectory);
 
     public bool IsIncrementalTemplateDraft => _templateDraft?.IsIncremental == true;
 
@@ -432,6 +475,10 @@ public sealed partial class MainWindowViewModel
                 {
                     _ = LoadCalibrationPageAsync(value);
                 }
+                else if (_templateScreen == TemplateScreen.ReferenceLearning && value is not null)
+                {
+                    DisplayReferenceLearningPage(value);
+                }
             }
         }
     }
@@ -479,6 +526,49 @@ public sealed partial class MainWindowViewModel
         {
             TemplateBusy = false;
         }
+    }
+
+    public async Task ChoosePsdFolderAsync()
+    {
+        if (_folderPicker is null)
+        {
+            TemplateStatusMessage = "本机文件夹选择器不可用。";
+            return;
+        }
+
+        var selected = await _folderPicker.PickFolderAsync(
+            "选择包含模板 PSD 的文件夹（只读取直属 PSD）",
+            null,
+            CancellationToken.None).ConfigureAwait(true);
+        if (string.IsNullOrWhiteSpace(selected))
+        {
+            return;
+        }
+
+        string[] paths;
+        try
+        {
+            paths = Directory.EnumerateFiles(
+                    Path.GetFullPath(selected),
+                    "*.psd",
+                    SearchOption.TopDirectoryOnly)
+                .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            TemplateStatusMessage = "无法读取所选文件夹，请检查权限后重试。";
+            return;
+        }
+
+        if (paths.Length == 0)
+        {
+            TemplateStatusMessage = "所选文件夹中没有直属 PSD 文件；请确认 PSD 位于该文件夹内。";
+            return;
+        }
+
+        await ImportPsdFilesAsync(paths).ConfigureAwait(true);
     }
 
     public async Task MoveTemplatePageAsync(
@@ -533,10 +623,18 @@ public sealed partial class MainWindowViewModel
         await SelectCalibrationAssetAsync().ConfigureAwait(true);
     }
 
-    public Task CommitCalibrationGeometryAsync() => ApplyCalibrationGeometryAsync();
+    public Task CommitCalibrationGeometryAsync() => IsReferenceLearningReviewMode
+        ? Task.CompletedTask
+        : ApplyCalibrationGeometryAsync();
 
     public void SelectCalibrationFrame(string frameId)
     {
+        if (IsReferenceLearningReviewMode)
+        {
+            SelectReferenceLearningFrame(frameId);
+            return;
+        }
+
         if (CalibrationDraft?.Frames.Any(frame => string.Equals(
                 frame.FrameId,
                 frameId,
@@ -575,6 +673,7 @@ public sealed partial class MainWindowViewModel
         {
             _isCalibrationNarrowLayout = narrow;
             NotifyCalibrationLayoutChanged();
+            NotifyReferenceLearningStateChanged();
         }
 
         if (_isTemplatePageSettingsCompactLayout != compactPageSettings)
@@ -604,6 +703,7 @@ public sealed partial class MainWindowViewModel
         ReturnToPageSettingsCommand = new RelayCommand(() => SetTemplateScreen(TemplateScreen.PageSettings));
         ExitCalibrationCommand = new AsyncRelayCommand(ExitCalibrationAsync);
         RemoveTemplatePageCommand = new AsyncRelayCommand<TemplatePageRowViewModel>(RemoveTemplatePageAsync);
+        RemoveImportedPsdCommand = new AsyncRelayCommand<ImportedPsdRowViewModel>(RemoveImportedPsdAsync);
         AbandonTemplateDraftCommand = new AsyncRelayCommand(AbandonTemplateDraftAsync);
         KeepExistingDuplicateCommand = new AsyncRelayCommand(
             () => ResolveDuplicateAsync(TemplateDuplicateDecision.ReuseExisting));
@@ -623,7 +723,7 @@ public sealed partial class MainWindowViewModel
         UndoCalibrationCommand = new AsyncRelayCommand(() => ApplyCalibrationHistoryAsync(CalibrationUndoAction.Undo));
         RedoCalibrationCommand = new AsyncRelayCommand(() => ApplyCalibrationHistoryAsync(CalibrationUndoAction.Redo));
         ApplyCalibrationGeometryCommand = new AsyncRelayCommand(ApplyCalibrationGeometryAsync);
-        SaveTemplateCommand = new AsyncRelayCommand(SaveTemplateAsync);
+        SaveTemplateCommand = new AsyncRelayCommand(SaveTemplateAsync, () => CanSaveCurrentCalibration);
         ExportTemplateCommand = new AsyncRelayCommand(ExportTemplateAsync);
         ImportTemplatePackageCommand = new AsyncRelayCommand(ImportTemplatePackageAsync);
         SaveTemplateAsCommand = new AsyncRelayCommand(SaveTemplateAsAsync);
@@ -688,6 +788,8 @@ public sealed partial class MainWindowViewModel
         ImportedTemplateFiles.Clear();
         TemplatePages.Clear();
         TemplateStatusMessage = "";
+        SetTemplateCalibrationMode(TemplateCalibrationMode.DragAndDrop);
+        ResetReferenceLearningDraft();
         NotifyTemplateDraftChanged();
         SetTemplateScreen(TemplateScreen.Import);
     }
@@ -758,6 +860,8 @@ public sealed partial class MainWindowViewModel
             ImportedTemplateFiles.Clear();
             TemplatePages.Clear();
             TemplateStatusMessage = "原页面保持只读；请选择一个或多个新增 PSD。";
+            SetTemplateCalibrationMode(TemplateCalibrationMode.DragAndDrop);
+            ResetReferenceLearningDraft();
             NotifyTemplateDraftChanged();
             SetTemplateScreen(TemplateScreen.Import);
         }
@@ -860,6 +964,61 @@ public sealed partial class MainWindowViewModel
         ImportedTemplateFiles.Add(new ImportedPsdRowViewModel(imported));
         OnPropertyChanged(nameof(HasImportedTemplateFiles));
         OnPropertyChanged(nameof(CanContinuePageSettings));
+    }
+
+    private async Task RemoveImportedPsdAsync(ImportedPsdRowViewModel? item)
+    {
+        if (_templateWorkspace is null || _templateDraft is null || item is null)
+        {
+            return;
+        }
+
+        var confirmation = await ShowTemplateDialogAsync(
+            "移除这个 PSD？",
+            $"将从当前模板草稿中移除“{item.FileName}”，它不会再参与后续页面设置和学习。",
+            "只移除应用内部草稿记录，不会删除用户源 PSD。",
+            "移除 PSD",
+            "取消",
+            isDestructive: true).ConfigureAwait(true);
+        if (confirmation != TemplateDialogChoice.Primary)
+        {
+            return;
+        }
+
+        TemplateBusy = true;
+        try
+        {
+            await _templateWorkspace.RemovePageAsync(
+                _templateDraft,
+                item.PageId,
+                CancellationToken.None).ConfigureAwait(true);
+
+            ImportedTemplateFiles.Remove(item);
+            var page = TemplatePages.FirstOrDefault(candidate => string.Equals(
+                candidate.PageId,
+                item.PageId,
+                StringComparison.Ordinal));
+            if (page is not null)
+            {
+                var index = TemplatePages.IndexOf(page);
+                TemplatePages.Remove(page);
+                UpdatePageOrderLabels();
+                SelectedTemplatePage = TemplatePages.ElementAtOrDefault(Math.Max(0, index - 1))
+                    ?? TemplatePages.FirstOrDefault();
+            }
+
+            OnPropertyChanged(nameof(HasImportedTemplateFiles));
+            OnPropertyChanged(nameof(CanContinuePageSettings));
+            TemplateStatusMessage = "PSD 已从当前草稿移除；用户源 PSD 保持只读未改动。";
+        }
+        catch (InvalidOperationException exception)
+        {
+            TemplateStatusMessage = ToUserMessage(exception.Message);
+        }
+        finally
+        {
+            TemplateBusy = false;
+        }
     }
 
     private async Task ContinuePageSettingsAsync()
@@ -985,6 +1144,11 @@ public sealed partial class MainWindowViewModel
         TemplateStatusMessage = IsIncrementalTemplateDraft
             ? "新增页面设置已保存；下一步只校准新增页。"
             : "页面设置已保存；下一步进入统一校准编辑器。";
+        if (IsReferenceLearningModeSelected)
+        {
+            await StartReferenceLearningAsync().ConfigureAwait(true);
+            return;
+        }
         if (_templateCalibration is null || SelectedTemplatePage is null)
         {
             SetTemplateScreen(TemplateScreen.CalibrationPending);
@@ -1005,6 +1169,13 @@ public sealed partial class MainWindowViewModel
 
     private async Task ExitCalibrationAsync()
     {
+        if (IsReferenceLearningReviewMode)
+        {
+            TemplateStatusMessage = "学习复核草稿已保存；返回后可继续恢复。";
+            SetTemplateScreen(TemplateScreen.PageSettings);
+            return;
+        }
+
         if (_templateDraft is null || !IsTemplateCalibrationVisible)
         {
             SetTemplateScreen(TemplateScreen.PageSettings);
@@ -1270,6 +1441,12 @@ public sealed partial class MainWindowViewModel
 
     private async Task SaveTemplateAsync()
     {
+        if (IsReferenceLearningReviewMode)
+        {
+            await CommitReferenceLearningAsync().ConfigureAwait(true);
+            return;
+        }
+
         if (_templateWorkspace is null || _templateDraft is null)
         {
             return;
@@ -1568,6 +1745,11 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(IsTemplatePageSettingsVisible));
         OnPropertyChanged(nameof(IsTemplateCalibrationPendingVisible));
         OnPropertyChanged(nameof(IsTemplateCalibrationVisible));
+        OnPropertyChanged(nameof(IsReferenceLearningReviewMode));
+        OnPropertyChanged(nameof(IsManualCalibrationReviewMode));
+        OnPropertyChanged(nameof(CalibrationFrameItems));
+        OnPropertyChanged(nameof(CalibrationWorkflowStatusMessage));
+        OnPropertyChanged(nameof(CanSaveCurrentCalibration));
     }
 
     private void NotifyTemplateDraftChanged()
@@ -1587,6 +1769,7 @@ public sealed partial class MainWindowViewModel
         (ContinuePageSettingsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (StartCalibrationCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (ClearCalibrationAssetCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        (SaveTemplateCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
     }
 
     private bool SetTemplateField<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
@@ -1621,7 +1804,8 @@ public sealed partial class MainWindowViewModel
         Import,
         PageSettings,
         CalibrationPending,
-        Calibration
+        Calibration,
+        ReferenceLearning
     }
 
     private enum CalibrationNarrowPanel
@@ -1678,6 +1862,7 @@ public sealed record TemplatePageDetailsRowViewModel(
 }
 
 public sealed record ImportedPsdRowViewModel(
+    string PageId,
     string ResourceId,
     string FileName,
     string InspectionSummary,
@@ -1685,6 +1870,7 @@ public sealed record ImportedPsdRowViewModel(
 {
     public ImportedPsdRowViewModel(TemplateDraftPage page)
         : this(
+            page.Page.PageId,
             page.Resource.ResourceId,
             $"{page.Page.Name}.psd",
             $"{page.Resource.Inspection.Canvas.Width} × {page.Resource.Inspection.Canvas.Height} · "
@@ -1718,6 +1904,7 @@ public sealed class TemplatePageRowViewModel : INotifyPropertyChanged
         IsAffected = page.IsAffected;
         CanvasSummary = $"{page.Resource.Inspection.Canvas.Width} × {page.Resource.Inspection.Canvas.Height}";
         PreviewSourceReference = page.PreviewSourceReference;
+        InternalPsdRelativePath = page.Resource.InternalRelativePath;
     }
 
     public static IReadOnlyList<string> ContentTypeOptions { get; } = ["普通套图页", "动态尺码表页"];
@@ -1744,6 +1931,8 @@ public sealed class TemplatePageRowViewModel : INotifyPropertyChanged
     public string CanvasSummary { get; }
 
     public string? PreviewSourceReference { get; }
+
+    public string InternalPsdRelativePath { get; }
 
     public string DisplayOrder => _displayOrder.ToString("D2", System.Globalization.CultureInfo.InvariantCulture);
 

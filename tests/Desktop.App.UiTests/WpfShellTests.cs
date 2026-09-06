@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Desktop.Application.Ai;
+using Desktop.Application.Psd;
 using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
 using Xunit.Abstractions;
@@ -715,6 +716,219 @@ public sealed class WpfShellTests
     }
 
     [Fact]
+    public void ReferenceLearningUsesCalibrationEditorAndBlocksSaveUntilExplicitReview()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var sourceRoot = Path.Combine(
+                Path.GetTempPath(),
+                "tpl-learn-ui-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sourceRoot);
+            var photoPath = Path.Combine(sourceRoot, "front.png");
+            File.WriteAllBytes(photoPath, Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+            var document = CreateReferenceLearningDocument();
+            var learning = new RecordingReferenceLearningService(document);
+            var commit = new RecordingReferenceLearningCommitService();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                referenceLearningService: learning,
+                referenceLearningCommitService: commit);
+            var session = new TemplateDraftSession(
+                "group_learning_ui",
+                "人工结果学习模板",
+                "revision_learning_ui",
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            var page = CreateReferenceLearningPage();
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDraft",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, session);
+            typeof(MainWindowViewModel).GetField(
+                    "_referenceLearningPhotoDirectory",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, sourceRoot);
+            viewModel.TemplatePages.Add(page);
+            viewModel.SelectedTemplatePage = page;
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+            var setMode = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateCalibrationMode",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            setMode.Invoke(viewModel, [TemplateCalibrationMode.ReferenceLearning]);
+            var start = typeof(MainWindowViewModel).GetMethod(
+                "StartReferenceLearningAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            Assert.IsAssignableFrom<Task>(start.Invoke(viewModel, null)).GetAwaiter().GetResult();
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsReferenceLearningReviewMode);
+                Assert.True(FindByAutomationId<Grid>(window, "TemplateCalibrationPage").IsVisible);
+                Assert.True(FindByAutomationId<StackPanel>(window, "ReferenceLearningEvidencePanel").IsVisible);
+                Assert.True(FindByAutomationId<ListBox>(window, "ReferenceLearningPhotoList").IsVisible);
+                Assert.True(FindByAutomationId<StackPanel>(window, "ReferenceLearningReviewActions").IsVisible);
+                Assert.Equal("待复核", viewModel.ReferenceLearningDecisionText);
+                Assert.Equal("front.png", viewModel.SelectedReferenceLearningPhoto!.DisplayName);
+                Assert.False(FindByAutomationId<Button>(window, "SaveTemplateGroupButton").IsEnabled);
+                Assert.False(FindByAutomationId<Button>(window, "AcceptReferenceLearningFrameButton").IsEnabled);
+                Assert.True(FindByAutomationId<Button>(window, "RejectReferenceLearningFrameButton").IsEnabled);
+                Assert.True(FindByAutomationId<Button>(window, "CancelReferenceLearningButton").IsVisible);
+
+                viewModel.CalibrationRequirementInput = "完整正面图，主体完整";
+                FlushLayout(window);
+                Assert.True(FindByAutomationId<Button>(window, "AcceptReferenceLearningFrameButton").IsEnabled);
+                var applyReview = typeof(MainWindowViewModel).GetMethod(
+                    "ApplyReferenceLearningReviewAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(applyReview.Invoke(
+                    viewModel,
+                    [ReferenceReviewDecision.Accepted])).GetAwaiter().GetResult();
+                FlushLayout(window);
+
+                Assert.Equal("已确认", viewModel.ReferenceLearningDecisionText);
+                Assert.True(viewModel.CanCommitReferenceLearning);
+                Assert.True(FindByAutomationId<Button>(window, "SaveTemplateGroupButton").IsEnabled);
+
+                SetWindowSize(window, 1100, 760);
+                Assert.True(viewModel.IsCalibrationNarrowLayout);
+                Assert.True(FindByAutomationId<StackPanel>(window, "CalibrationNarrowPanelSwitcher").IsVisible);
+
+                var save = typeof(MainWindowViewModel).GetMethod(
+                    "SaveTemplateAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(save.Invoke(viewModel, null)).GetAwaiter().GetResult();
+                FlushLayout(window);
+                Assert.True(commit.CommitCalled);
+                Assert.Equal(2, learning.StrictResumeCount);
+                Assert.False(viewModel.IsReferenceLearningReviewMode);
+                Assert.True(FindByAutomationId<Grid>(window, "TemplateDetailsPage").IsVisible);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+                if (Directory.Exists(sourceRoot))
+                {
+                    Directory.Delete(sourceRoot, recursive: true);
+                }
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void ReferenceLearningOffersPageAndBatchConfirmationForQualifiedCandidates()
+    {
+        RunInSta(() =>
+        {
+            var application = System.Windows.Application.Current as Desktop.App.App;
+            var ownsApplication = application is null;
+            application ??= new Desktop.App.App();
+            application.InitializeComponent();
+            var sourceRoot = Path.Combine(
+                Path.GetTempPath(),
+                "tpl-learn-batch-ui-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sourceRoot);
+            File.WriteAllBytes(Path.Combine(sourceRoot, "front.png"), [1]);
+            var document = CreateReferenceLearningDocument(inferredSemantic: true);
+            var learning = new RecordingReferenceLearningService(document);
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                referenceLearningService: learning);
+            var session = new TemplateDraftSession(
+                "group_learning_batch_ui",
+                "人工结果学习模板",
+                "revision_learning_batch_ui",
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            var page = CreateReferenceLearningPage();
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDraft",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, session);
+            typeof(MainWindowViewModel).GetField(
+                    "_referenceLearningPhotoDirectory",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, sourceRoot);
+            viewModel.TemplatePages.Add(page);
+            viewModel.SelectedTemplatePage = page;
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+            var setMode = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateCalibrationMode",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            setMode.Invoke(viewModel, [TemplateCalibrationMode.ReferenceLearning]);
+            var start = typeof(MainWindowViewModel).GetMethod(
+                "StartReferenceLearningAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            Assert.IsAssignableFrom<Task>(start.Invoke(viewModel, null)).GetAwaiter().GetResult();
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                Assert.True(viewModel.CanConfirmReferenceLearningPage);
+                Assert.True(viewModel.CanConfirmAllQualifiedReferenceLearning);
+                Assert.True(FindByAutomationId<Button>(window, "ConfirmReferenceLearningPageButton").IsEnabled);
+                Assert.True(FindByAutomationId<Button>(window, "ConfirmAllQualifiedReferenceLearningButton").IsEnabled);
+
+                var confirmPage = typeof(MainWindowViewModel).GetMethod(
+                    "ConfirmReferenceLearningPageAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(confirmPage.Invoke(viewModel, null)).GetAwaiter().GetResult();
+                FlushLayout(window);
+
+                Assert.Equal(1, learning.LastReviewCount);
+                Assert.Equal(ReferenceReviewDecision.Accepted, viewModel.ReferenceLearningFrames[0].Decision);
+                Assert.False(viewModel.CanConfirmReferenceLearningPage);
+                Assert.False(viewModel.CanConfirmAllQualifiedReferenceLearning);
+                Assert.True(viewModel.CanCommitReferenceLearning);
+
+                learning.Reset(document);
+                var reanalyze = typeof(MainWindowViewModel).GetMethod(
+                    "ReanalyzeCurrentReferenceLearningPageAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(reanalyze.Invoke(viewModel, null)).GetAwaiter().GetResult();
+                Assert.True(viewModel.CanConfirmAllQualifiedReferenceLearning);
+                var confirmAll = typeof(MainWindowViewModel).GetMethod(
+                    "ConfirmAllQualifiedReferenceLearningAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(confirmAll.Invoke(viewModel, null)).GetAwaiter().GetResult();
+                Assert.Equal(1, learning.LastReviewCount);
+                Assert.False(viewModel.CanConfirmAllQualifiedReferenceLearning);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+                if (Directory.Exists(sourceRoot))
+                {
+                    Directory.Delete(sourceRoot, recursive: true);
+                }
+                if (ownsApplication)
+                {
+                    application.Shutdown();
+                }
+            }
+        });
+    }
+
+    [Fact]
     public void ImportedPsdImmediatelyRequeriesContinueCommand()
     {
         var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
@@ -724,6 +938,7 @@ public sealed class WpfShellTests
         Assert.False(viewModel.ContinuePageSettingsCommand.CanExecute(null));
 
         viewModel.ImportedTemplateFiles.Add(new ImportedPsdRowViewModel(
+            "page_ui_test",
             "resource_ui_test",
             "template.psd",
             "790 × 1252 · 8 位 RGB",
@@ -1419,6 +1634,109 @@ public sealed class WpfShellTests
         CanRedo: false,
         IsBlocked: false);
 
+    private static TemplatePageRowViewModel CreateReferenceLearningPage()
+    {
+        var inspection = new PsdInspectionDocument(
+            new string('b', 64),
+            4,
+            new PsdCanvasInspection(790, 1252, 8, "RGB"),
+            1,
+            1,
+            0,
+            0,
+            0,
+            "sha256:" + new string('c', 64),
+            new PsdInspectionTiming(1, 1, 2),
+            1024,
+            null,
+            []);
+        var page = new TemplateDraftPage(
+            new TemplatePageProjection(
+                "page_learning_ui",
+                0,
+                "详情页",
+                TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct,
+                null,
+                true,
+                "resource_learning_ui"),
+            new ImportedTemplateResource(
+                "resource_learning_ui",
+                "group_learning_ui",
+                "revision_learning_ui",
+                "templates/groups/group_learning_ui/drafts/revision_learning_ui/staging/resource_learning_ui/template.psd",
+                4,
+                new string('b', 64),
+                "sha256:" + new string('c', 64),
+                inspection,
+                new DateTimeOffset(2026, 9, 5, 0, 0, 0, TimeSpan.Zero)),
+            true,
+            null);
+        return new TemplatePageRowViewModel(page, _ => { });
+    }
+
+    private static ReferenceLearningDocument CreateReferenceLearningDocument(bool inferredSemantic = false)
+    {
+        var photo = new ReferencePhotoFingerprint(
+            "asset_learning_front",
+            "front.png",
+            "front.png",
+            68,
+            new string('a', 64),
+            "image/png",
+            1,
+            1);
+        var candidate = new ReferenceFrameCandidate(
+            "learn_frame_7",
+            "page_learning_ui",
+            [0],
+            7,
+            "图层 7",
+            "sha256:" + new string('c', 64),
+            true,
+            true,
+            false,
+            false,
+            false,
+            255,
+            "normal",
+            [0, 0, 790, 0, 790, 1252, 0, 1252],
+            ReferenceMatchState.Exact,
+            photo.AssetId,
+            photo.RelativePath,
+            photo.Sha256,
+            inferredSemantic ? "完整正面图" : "",
+            1,
+            Desktop.Domain.Templates.LayoutIntent.Create(
+                "subject_cover",
+                1,
+                0,
+                0,
+                Desktop.Domain.Templates.TemplateRect.Create(0, 0, 790, 1252)));
+        var candidates = new[] { candidate };
+        var photos = new[] { photo };
+        return new ReferenceLearningDocument(
+            "learn_ui",
+            "page_learning_ui",
+            "templates/groups/group_learning_ui/drafts/revision_learning_ui/staging/resource_learning_ui/template.psd",
+            "sha256:" + new string('b', 64),
+            4,
+            "sha256:" + new string('c', 64),
+            new PsdCanvasInspection(790, 1252, 8, "RGB"),
+            "sha256:" + new string('d', 64),
+            photos,
+            candidates,
+            ReferenceLearningState.AwaitingReview,
+            ReferenceLearningDigest.Compute(
+                "sha256:" + new string('b', 64),
+                "sha256:" + new string('c', 64),
+                "sha256:" + new string('d', 64),
+                photos,
+                candidates),
+            new DateTimeOffset(2026, 9, 5, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 9, 5, 0, 0, 0, TimeSpan.Zero));
+    }
+
     private static void ApplyCalibrationDraft(
         MainWindowViewModel viewModel,
         TemplateCalibrationDraftView draft)
@@ -1794,6 +2112,127 @@ public sealed class WpfShellTests
             PrepareRenderingCount++;
             return Task.FromResult(RenderPreparation
                 ?? throw new InvalidOperationException("TEST_RENDER_PREPARATION_MISSING"));
+        }
+    }
+
+    private sealed class RecordingReferenceLearningService(ReferenceLearningDocument initial)
+        : IReferenceLearningService
+    {
+        private ReferenceLearningDocument _document = initial;
+
+        public int StrictResumeCount { get; private set; }
+
+        public int LastReviewCount { get; private set; }
+
+        public void Reset(ReferenceLearningDocument document) => _document = document;
+
+        public Task<ReferenceLearningResult> AnalyzeAsync(
+            ReferenceLearningRequest request,
+            CancellationToken cancellationToken = default) => Task.FromResult(
+            ReferenceLearningResult.Success(_document));
+
+        public Task<ReferenceLearningResult> ApplyReviewAsync(
+            ReferenceLearningDocument document,
+            IReadOnlyList<ReferenceFrameReview> reviews,
+            CancellationToken cancellationToken = default)
+        {
+            LastReviewCount = reviews.Count;
+            var review = Assert.Single(reviews);
+            var candidate = Assert.Single(document.Candidates);
+            var photo = Assert.Single(document.ReferencePhotos);
+            var reviewed = candidate with
+            {
+                MatchState = ReferenceMatchState.Exact,
+                ReferenceAssetId = review.ReferenceAssetId ?? photo.AssetId,
+                ReferencePhotoRelativePath = photo.RelativePath,
+                SemanticLabel = review.SemanticLabel ?? candidate.SemanticLabel,
+                Confidence = 1,
+                ReviewDecision = review.Decision,
+                LayoutIntent = Desktop.Domain.Templates.LayoutIntent.Create(
+                    candidate.LayoutIntent.Intent,
+                    review.Scale ?? candidate.LayoutIntent.Scale,
+                    review.OffsetX ?? candidate.LayoutIntent.OffsetX,
+                    review.OffsetY ?? candidate.LayoutIntent.OffsetY,
+                    candidate.LayoutIntent.SafeBounds)
+            };
+            var state = review.Decision == ReferenceReviewDecision.Accepted
+                ? ReferenceLearningState.ReadyToCommit
+                : ReferenceLearningState.RequiresManualCalibration;
+            _document = document.WithCandidates(
+                [reviewed],
+                state,
+                state == ReferenceLearningState.ReadyToCommit ? null : "需要人工校准。",
+                document.UpdatedAt.AddSeconds(1));
+            return Task.FromResult(ReferenceLearningResult.Success(_document));
+        }
+
+        public Task<ReferenceLearningResult> ResumeAsync(
+            string learningId,
+            CancellationToken cancellationToken = default) => Task.FromResult(
+            ReferenceLearningResult.Success(_document));
+
+        public Task<ReferenceLearningResult> ResumeAsync(
+            ReferenceLearningRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            StrictResumeCount++;
+            return Task.FromResult(ReferenceLearningResult.Success(_document));
+        }
+
+        public Task<ReferenceLearningResult> CancelAsync(
+            ReferenceLearningDocument document,
+            CancellationToken cancellationToken = default)
+        {
+            _document = document with
+            {
+                State = ReferenceLearningState.Cancelled,
+                UpdatedAt = document.UpdatedAt.AddSeconds(1),
+                BlockReason = "用户取消学习。"
+            };
+            return Task.FromResult(ReferenceLearningResult.Success(_document));
+        }
+    }
+
+    private sealed class RecordingReferenceLearningCommitService : IReferenceLearningCommitService
+    {
+        public bool CommitCalled { get; private set; }
+
+        public Task<ReferenceLearningCommitResult> CommitAsync(
+            ReferenceLearningDocument document,
+            TemplateDraftSession draftSession,
+            CancellationToken cancellationToken = default) => CommitAsync(
+            [document],
+            draftSession,
+            cancellationToken);
+
+        public Task<ReferenceLearningCommitResult> CommitAsync(
+            IReadOnlyList<ReferenceLearningDocument> documents,
+            TemplateDraftSession draftSession,
+            CancellationToken cancellationToken = default)
+        {
+            CommitCalled = true;
+            var document = Assert.Single(documents) with
+            {
+                State = ReferenceLearningState.Committed,
+                UpdatedAt = documents[0].UpdatedAt.AddSeconds(1)
+            };
+            var details = new TemplateGroupDetails(
+                draftSession.GroupId,
+                draftSession.GroupName,
+                draftSession.DraftRevisionId,
+                draftSession.RevisionNo,
+                [new TemplatePageProjection(
+                    "page_learning_ui",
+                    0,
+                    "详情页",
+                    TemplatePageContentTypeOption.NormalComposition,
+                    TemplateGenerationModeOption.OncePerProduct,
+                    null,
+                    true,
+                    "resource_learning_ui")],
+                true,
+                document.UpdatedAt);
+            return Task.FromResult(ReferenceLearningCommitResult.Success(document, details));
         }
     }
 

@@ -114,4 +114,18 @@ public sealed record PsdSmartObjectInspection(
     string DetectedFileType,
     long FileSize,
     bool IsPsd,
-    IReadOnlyList<double> TransformBox);
+    IReadOnlyList<double> TransformBox)
+{
+    /// <summary>
+    /// SHA-256 of the embedded payload when the smart object is an embedded
+    /// data resource.  External links deliberately return <c>null</c> so a
+    /// caller cannot accidentally dereference an untrusted path.
+    /// </summary>
+    public string? EmbeddedContentSha256 { get; init; }
+
+    /// <summary>
+    /// True only when the worker was able to inspect embedded bytes.  This is
+    /// separate from <see cref="Kind"/> to keep old worker responses readable.
+    /// </summary>
+    public bool EmbeddedContentAvailable { get; init; }
+}

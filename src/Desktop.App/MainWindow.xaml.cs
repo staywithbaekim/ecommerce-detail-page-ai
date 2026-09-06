@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.IO;
 using Desktop.Application.Templates;
 using Microsoft.Win32;
 
@@ -47,6 +48,19 @@ public partial class MainWindow : Window
 
     private async void ChoosePsdFiles_Click(object sender, RoutedEventArgs e)
     {
+        await ChoosePsdFilesAsync().ConfigureAwait(true);
+    }
+
+    private async void ChoosePsdFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel viewModel)
+        {
+            await viewModel.ChoosePsdFolderAsync().ConfigureAwait(true);
+        }
+    }
+
+    private async Task ChoosePsdFilesAsync()
+    {
         var dialog = new OpenFileDialog
         {
             Title = "选择模板 PSD",
@@ -59,6 +73,20 @@ public partial class MainWindow : Window
         {
             await viewModel.ImportPsdFilesAsync(dialog.FileNames).ConfigureAwait(true);
         }
+    }
+
+    private async void PsdDropZone_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel viewModel
+            || viewModel.HasImportedTemplateFiles
+            || FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null
+            || FindAncestor<TextBox>(e.OriginalSource as DependencyObject) is not null)
+        {
+            return;
+        }
+
+        await ChoosePsdFilesAsync().ConfigureAwait(true);
+        e.Handled = true;
     }
 
     private async void ChooseCalibrationAsset_Click(object sender, RoutedEventArgs e)
@@ -81,6 +109,7 @@ public partial class MainWindow : Window
     {
         if (DataContext is not MainWindowViewModel viewModel
             || !viewModel.IsTemplateCalibrationVisible
+            || viewModel.IsReferenceLearningReviewMode
             || Keyboard.FocusedElement is TextBox)
         {
             return;
@@ -113,17 +142,32 @@ public partial class MainWindow : Window
 
     private void CalibrationFrame_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: TemplateFrameProjection frame }
-            && DataContext is MainWindowViewModel viewModel)
+        if (sender is not FrameworkElement element
+            || DataContext is not MainWindowViewModel viewModel)
         {
-            viewModel.SelectCalibrationFrame(frame.FrameId);
-            e.Handled = true;
+            return;
         }
+
+        var frameId = element.DataContext switch
+        {
+            TemplateFrameProjection frame => frame.FrameId,
+            ReferenceLearningFrameViewModel frame => frame.FrameId,
+            _ => null
+        };
+        if (frameId is null)
+        {
+            return;
+        }
+
+        viewModel.SelectCalibrationFrame(frameId);
+        e.Handled = true;
     }
 
     private void CalibrationCanvas_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(typeof(TemplateCalibrationAsset))
+        e.Effects = DataContext is MainWindowViewModel { IsReferenceLearningReviewMode: true }
+            ? DragDropEffects.None
+            : e.Data.GetDataPresent(typeof(TemplateCalibrationAsset))
             || GetDroppedCalibrationAssetPaths(e.Data).Length > 0
                 ? DragDropEffects.Copy
                 : DragDropEffects.None;
@@ -132,7 +176,7 @@ public partial class MainWindow : Window
 
     private async void CalibrationCanvas_Drop(object sender, DragEventArgs e)
     {
-        if (DataContext is MainWindowViewModel viewModel)
+        if (DataContext is MainWindowViewModel { IsReferenceLearningReviewMode: false } viewModel)
         {
             if (e.Data.GetData(typeof(TemplateCalibrationAsset)) is TemplateCalibrationAsset asset)
             {
@@ -154,11 +198,23 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (FindAncestor<FrameworkElement>(e.OriginalSource as DependencyObject)?.DataContext
-            is TemplateFrameProjection frame)
+        var frameContext = FindAncestor<FrameworkElement>(e.OriginalSource as DependencyObject)?.DataContext;
+        var frameId = frameContext switch
         {
-            viewModel.SelectCalibrationFrame(frame.FrameId);
-            if (!frame.IsSelected || viewModel.CalibrationPreviewImagePath is null)
+            TemplateFrameProjection frame => frame.FrameId,
+            ReferenceLearningFrameViewModel frame => frame.FrameId,
+            _ => null
+        };
+        if (frameId is not null)
+        {
+            viewModel.SelectCalibrationFrame(frameId);
+            var selected = frameContext switch
+            {
+                TemplateFrameProjection frame => frame.IsSelected,
+                ReferenceLearningFrameViewModel frame => frame.IsSelected,
+                _ => false
+            };
+            if (!selected || viewModel.CalibrationPreviewImagePath is null)
             {
                 e.Handled = true;
                 return;
@@ -205,7 +261,7 @@ public partial class MainWindow : Window
 
         _isCalibrationDragging = false;
         canvas.ReleaseMouseCapture();
-        if (DataContext is MainWindowViewModel viewModel)
+        if (DataContext is MainWindowViewModel { IsReferenceLearningReviewMode: false } viewModel)
         {
             await viewModel.CommitCalibrationGeometryAsync().ConfigureAwait(true);
         }
@@ -501,11 +557,43 @@ public partial class MainWindow : Window
             return [];
         }
 
-        return paths.Where(path => string.Equals(
-                System.IO.Path.GetExtension(path),
-                ".psd",
-                StringComparison.OrdinalIgnoreCase))
+        var psdPaths = new List<string>();
+        foreach (var path in paths)
+        {
+            if (Directory.Exists(path))
+            {
+                try
+                {
+                    psdPaths.AddRange(Directory.EnumerateFiles(
+                        path,
+                        "*.psd",
+                        SearchOption.TopDirectoryOnly));
+                }
+                catch (IOException)
+                {
+                    // The import operation reports readable-file failures. A drag-over
+                    // probe must stay side-effect free and must not throw for a folder
+                    // that is temporarily unavailable.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // See the IOException branch above.
+                }
+            }
+            else if (File.Exists(path)
+                     && string.Equals(
+                         System.IO.Path.GetExtension(path),
+                         ".psd",
+                         StringComparison.OrdinalIgnoreCase))
+            {
+                psdPaths.Add(path);
+            }
+        }
+
+        return psdPaths
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => System.IO.Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 

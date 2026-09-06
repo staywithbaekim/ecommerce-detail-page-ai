@@ -7,5 +7,6 @@ public enum ContractDocumentKind
     TemplateRevisionManifest,
     TemplatePackageManifest,
     AssetManifest,
-    AiAnalysis
+    AiAnalysis,
+    ReferenceLearning
 }

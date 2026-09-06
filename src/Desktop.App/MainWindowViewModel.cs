@@ -24,7 +24,9 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         IFolderPicker? folderPicker = null,
         IBatchInputWorkflow? batchInputWorkflow = null,
         IAiBatchAnalysisWorkflow? aiBatchAnalysisWorkflow = null,
-        ISizeTableEditingWorkflow? sizeTableEditingWorkflow = null)
+        ISizeTableEditingWorkflow? sizeTableEditingWorkflow = null,
+        IReferenceLearningService? referenceLearningService = null,
+        IReferenceLearningCommitService? referenceLearningCommitService = null)
     {
         NavigationItems =
         [
@@ -48,6 +50,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             new("外置盘批次", "外置盘模板 · 25 款", "外置盘模板", "等待恢复", "Recoverable", "昨天 16:08", "查看")
         ];
         InitializeTemplates(templateWorkspace, templateCalibration, templatePackages);
+        InitializeReferenceLearning(referenceLearningService, referenceLearningCommitService);
         InitializeBatchInput(folderPicker, batchInputWorkflow);
         InitializeAiBatchAnalysis(aiBatchAnalysisWorkflow);
         InitializeSizeTableEditor(sizeTableEditingWorkflow);

@@ -9,6 +9,8 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class PsdInspectionWorkerClientTests
 {
     private static readonly int[] RootLayerPath = [0];
+    private static readonly int[] TenByTenBounds = [0, 0, 10, 10];
+    private static readonly double[] TenByTenTransform = [0, 0, 10, 0, 10, 10, 0, 10];
 
     [Fact]
     public async Task RejectsPathOutsideApplicationRootBeforeWorkerLaunch()
@@ -109,6 +111,43 @@ public sealed class PsdInspectionWorkerClientTests
         Assert.Equal("TPL_PSD_WORKER_RESPONSE_TOO_LARGE", result.Error!.Code);
     }
 
+    [Fact]
+    public async Task MapsEmbeddedPayloadDigestFromWorkerResponse()
+    {
+        using var directory = new TestDirectory();
+        await CreateInternalCopy(directory.Path);
+        var response = ValidResponseWithEmbeddedPayload("request-07", new string('C', 64));
+        var client = CreateScriptClient(directory.Path, WriteResponseScript(response));
+
+        var result = await client.InspectAsync(
+            new PsdInspectionRequest("request-07", "templates\\internal.psd"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        var smartObject = Assert.Single(result.Inspection!.Layers).SmartObject!;
+        Assert.True(smartObject.EmbeddedContentAvailable);
+        Assert.Equal(new string('C', 64), smartObject.EmbeddedContentSha256);
+    }
+
+    [Fact]
+    public async Task RejectsDigestWhenEmbeddedPayloadIsUnavailable()
+    {
+        using var directory = new TestDirectory();
+        await CreateInternalCopy(directory.Path);
+        var response = ValidResponseWithEmbeddedPayload(
+            "request-08",
+            new string('C', 64),
+            available: false);
+        var client = CreateScriptClient(directory.Path, WriteResponseScript(response));
+
+        var result = await client.InspectAsync(
+            new PsdInspectionRequest("request-08", "templates\\internal.psd"),
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("TPL_PSD_WORKER_INVALID_RESPONSE", result.Error!.Code);
+    }
+
     private static PsdInspectionWorkerClient CreateClient(string root) => new(
         new LocalAppPathPolicy(root),
         new PsdInspectionWorkerOptions(
@@ -197,4 +236,64 @@ public sealed class PsdInspectionWorkerClientTests
                     },
                 },
             });
+
+    private static string ValidResponseWithEmbeddedPayload(
+        string requestId,
+        string digest,
+        bool available = true) => JsonSerializer.Serialize(new
+        {
+            schema_version = PsdInspectionProtocol.Version,
+            request_id = requestId,
+            ok = true,
+            error = (object?)null,
+            inspection = new
+            {
+                file_sha256 = new string('A', 64),
+                size_bytes = 3,
+                canvas = new { width = 10, height = 10, depth = 8, color_mode = "RGB" },
+                layer_count = 1,
+                smart_object_count = 1,
+                mask_count = 0,
+                vector_mask_count = 0,
+                clipping_count = 0,
+                structure_signature = new string('B', 64),
+                timing_ms = new { open = 1.0, inspect = 2.0, total = 3.0 },
+                process_peak_working_set_bytes = 1,
+                preview = (object?)null,
+                layers = new[]
+                {
+                    new
+                    {
+                        path = RootLayerPath,
+                        layer_id = 1,
+                        name = "front",
+                        kind = "smartobject",
+                        is_group = false,
+                        visible = true,
+                        effective_visible = true,
+                        clipping = false,
+                        opacity = 255,
+                        fill_opacity = 255,
+                        blend_mode = "normal",
+                        bbox = TenByTenBounds,
+                        has_mask = false,
+                        has_vector_mask = false,
+                        clipping_base = (object?)null,
+                        smart_object = new
+                        {
+                            unique_id = "so_01",
+                            filename = "front.png",
+                            kind = "data",
+                            file_type = "png",
+                            detected_file_type = "png",
+                            file_size = 3,
+                            is_psd = false,
+                            transform_box = TenByTenTransform,
+                            embedded_content_sha256 = digest,
+                            embedded_content_available = available
+                        }
+                    }
+                }
+            }
+        });
 }

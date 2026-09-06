@@ -337,7 +337,11 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
                 layer.SmartObject.DetectedFileType!,
                 layer.SmartObject.FileSize,
                 layer.SmartObject.IsPsd,
-                layer.SmartObject.TransformBox!));
+                layer.SmartObject.TransformBox!)
+            {
+                EmbeddedContentSha256 = layer.SmartObject.EmbeddedContentSha256,
+                EmbeddedContentAvailable = layer.SmartObject.EmbeddedContentAvailable
+            });
 
     private static PsdLayerBounds Bounds(int[] values) => new(
         values[0],
@@ -427,7 +431,10 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
              !string.IsNullOrWhiteSpace(layer.SmartObject.DetectedFileType) &&
              layer.SmartObject.FileSize >= 0 &&
              layer.SmartObject.TransformBox is { Length: 8 } &&
-             layer.SmartObject.TransformBox.All(double.IsFinite));
+             layer.SmartObject.TransformBox.All(double.IsFinite) &&
+             (layer.SmartObject.EmbeddedContentAvailable
+                 ? IsSha256(layer.SmartObject.EmbeddedContentSha256)
+                 : layer.SmartObject.EmbeddedContentSha256 is null));
     }
 
     private static bool IsValid(WorkerClippingBase clippingBase) =>
@@ -575,7 +582,9 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         string? DetectedFileType,
         long FileSize,
         bool IsPsd,
-        double[]? TransformBox);
+        double[]? TransformBox,
+        string? EmbeddedContentSha256,
+        bool EmbeddedContentAvailable);
 
     private sealed class WorkerOutputLimitException : Exception;
 }

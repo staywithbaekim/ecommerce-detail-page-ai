@@ -35,6 +35,8 @@ public sealed record TemplateFrameProjection(
 
     public string RegistrationLabel => IsRegistered ? "已绑定素材" : "未绑定，可跳过";
 
+    public string StatusColor => IsRegistered ? "#34C759" : "#8E8E93";
+
     public string PreviewLabel => IsPreviewSupported ? "可预览" : "预览受限";
 }
 

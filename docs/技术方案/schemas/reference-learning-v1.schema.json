@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reference-learning/v1",
+  "title": "PSD reference learning result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "learning_id",
+    "page_id",
+    "internal_psd_relative_path",
+    "psd_sha256",
+    "psd_length",
+    "structure_signature",
+    "canvas",
+    "reference_folder_digest",
+    "reference_photos",
+    "candidates",
+    "state",
+    "rules_digest",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "reference-learning/v1" },
+    "learning_id": { "$ref": "#/$defs/id" },
+    "page_id": { "$ref": "#/$defs/id" },
+    "internal_psd_relative_path": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_./-]+$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "psd_sha256": { "$ref": "#/$defs/sha256" },
+    "psd_length": { "type": "integer", "minimum": 1 },
+    "structure_signature": { "$ref": "#/$defs/sha256" },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "depth", "color_mode"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "depth": { "type": "integer", "minimum": 1 },
+        "color_mode": { "type": "string", "minLength": 1 }
+      }
+    },
+    "reference_folder_digest": { "$ref": "#/$defs/sha256" },
+    "reference_photos": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/photo" }
+    },
+    "candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "state": {
+      "enum": [
+        "Draft",
+        "Inspecting",
+        "Matching",
+        "AwaitingReview",
+        "ReadyToCommit",
+        "Committed",
+        "RequiresManualCalibration",
+        "Blocked",
+        "Cancelled"
+      ]
+    },
+    "rules_digest": { "$ref": "#/$defs/sha256" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "block_reason": { "type": ["string", "null"], "maxLength": 2000 }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "photo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "file_name", "relative_path", "length", "sha256", "mime_type", "width", "height"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/id" },
+        "file_name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "relative_path": { "type": "string", "pattern": "^[^\\:/]+(?:/[^\\:/]+)*$" },
+        "length": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mime_type": { "type": "string", "enum": ["image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "page_id", "layer_path", "layer_id", "layer_name", "structure_signature", "match_state", "semantic_label", "confidence", "layout_intent", "review_decision"],
+      "properties": {
+        "frame_id": { "$ref": "#/$defs/id" },
+        "page_id": { "$ref": "#/$defs/id" },
+        "layer_path": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
+        "layer_id": { "type": "integer", "minimum": 1 },
+        "layer_name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "structure_signature": { "$ref": "#/$defs/sha256" },
+        "visible": { "type": "boolean" },
+        "effective_visible": { "type": "boolean" },
+        "clipping": { "type": "boolean" },
+        "user_mask": { "type": "boolean" },
+        "vector_mask": { "type": "boolean" },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "blend_mode": { "type": "string", "minLength": 1 },
+        "transform_box": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "type": "number" } },
+        "match_state": { "enum": ["Exact", "ManuallyConfirmed", "Ambiguous", "NoMatch", "Modified", "ExternalLink", "Unsupported", "Missing"] },
+        "reference_asset_id": { "type": ["string", "null"] },
+        "reference_photo_relative_path": { "type": ["string", "null"] },
+        "embedded_content_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "superseded_layers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["layer_path", "layer_id", "visible", "clipping"],
+            "properties": {
+              "layer_path": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
+              "layer_id": { "type": "integer", "minimum": 1 },
+              "visible": { "type": "boolean" },
+              "clipping": { "type": "boolean" }
+            }
+          }
+        },
+        "window_layer_path": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0 } },
+        "is_product": { "type": "boolean" },
+        "structural_reason": { "type": ["string", "null"], "maxLength": 2000 },
+        "semantic_label": { "type": "string", "maxLength": 256 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "layout_intent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["intent", "scale", "offset_x", "offset_y", "safe_bounds"],
+          "properties": {
+            "intent": { "type": "string", "minLength": 1 },
+            "scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 20 },
+            "offset_x": { "type": "number" },
+            "offset_y": { "type": "number" },
+            "safe_bounds": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["left", "top", "right", "bottom"],
+              "properties": {
+                "left": { "type": "number", "minimum": 0 },
+                "top": { "type": "number", "minimum": 0 },
+                "right": { "type": "number", "exclusiveMinimum": 0 },
+                "bottom": { "type": "number", "exclusiveMinimum": 0 }
+              }
+            }
+          }
+        },
+        "review_decision": { "enum": ["Pending", "Accepted", "Rejected", "ManualCalibration"] },
+        "review_note": { "type": ["string", "null"], "maxLength": 2000 }
+      }
+    }
+  }
+}

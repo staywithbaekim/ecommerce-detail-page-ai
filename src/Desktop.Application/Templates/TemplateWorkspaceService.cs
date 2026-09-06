@@ -12,7 +12,8 @@ public sealed class TemplateWorkspaceService(
     TimeProvider timeProvider,
     IManifestStore? manifestStore = null,
     ITemplateOwnedStorage? ownedStorage = null,
-    IPathPolicy? paths = null) : ITemplateWorkspaceService
+    IPathPolicy? paths = null,
+    ITemplateSourceFilePort? sourceFiles = null) : ITemplateWorkspaceService
 {
     public async Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken)
     {
@@ -320,15 +321,32 @@ public sealed class TemplateWorkspaceService(
         var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
-        // A draft must retain at least one page; committing an empty revision is invalid
-        // and leaving the draft unusable would make recovery impossible.
-        if (revision.Pages.Length <= 1)
-        {
-            throw new TemplateRuleViolationException("TPL_REVISION_PAGE_SET_EMPTY");
-        }
-
+        var removedPage = revision.Pages.SingleOrDefault(page => string.Equals(
+            page.PageId,
+            pageId,
+            StringComparison.Ordinal));
+        var removedResource = removedPage is null
+            ? null
+            : await resources.GetByResourceIdAsync(
+                removedPage.TemplateResourceId,
+                cancellationToken).ConfigureAwait(false);
         var updated = revision.RemovePage(pageId);
         await templates.SaveDraftRevisionAsync(updated, cancellationToken).ConfigureAwait(false);
+
+        // The resource copy is application-owned. Keep it when another page in the
+        // draft still references the same resource (for example a reused duplicate or
+        // an original page in an incremental revision); otherwise reclaim the copy.
+        if (sourceFiles is not null
+            && removedResource is not null
+            && !updated.Pages.Any(page => string.Equals(
+                page.TemplateResourceId,
+                removedResource.ResourceId,
+                StringComparison.Ordinal)))
+        {
+            await sourceFiles.DeleteOwnedCopyAsync(
+                removedResource.InternalRelativePath,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async Task<TemplateGroupDetails> CommitDraftAsync(

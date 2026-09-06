@@ -97,6 +97,14 @@ def layer_record(
     smart_object = None
     if layer.kind == "smartobject":
         value = layer.smart_object
+        embedded_content_sha256 = None
+        embedded_content_available = False
+        # Only hash bytes that are embedded in the PSD.  External smart
+        # objects are intentionally not opened here: a PSD is untrusted input
+        # and resolving its fullPath/relPath would cross the worker boundary.
+        if value.kind == "data":
+            embedded_content_sha256 = hashlib.sha256(value.data).hexdigest().upper()
+            embedded_content_available = True
         smart_object = {
             "unique_id": value.unique_id,
             "filename": value.filename,
@@ -106,6 +114,8 @@ def layer_record(
             "file_size": value.filesize,
             "is_psd": value.is_psd(),
             "transform_box": list(value.transform_box),
+            "embedded_content_sha256": embedded_content_sha256,
+            "embedded_content_available": embedded_content_available,
         }
 
     return {

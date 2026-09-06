@@ -78,6 +78,11 @@ public static class DesktopServices
         services.AddSingleton<ITemplatePackageService, TemplatePackageService>();
         services.AddSingleton<ITemplateOwnedStorage, TemplateOwnedStorage>();
 
+        services.AddSingleton<IReferencePhotoFingerprintPort, ReferencePhotoFingerprintPort>();
+        services.AddSingleton<IReferenceLearningSessionStore, JsonReferenceLearningSessionStore>();
+        services.AddSingleton<IReferenceLearningService, ReferenceLearningService>();
+        services.AddSingleton<IReferenceLearningCommitService, ReferenceLearningCommitService>();
+
         services.AddSingleton<IPathPolicy>(_ => new LocalAppPathPolicy(options.RootDirectory));
         services.AddSingleton<IFileStore, AtomicFileStore>();
         services.AddSingleton<IManifestStore, JsonManifestStore>();

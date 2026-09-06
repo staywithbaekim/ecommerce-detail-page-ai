@@ -90,7 +90,12 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
         var explicitSelections = request.ConfirmedSelections?.ToDictionary(
             selection => selection.FrameId,
             StringComparer.Ordinal);
-        if (explicitSelections is not null
+        var requiresExplicitTargetSelections = bindings.Any(binding =>
+            binding.SelectionRequirement.Criteria.Any(criterion =>
+                string.Equals(criterion.Key, "reference_only", StringComparison.Ordinal)
+                && string.Equals(criterion.Value, "true", StringComparison.Ordinal)));
+        if ((requiresExplicitTargetSelections && explicitSelections is null)
+            || explicitSelections is not null
             && (explicitSelections.Count != bindings.Length
                 || bindings.Any(binding => !explicitSelections.ContainsKey(binding.FrameId))))
         {

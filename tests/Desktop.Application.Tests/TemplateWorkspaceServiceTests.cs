@@ -83,6 +83,26 @@ public sealed class TemplateWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task RemovingOnlyNewDraftPageReturnsAnEmptyImportDraft()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var service = CreateService(templates, resources);
+        var session = await service.BeginCreateAsync("可清空模板", CancellationToken.None);
+        var resource = Resource("resource_only", session, 790, 1252);
+        resources.Add(resource);
+        var revision = (await templates.GetRevisionAsync(session.DraftRevisionId, CancellationToken.None))!
+            .AddPage(Page("page_only", session.DraftRevisionId, 0, resource.ResourceId));
+        await templates.SaveDraftRevisionAsync(revision, CancellationToken.None);
+
+        await service.RemovePageAsync(session, "page_only", CancellationToken.None);
+
+        var draft = await service.GetDraftAsync(session, CancellationToken.None);
+        Assert.Empty(draft.Pages);
+        Assert.NotNull(await resources.GetByResourceIdAsync(resource.ResourceId, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task RemovingOriginalIncrementPageIsBlocked()
     {
         var templates = new MemoryTemplateRepository();
