@@ -111,6 +111,36 @@ V1 使用火山引擎/方舟 API，客户提供自己的 API Key，由项目方�
 - pending 取消必须在当前进程释放其 work lease；`Uploading` 在 scheduler 中仍位于 provider 调用前，可与取消在同一 persistence gate 内安全闭合。`Analysing` 则按可能已越过 HTTP 处理，不猜测取消或结果。
 - `AiAnalysisQueueOptions` 和 `AiAnalysisBudgetPolicy` 的正式构造边界只允许从 V1 冻结值收紧，不能通过依赖注入扩大 32/2/8/24/3 或 1,200 次/1,000 万/200 万/10 CNY/100 CNY。真实 probe 与生产组合根都禁用 `HttpClient` 自身 timeout，由 adapter 的 180 秒 CTS 统一分类。
 
+### 2026-09-09 性能修正：持续补位与预览内存边界
+
+真实目标款复测发现本地 WPF 预览按原尺寸解码，以及 workflow 等全部款式副本准备完成后才启动消费者。该问题不改变本 ADR 已冻结的 provider、费用和安全边界，具体修正与证据门转入 `ADR-023-AI分析持续补位与预览内存边界.md`。
+
+- 100 款只表示 durable backlog 规模，不表示 100 路 HTTP；ready buffer 仍为 32，HTTP 并发仍为 8。
+- admission 与 consumer 并行；准备好一款即可进入 scheduler，完成一款立即从 durable pending 补位。
+- WIC 副本准备默认最多 2 路；同一 copy reference 串行，不同 reference 不被全局锁互相阻塞。
+- WPF 批量列表和候选列表使用有界缩略图，不把原始 RGBA 图像集合保存在内存；单请求素材上限仍为 24，超限在 HTTP 前明确阻断。
+- 修正和本机 25/24 张、交错准备、约 100 款 backlog、内存、暂停/取消/恢复证据完成前，不宣称 `PERF-01` 完整通过。
+
+### 2026-09-10 SET-01 本机 API Key 安全管理
+
+SET-01 将本机 Key 管理落在新的供应商无关 `IAiCredentialManagementPort`，与按请求读取的 `IAiCredentialSource` 分离。Windows 实现复用固定 Generic Credential 目标 `AI-01-VolcArk-Test`（Generic type `1`、当前 Windows 用户安全凭据存储），支持保存、更换、移除和脱敏状态读取；保存使用 UTF-8 blob，按 Credential Manager 的 `512` bytes 上限在 native 写入前拒绝空白、控制字符和超长输入。
+
+- 设置页只接受 PasswordBox 输入，状态接口只返回 `NotConfigured`、`Configured` 或 `Unavailable` 及 `••••` 尾号，不返回完整 Key；保存、更换和移除不会自动调用 AI。
+- Key 不写入 SQLite、manifest、日志、缓存、模板包、诊断包或请求记录；成功保存后清理 PasswordBox 和 ViewModel 的输入引用。首次扫描在生产组合未读到 `Configured` 状态时切换到设置页并在 HTTP 前阻断，不把凭据问题伪装成图片或模板错误。
+- “重新读取”只检查本机 Credential Manager，不能证明 Key 有效、不能替代真实连接测试，也不会产生 provider 用量。连接测试/真实 API 请求必须另行取得明确的联网与费用确认；本次 SET-01 离线验证不调用真实 AI。
+
+该实现不改变 16 MiB、24 张、ready 32、HTTP 并发 8、WIC 2 路、180 秒、重试、预算或 `AiResultUnknown` 边界。SET-01 的其余 Photoshop 选择、迁移、诊断包和完整五分区验收仍未关闭。
+
+### 2026-09-10 Responses 合同修正与 R4 证据
+
+R1-R3 的真实 24 图回归显示：供应商响应为合法 Responses 根对象，但 `status`/输出合同与旧适配器分支不闭合；两次已结算调用的输出计量均打满旧 `max_output_tokens=2048`，支持 `incomplete` 导致 JSON 截断的根因判断。第三次超时继续按 `AiResultUnknown` 处理，不能从客户端结果或当时未显示的账单记录推断零费用，也不能重发。
+
+在不放宽图片、16 MiB、队列、并发、预算和未知结果边界的前提下，适配器现在严格按官方 Responses 合同处理：只有 `completed/complete` 解析结果；`queued/in_progress/processing` 保持未知；`incomplete` 映射为不可自动重试的 `AI_PROVIDER_OUTPUT_INCOMPLETE`；`failed`/`cancelled`、缺失和未知状态 fail closed；provider usage 在状态分支前提取并在失败结果中保留；多个 `output_text/text` 段按顺序合并，不恢复截断 JSON。普通分析上限改为 `4096`，并将 model-config 版本隔离为 `doubao-seed-2.1-pro-260628-output4096-v2`，旧 fingerprint/cache 不复用。`ReferenceLearning` 继续共享相同副本、端点和严格合同边界。
+
+离线 adapter 回归为 `52 passed / 2 skipped / 0 failed`；真实 24 图 V2 离线最终 JSON 为 `13,113,521` bytes、fake HTTP=1。产品负责人批准的唯一后续真实请求 R4 使用新 request/correlation ID、新临时根和正式 adapter，1 次 HTTP、约 `25.0 s`，返回 6,523 bytes、`completed`、严格合同 `Completed`；usage `34,086/574/34,660` tokens、cache hit=false，客户端刊例价估算 `¥0.221736`。结果摘要仅作为结构收口证据，不作为语义金标或完整性能证据。
+
+方舟控制台另已闭环确认此前正确 Key 标签下两次已结算调用约 `66,000` 输入 tokens、`4,096` 输出 tokens、合计应付 `¥0.82`；R4 单笔账单尚未取得，因此客户端估算不写成最终扣费。R4 临时副本、环境变量和运行根已清理；后续不得连续重发 R4。该补充不把候选模型升级为完整生产模型，也不关闭 `PERF-01`、Photoshop/文件提交或整体 V1 验收。
+
 ## 退出条件
 
 若方舟合同不能满足隐私、延迟、结构输出或费用门，保留 `IAiAnalyzer` 端口并由新 ADR 选择兼容供应商；不得把供应商响应直接暴露给 Domain，也不得降低 PRD 准确率和原图保护要求。

@@ -110,6 +110,30 @@ public sealed class TemplatePageImportServiceTests
     }
 
     [Fact]
+    public async Task AutoReuseDraftDuplicateIsIdempotentAcrossRetry()
+    {
+        var existing = Resource("resource_existing");
+        var files = new FakeSourceFiles();
+        var repository = new FakeResourceRepository(existing);
+        var service = CreateService(files, repository, PsdInspectionResult.Success(Inspection()));
+        var request = Request(
+            "command_auto_reuse",
+            "resource_new",
+            TemplateDuplicateDecision.AutoReuseDraftDuplicates);
+
+        var first = await service.ImportAsync(request);
+        var repeated = await service.ImportAsync(request);
+
+        Assert.Equal(TemplatePageImportStatus.ReusedExisting, first.Status);
+        Assert.Equal(TemplatePageImportStatus.ReusedExisting, repeated.Status);
+        Assert.True(repeated.Idempotent);
+        Assert.Equal(existing.ResourceId, repeated.Resource!.ResourceId);
+        Assert.Equal(1, files.CopyCount);
+        Assert.Equal(1, files.DeleteCount);
+        Assert.Equal(1, repository.RecordSelectionCount);
+    }
+
+    [Fact]
     public async Task CancelDeletesOwnedCopyAndDoesNotRecordAResource()
     {
         var existing = Resource("resource_existing");

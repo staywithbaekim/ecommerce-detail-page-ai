@@ -2,7 +2,7 @@
 
 ## 状态
 
-已批准。TPL-S0 于 2026-08-27 通过，正式采用隔离的本地 `psd-tools` worker。
+已批准。TPL-S0 于 2026-08-27 通过，正式采用隔离的本地 `psd-tools` worker；2026-09-08 为 TPL-LEARN-01 增补最终合成像素贡献证据与完整 composite 运行依赖。
 
 ## 日期
 
@@ -42,3 +42,11 @@ TPL-01 必须在不占用 Photoshop 的默认校准路径中读取应用内部 P
 - `requirements.lock` 与 `build-requirements.lock` 是可复现构建输入；升级 PSD 库、Python、协议或发布形态必须重新跑批准 PSD、损坏反例、资源和许可验证并更新 ADR。
 - worker 只提供结构与合成证据，不决定图片框业务含义，不执行真实 AI、Photoshop 渲染、平台上传或模板规则。
 - TPL-S0 已通过，可进入 TPL-S1；这不代表 TPL-01、UI-01、AI-01、RENDER-01 或 INSTALL-01 已完成。
+
+## 2026-09-08 增补：最终合成像素贡献证据
+
+TPL-LEARN-01 不能仅凭 `visible`、图层边界或“智能对象”类型判断图片框。隔离 worker 现对每个智能对象返回 `PsdLayerPixelEvidence`：自身非透明像素数，以及从完整页面合成中移除该层后真正发生变化的像素数和边界。Application 只有在嵌入内容与参考源照片 SHA-256 精确闭合、图层有效可见、自身有像素且对最终页面有非零贡献时，才允许登记人工学习候选；同一明确剪贴窗口中的连续重叠层只保留最终有效商品层。图层名称只可生成用户可修改的用途提示，不参与是否登记图片框的判定。
+
+最终页面重合成会触发 PSD 的渐变、矢量、蒙版等效果，因此运行时由最小 `psd-tools` 集合扩展为锁定的 `psd-tools[composite]` 闭包。`requirements.lock` 新增 `aggdraw 1.3.19`、`scipy 1.15.3`、`scikit-image 0.25.2` 及其锁定运行依赖 `ImageIO 2.37.4`、`lazy-loader 0.5`、`networkx 3.4.2`、`packaging 26.3`、`tifffile 2025.5.10`；许可证以 MIT/Python-MIT、BSD 系及 Apache-2.0 OR BSD-2-Clause 为主，正式发布仍必须生成完整第三方声明和 SBOM。只安装原最小集合会在真实 PSD 渐变叠加处缺少 SciPy，该构建不得发布，也不得误判为 PSD 损坏。
+
+fix16 候选 onedir worker 为 `1,193` 个文件、`166,051,888` bytes，EXE SHA-256 为 `7C0E7E6B8AF86EBE00474452616EB475E5B45070FBE0E9ABFD55945FB35686A3`。打包 worker 对 6 份真实 PSD 完整运行通过，总墙钟时间 `240,674.753 ms`，单页最慢 `56,399.096 ms`，最大峰值工作集 `581,738,496` bytes；默认单请求超时由 30 秒调整为 120 秒。该数据只关闭本地像素证据与打包可运行性，不替代正式安装、长期性能矩阵或 Photoshop/RENDER-01 验收。

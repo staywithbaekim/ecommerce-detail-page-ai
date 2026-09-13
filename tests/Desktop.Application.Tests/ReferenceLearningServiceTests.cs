@@ -1,6 +1,7 @@
 using Desktop.Application.Files;
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Tests;
@@ -58,6 +59,80 @@ public sealed class ReferenceLearningServiceTests
     }
 
     [Fact]
+    public async Task RetainingOnlyCandidateCompletesReviewWithoutCreatingBinding()
+    {
+        using var root = new TempDirectory();
+        var owned = Path.Combine(root.Path, "templates", "reference.psd");
+        Directory.CreateDirectory(Path.GetDirectoryName(owned)!);
+        await File.WriteAllBytesAsync(owned, [1, 2, 3]);
+        var photo = Photo(
+            "asset_fixed_content",
+            "composition.png",
+            'a',
+            0,
+            100);
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(Inspection(photo.Sha256)),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('b', 64),
+                [photo])),
+            new RootPathPolicy(root.Path));
+
+        var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_fixed_only",
+            "page_fixed_only",
+            "templates/reference.psd",
+            root.Path));
+
+        var candidate = Assert.Single(analyzed.Document!.Candidates);
+        var reviewed = await service.ApplyReviewAsync(
+            analyzed.Document,
+            [new ReferenceFrameReview(
+                candidate.FrameId,
+                ReferenceReviewDecision.Rejected,
+                Note: "用户确认保留模板内容，不替换。")]);
+
+        Assert.True(reviewed.IsSuccess);
+        Assert.Equal(ReferenceLearningState.ReadyToCommit, reviewed.Document!.State);
+        Assert.True(reviewed.Document.CanCommit);
+        Assert.Empty(ReferenceLearningRuleProjector.ProjectBindings(reviewed.Document));
+    }
+
+    [Fact]
+    public async Task LearningDoesNotRewritePreviewHeldByReviewWindow()
+    {
+        using var root = new TempDirectory();
+        var owned = Path.Combine(root.Path, "templates", "reference.psd");
+        Directory.CreateDirectory(Path.GetDirectoryName(owned)!);
+        await File.WriteAllBytesAsync(owned, [1, 2, 3]);
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "templates", "preview.png"), [137, 80, 78, 71]);
+        var photo = Photo(
+            "asset_preview_lock",
+            "front.png",
+            'a',
+            0,
+            100);
+        var inspection = new RecordingInspectionPort(Inspection(photo.Sha256));
+        var service = new ReferenceLearningService(
+            inspection,
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('b', 64),
+                [photo])),
+            new RootPathPolicy(root.Path));
+
+        var result = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_preview_lock",
+            "page_preview_lock",
+            "templates/reference.psd",
+            root.Path,
+            "templates/preview.png"));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(inspection.LastRequest);
+        Assert.Null(inspection.LastRequest!.PreviewRelativePath);
+    }
+
+    [Fact]
     public async Task StructuralDetectorFoldsOverlappingReplacementStackToTopmostLayer()
     {
         using var root = new TempDirectory();
@@ -80,8 +155,14 @@ public sealed class ReferenceLearningServiceTests
             [
                 Layer(0, 1, "hidden", first.Sha256, visible: false, bounds: new PsdLayerBounds(0, 0, 100, 100)),
                 Pixel(1, 2, new PsdLayerBounds(0, 0, 100, 200)),
-                Layer(2, 3, "old_a", first.Sha256, bounds: new PsdLayerBounds(0, 0, 100, 100)),
-                Layer(3, 4, "old_b", first.Sha256, bounds: new PsdLayerBounds(0, 0, 100, 100)),
+                Layer(2, 3, "old_a", first.Sha256, bounds: new PsdLayerBounds(0, 0, 100, 100)) with
+                {
+                    PixelEvidence = new PsdLayerPixelEvidence(true, 10_000, 0, null)
+                },
+                Layer(3, 4, "old_b", first.Sha256, bounds: new PsdLayerBounds(0, 0, 100, 100)) with
+                {
+                    PixelEvidence = new PsdLayerPixelEvidence(true, 10_000, 0, null)
+                },
                 Layer(4, 5, "top", first.Sha256, bounds: new PsdLayerBounds(0, 0, 100, 100)),
                 Layer(5, 6, "second", second.Sha256, bounds: new PsdLayerBounds(0, 100, 100, 200)),
                 Layer(6, 7, "hidden_tail", second.Sha256, visible: false, bounds: new PsdLayerBounds(0, 0, 100, 100))
@@ -148,6 +229,138 @@ public sealed class ReferenceLearningServiceTests
     }
 
     [Fact]
+    public async Task FullyOccludedMatchedSmartObjectIsNotRegistered()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var photo = Photo("asset_occluded", "front.png", 'a', 0, 100);
+        var inspection = Inspection(photo.Sha256) with
+        {
+            Layers = [Inspection(photo.Sha256).Layers[0] with
+            {
+                PixelEvidence = new PsdLayerPixelEvidence(true, 20_000, 0, null)
+            }]
+        };
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(inspection),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('b', 64), [photo])),
+            new RootPathPolicy(root.Path));
+
+        var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_occluded", "page_occluded", "reference.psd", root.Path));
+
+        Assert.True(analyzed.IsSuccess);
+        Assert.Empty(analyzed.Document!.Candidates);
+        Assert.Equal(ReferenceLearningState.RequiresManualCalibration, analyzed.Document.State);
+        Assert.Contains("未同时闭合", analyzed.Document.BlockReason);
+    }
+
+    [Fact]
+    public async Task SmartObjectDecorationAboveReplacementStackDoesNotDisplaceMatchedTarget()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var photo = Photo("asset_decorated", "front.png", 'a', 0, 100);
+        var inspection = Inspection(photo.Sha256) with
+        {
+            Canvas = new PsdCanvasInspection(100, 100, 8, "RGB"),
+            LayerCount = 3,
+            SmartObjectCount = 3,
+            Layers =
+            [
+                Layer(0, 1, "old", new string('b', 64)) with
+                {
+                    PixelEvidence = new PsdLayerPixelEvidence(true, 10_000, 0, null)
+                },
+                Layer(1, 2, "front", photo.Sha256),
+                Layer(2, 3, "decoration", new string('c', 64))
+            ]
+        };
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(inspection),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('d', 64), [photo])),
+            new RootPathPolicy(root.Path));
+
+        var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_decorated", "page_decorated", "reference.psd", root.Path));
+
+        var candidate = Assert.Single(analyzed.Document!.Candidates);
+        Assert.Equal(2, candidate.LayerId);
+        Assert.Single(candidate.SupersededLayerEvidence);
+        Assert.Equal(1, candidate.SupersededLayerEvidence[0].LayerId);
+    }
+
+    [Fact]
+    public async Task PartiallyOverlappingIndependentFramesAreNotMerged()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var first = Photo("asset_independent_a", "front.png", 'a', 0, 100);
+        var second = Photo("asset_independent_b", "detail.png", 'b', 0, 100);
+        var inspection = Inspection(first.Sha256) with
+        {
+            Canvas = new PsdCanvasInspection(200, 100, 8, "RGB"),
+            LayerCount = 2,
+            SmartObjectCount = 2,
+            Layers =
+            [
+                Layer(0, 1, "front", first.Sha256, bounds: new PsdLayerBounds(0, 0, 100, 100)),
+                Layer(1, 2, "detail", second.Sha256, bounds: new PsdLayerBounds(50, 0, 150, 100))
+            ]
+        };
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(inspection),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('c', 64), [first, second])),
+            new RootPathPolicy(root.Path));
+
+        var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_independent", "page_independent", "reference.psd", root.Path));
+
+        Assert.True(analyzed.IsSuccess);
+        Assert.Equal(2, analyzed.Document!.Candidates.Count);
+        Assert.All(analyzed.Document.Candidates, candidate =>
+            Assert.Empty(candidate.SupersededLayerEvidence));
+    }
+
+    [Fact]
+    public async Task SharedClippingWindowUsesTopmostContributingMatchedLayer()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var first = Photo("asset_stack_a", "first.png", 'a', 0, 100);
+        var second = Photo("asset_stack_b", "second.png", 'b', 0, 100);
+        var clippingBase = new PsdClippingBaseInspection(
+            [9], 99, "window", "pixel", true, true,
+            new PsdLayerBounds(0, 0, 100, 100), false, false, 255, "normal");
+        var inspection = Inspection(first.Sha256) with
+        {
+            Canvas = new PsdCanvasInspection(100, 100, 8, "RGB"),
+            LayerCount = 2,
+            SmartObjectCount = 2,
+            Layers =
+            [
+                Layer(0, 1, "first", first.Sha256) with { ClippingBase = clippingBase },
+                Layer(1, 2, "second", second.Sha256) with { ClippingBase = clippingBase }
+            ]
+        };
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(inspection),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('c', 64), [first, second])),
+            new RootPathPolicy(root.Path));
+
+        var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_shared_window", "page_shared_window", "reference.psd", root.Path));
+
+        var candidate = Assert.Single(analyzed.Document!.Candidates);
+        Assert.Equal(2, candidate.LayerId);
+        Assert.Equal(1, Assert.Single(candidate.SupersededLayerEvidence).LayerId);
+    }
+
+    [Fact]
     public async Task SameLayerIdOnDifferentPagesProducesStableDistinctFrameIds()
     {
         using var root = new TempDirectory();
@@ -206,6 +419,91 @@ public sealed class ReferenceLearningServiceTests
         Assert.Equal("完整正面图", analyzed.Document.Candidates[0].SemanticLabel);
         Assert.Equal("完整正面图", reviewed.Document!.Candidates[0].SemanticLabel);
         Assert.Equal(analyzed.Document.Candidates[0].LayoutIntent, reviewed.Document.Candidates[0].LayoutIntent);
+    }
+
+    [Fact]
+    public async Task PageNameProvidesAUsableFutureSelectionRuleWhenCameraFilenameIsOpaque()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var photo = Photo(
+            "asset_fabric_page",
+            "IMG_0001.png",
+            'a',
+            0,
+            100);
+        var inspection = Inspection(photo.Sha256) with
+        {
+            Layers = [Inspection(photo.Sha256).Layers[0] with
+            {
+                Name = "slot",
+                SmartObject = Inspection(photo.Sha256).Layers[0].SmartObject! with
+                {
+                    Filename = "IMG_0001.png"
+                }
+            }]
+        };
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(inspection),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('b', 64),
+                [photo])),
+            new RootPathPolicy(root.Path));
+
+        var result = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_page_name_usage",
+            "page_fabric",
+            "reference.psd",
+            root.Path,
+            PageName: "G-详情-04-面料"));
+
+        var candidate = Assert.Single(result.Document!.Candidates);
+        Assert.Equal("面料细节图", candidate.SemanticLabel);
+        Assert.Equal(1, candidate.Confidence);
+        Assert.Contains("面料细节图", candidate.SemanticLabel);
+    }
+
+    [Fact]
+    public async Task OpaqueModelPageStillProducesAReviewableUsageHint()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var photo = Photo(
+            "asset_model_page",
+            "IMG_0002.png",
+            'a',
+            0,
+            100);
+        var baseInspection = Inspection(photo.Sha256);
+        var inspection = baseInspection with
+        {
+            Layers = [baseInspection.Layers[0] with
+            {
+                Name = "slot",
+                SmartObject = baseInspection.Layers[0].SmartObject! with
+                {
+                    Filename = "IMG_0002.png"
+                }
+            }]
+        };
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(inspection),
+            new FixedPhotoPort(new ReferencePhotoInventory(
+                "sha256:" + new string('b', 64),
+                [photo])),
+            new RootPathPolicy(root.Path));
+
+        var result = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_model_page_usage",
+            "page_model",
+            "reference.psd",
+            root.Path,
+            PageName: "H-模特图-01"));
+
+        var candidate = Assert.Single(result.Document!.Candidates);
+        Assert.Equal("待确认图片类别", candidate.SemanticLabel);
+        Assert.Equal(0, candidate.Confidence);
+        Assert.False(candidate.IsAutoConfirmable);
     }
 
     [Fact]
@@ -402,13 +700,9 @@ public sealed class ReferenceLearningServiceTests
             "templates/reference.psd",
             root.Path));
         Assert.Equal(ReferenceLearningState.RequiresManualCalibration, analyzed.Document!.State);
-        var rejected = await service.ApplyReviewAsync(
-            analyzed.Document,
-            [new ReferenceFrameReview(
-                analyzed.Document.Candidates[0].FrameId,
-                ReferenceReviewDecision.ManualCalibration)]);
-        Assert.Equal(ReferenceLearningState.RequiresManualCalibration, rejected.Document!.State);
-        Assert.False(rejected.Document.CanCommit);
+        Assert.Empty(analyzed.Document.Candidates);
+        Assert.False(analyzed.Document.CanCommit);
+        Assert.Contains("未同时闭合", analyzed.Document.BlockReason);
     }
 
     [Fact]
@@ -418,7 +712,7 @@ public sealed class ReferenceLearningServiceTests
         var owned = Path.Combine(root.Path, "reference.psd");
         await File.WriteAllBytesAsync(owned, [1]);
         var service = new ReferenceLearningService(
-            new FixedInspectionPort(Inspection("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+            new FixedInspectionPort(Inspection("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")),
             new FixedPhotoPort(new ReferencePhotoInventory(
                 "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 [new ReferencePhotoFingerprint(
@@ -535,7 +829,7 @@ public sealed class ReferenceLearningServiceTests
     }
 
     [Fact]
-    public async Task ExplicitReviewOfNonHashMatchIsRecordedAsManualInsteadOfExact()
+    public async Task NonHashMatchIsNotRegisteredAsAProductFrame()
     {
         using var root = new TempDirectory();
         await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
@@ -550,18 +844,10 @@ public sealed class ReferenceLearningServiceTests
         var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
             "learn_manual", "page_01", "reference.psd", root.Path));
 
-        var reviewed = await service.ApplyReviewAsync(
-            analyzed.Document!,
-            [new ReferenceFrameReview(
-                analyzed.Document!.Candidates[0].FrameId,
-                ReferenceReviewDecision.Accepted,
-                photo.AssetId,
-                "人工确认正面")]);
-
-        var candidate = Assert.Single(reviewed.Document!.Candidates);
-        Assert.Equal(ReferenceMatchState.ManuallyConfirmed, candidate.MatchState);
-        Assert.Equal("人工确认正面", candidate.SemanticLabel);
-        Assert.True(reviewed.Document.CanCommit);
+        Assert.True(analyzed.IsSuccess);
+        Assert.Empty(analyzed.Document!.Candidates);
+        Assert.Equal(ReferenceLearningState.RequiresManualCalibration, analyzed.Document.State);
+        Assert.False(analyzed.Document.CanCommit);
     }
 
     [Fact]
@@ -752,6 +1038,46 @@ public sealed class ReferenceLearningServiceTests
             ReferenceLearningRuleProjector.ProjectBindings(cancelled.Document));
     }
 
+    [Fact]
+    public async Task ReviewAdoptsAiEnrichedDocumentPersistedAfterLocalAnalysis()
+    {
+        using var root = new TempDirectory();
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "reference.psd"), [1]);
+        var photo = new ReferencePhotoFingerprint(
+            "asset_ai_enriched", "front.png", "front.png", 1,
+            new string('a', 64), "image/png", 10, 10);
+        var sessions = new MemorySessionStore();
+        var service = new ReferenceLearningService(
+            new FixedInspectionPort(Inspection(photo.Sha256)),
+            new FixedPhotoPort(new ReferencePhotoInventory("sha256:" + new string('b', 64), [photo])),
+            new RootPathPolicy(root.Path),
+            sessions);
+        var analyzed = await service.AnalyzeAsync(new ReferenceLearningRequest(
+            "learn_ai_enriched", "page_01", "reference.psd", root.Path));
+        var candidate = Assert.Single(analyzed.Document!.Candidates);
+        var metadata = new ReferenceSemanticMetadata(
+            ReferenceSemanticSource.AiV2,
+            ReferenceLearningAiProtocol.RequestSchemaVersion,
+            ReferenceLearningAiProtocol.ResultSchemaVersion,
+            ReferenceLearningAiService.ModelConfigVersion,
+            ReferenceLearningAiProtocol.SemanticPromptVersion,
+            "sha256:" + new string('c', 64),
+            ["姿态与构图唯一"],
+            ["排除其他视角"]);
+        var enriched = analyzed.Document.WithCandidates(
+            [candidate with { SemanticLabel = "坐姿半身，身体朝左", Confidence = 0.97, SemanticMetadata = metadata }],
+            ReferenceLearningState.AwaitingReview,
+            null,
+            analyzed.Document.UpdatedAt.AddSeconds(1));
+        await sessions.SaveAsync(enriched, CancellationToken.None);
+
+        var reviewed = await service.ApplyReviewAsync(enriched,
+            [new ReferenceFrameReview(candidate.FrameId, ReferenceReviewDecision.Accepted, photo.AssetId, enriched.Candidates[0].SemanticLabel)]);
+
+        Assert.True(reviewed.IsSuccess, reviewed.Error?.Code);
+        Assert.Equal(ReferenceSemanticSource.AiV2, reviewed.Document!.Candidates[0].SemanticMetadata!.Source);
+    }
+
     private static PsdInspectionDocument Inspection(
         string embeddedHash,
         string kind = "data",
@@ -796,7 +1122,14 @@ public sealed class ReferenceLearningServiceTests
             {
                 EmbeddedContentSha256 = embeddedHash,
                 EmbeddedContentAvailable = embedded
-            })]);
+            })
+        {
+            PixelEvidence = new PsdLayerPixelEvidence(
+                true,
+                20_000,
+                20_000,
+                new PsdLayerBounds(0, 0, 100, 200))
+        }]);
 
     private static ReferencePhotoFingerprint Photo(
         string assetId,
@@ -848,7 +1181,17 @@ public sealed class ReferenceLearningServiceTests
             {
                 EmbeddedContentSha256 = embeddedHash,
                 EmbeddedContentAvailable = true
-            });
+            })
+        {
+            PixelEvidence = visible
+                ? new PsdLayerPixelEvidence(
+                    true,
+                    Math.Max(1, (bounds?.Right ?? 100) - (bounds?.Left ?? 0))
+                        * Math.Max(1, (bounds?.Bottom ?? 100) - (bounds?.Top ?? 0)),
+                    1,
+                    bounds ?? new PsdLayerBounds(0, 0, 100, 100))
+                : new PsdLayerPixelEvidence(true, 0, 0, null)
+        };
 
     private static PsdLayerInspection Pixel(
         int path,
@@ -876,6 +1219,19 @@ public sealed class ReferenceLearningServiceTests
     {
         public Task<PsdInspectionResult> InspectAsync(PsdInspectionRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(PsdInspectionResult.Success(document));
+    }
+
+    private sealed class RecordingInspectionPort(PsdInspectionDocument document) : IPsdInspectionPort
+    {
+        public PsdInspectionRequest? LastRequest { get; private set; }
+
+        public Task<PsdInspectionResult> InspectAsync(
+            PsdInspectionRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            return Task.FromResult(PsdInspectionResult.Success(document));
+        }
     }
 
     private sealed class FixedPhotoPort(ReferencePhotoInventory inventory) : IReferencePhotoFingerprintPort

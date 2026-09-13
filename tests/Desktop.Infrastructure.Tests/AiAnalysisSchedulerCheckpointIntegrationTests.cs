@@ -296,6 +296,88 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
     }
 
     [Fact]
+    public async Task UnknownSelectionLockPersistsWithoutChangingUnknownLedgerOrCallingProvider()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ai01-unknown-selection-lock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var options = new DesktopDataOptions(root);
+        var request = Request() with
+        {
+            Assets =
+            [
+                Request().Assets[0],
+                Request().Assets[0] with
+                {
+                    AssetId = "asset_02",
+                    ContentHash = "sha256:" + new string('c', 64),
+                    AnalysisCopyReference = "copy_02"
+                }
+            ]
+        };
+        try
+        {
+            await using (var store = new SqliteDesktopStore(options))
+            {
+                await store.InitializeAsync();
+                var files = new AtomicFileStore(new LocalAppPathPolicy(root));
+                using var coordinator = new AiAnalysisCheckpointCoordinator(
+                    store, new AiAnalysisStateManifestStore(files), TimeProvider.System);
+                using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+                var provider = new UnknownProvider();
+                using var scheduler = Scheduler(store, files, coordinator, queue, provider);
+
+                Assert.Equal(AiAnalysisWorkDisposition.Enqueued,
+                    (await scheduler.EnqueueAsync(request, AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None)).Disposition);
+                Assert.Equal(AiAnalysisWorkDisposition.ResultUnknown,
+                    (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+
+                var locked = await scheduler.LockSelectionAsync(
+                    request, "frame_01", "asset_02", CancellationToken.None);
+                var persisted = await store.LoadSessionAsync("session-request_01", CancellationToken.None);
+                var ledger = await store.FindRequestByFingerprintAsync(
+                    AiAnalysisCacheKeyFactory.Create(request), CancellationToken.None);
+
+                Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, locked.Status);
+                Assert.False(locked.HasVerifiedResult);
+                Assert.Equal(1, locked.SelectionRevision);
+                Assert.Equal("asset_02", locked.LockedSelections["frame_01"].AssetId);
+                Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, persisted!.Status);
+                Assert.False(persisted.HasVerifiedResult);
+                Assert.Equal("AiResultUnknown", ledger!.Status);
+                Assert.Null(ledger.ResultReference);
+                Assert.Empty(await store.LoadUsageAsync(request.RequestId, CancellationToken.None));
+                Assert.Null(await store.FindCacheReferenceAsync(
+                    AiAnalysisCacheKeyFactory.Create(request), CancellationToken.None));
+                Assert.Equal(1, provider.Calls);
+                Assert.Equal(0, queue.Count);
+            }
+
+            await using var reopened = new SqliteDesktopStore(options);
+            await reopened.InitializeAsync();
+            var reopenedFiles = new AtomicFileStore(new LocalAppPathPolicy(root));
+            using var reopenedCoordinator = new AiAnalysisCheckpointCoordinator(
+                reopened, new AiAnalysisStateManifestStore(reopenedFiles), TimeProvider.System);
+            using var reopenedQueue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 1));
+            var reopenedProvider = new SuccessfulProvider();
+            using var reopenedScheduler = Scheduler(
+                reopened, reopenedFiles, reopenedCoordinator, reopenedQueue, reopenedProvider);
+
+            Assert.Equal(0, await reopenedScheduler.RestoreAsync(CancellationToken.None));
+            var recovered = await reopened.LoadSessionAsync("session-request_01", CancellationToken.None);
+            var recoveredLedger = await reopened.FindRequestByFingerprintAsync(
+                AiAnalysisCacheKeyFactory.Create(request), CancellationToken.None);
+            Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, recovered!.Status);
+            Assert.False(recovered.HasVerifiedResult);
+            Assert.Equal("asset_02", recovered.LockedSelections["frame_01"].AssetId);
+            Assert.Equal("AiResultUnknown", recoveredLedger!.Status);
+            Assert.Null(recoveredLedger.ResultReference);
+            Assert.Equal(0, reopenedProvider.Calls);
+            Assert.Equal(0, reopenedQueue.Count);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task ConcurrentRequestsAdvanceOneFullCheckpointGraphAndRestartClosed()
     {
         var root = Path.Combine(Path.GetTempPath(), "ai01-concurrent-checkpoint-" + Guid.NewGuid().ToString("N"));
@@ -801,6 +883,24 @@ public sealed class AiAnalysisSchedulerCheckpointIntegrationTests
             return Task.FromResult(AiAnalysisExecutionResult.Failure(
                 AiProviderOutcome.RetryableError,
                 new ContractError("TEST_RETRYABLE", true, "test", "稍后重试"),
+                TimeSpan.Zero));
+        }
+    }
+
+    private sealed class UnknownProvider : IAiServicePort
+    {
+        private int _calls;
+        public int Calls => Volatile.Read(ref _calls);
+
+        public Task<AiAnalysisExecutionResult> AnalyzeAsync(
+            AiAnalysisRequestV1 request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _calls);
+            return Task.FromResult(AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.AiResultUnknown,
+                new ContractError("AI_PROVIDER_TIMEOUT", false, "provider", "结果未知"),
                 TimeSpan.Zero));
         }
     }

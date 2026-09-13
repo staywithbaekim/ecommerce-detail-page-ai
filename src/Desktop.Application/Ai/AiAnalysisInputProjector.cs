@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Desktop.Contracts.Ai;
+using Desktop.Application.Templates;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.Templates;
 
@@ -75,7 +76,7 @@ public static class AiAnalysisInputProjector
                 asset.MimeType,
                 asset.PixelWidth,
                 asset.PixelHeight,
-                $"analysis-copy-{asset.AssetId}"))
+                CreateAnalysisCopyReference(asset.AssetId, options.CompressionProfileVersion)))
             .ToArray();
 
         if (assets.Length != assetIds.Count || assets.Any(asset => !assetIds.Contains(asset.AssetId)))
@@ -93,10 +94,14 @@ public static class AiAnalysisInputProjector
         var selectedPages = batch.TemplateSnapshot.Pages
             .Select(page => page.PageId)
             .ToHashSet(StringComparer.Ordinal);
-        var requirements = templateRevision.FrameBindings
+        var selectedBindings = templateRevision.FrameBindings
             .Where(binding => selectedPages.Contains(binding.PageId))
             .OrderBy(binding => binding.PageId, StringComparer.Ordinal)
             .ThenBy(binding => binding.FrameId, StringComparer.Ordinal)
+            .ToArray();
+        ValidateReferenceIsolation(selectedBindings, assets);
+
+        var requirements = selectedBindings
             .Select(binding => new AiRequirementInputV1(
                 binding.FrameId,
                 binding.SelectionRequirement.Description,
@@ -109,7 +114,7 @@ public static class AiAnalysisInputProjector
             throw new InvalidOperationException("AI_INPUT_SELECTION_REQUIREMENTS_MISSING");
         }
 
-        var requirementsDigest = ComputeRequirementsDigest(requirements);
+        var requirementsDigest = ComputeRequirementsDigest(requirements, selectedBindings);
 
         return new AiAnalysisRequestV1(
             AiAnalysisProtocol.RequestSchemaVersion,
@@ -132,18 +137,97 @@ public static class AiAnalysisInputProjector
             requirements);
     }
 
-    private static string ComputeRequirementsDigest(IReadOnlyList<AiRequirementInputV1> requirements)
+    private static string ComputeRequirementsDigest(
+        IReadOnlyList<AiRequirementInputV1> requirements,
+        IReadOnlyList<FrameBinding> bindings)
     {
+        var bindingCriteria = bindings.ToDictionary(
+            binding => binding.FrameId,
+            binding => binding.SelectionRequirement.Criteria
+                .OrderBy(criterion => criterion.Key, StringComparer.Ordinal)
+                .Select(criterion => new { criterion.Key, criterion.Value })
+                .ToArray(),
+            StringComparer.Ordinal);
         var canonical = JsonSerializer.Serialize(requirements.Select(requirement => new
         {
             requirement.RequirementId,
             requirement.SelectionRequirement,
             requirement.LayoutIntent,
-            requirement.Required
+            requirement.Required,
+            Criteria = bindingCriteria[requirement.RequirementId]
         }).ToArray());
         return "sha256:" + Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
+
+    private static void ValidateReferenceIsolation(
+        IReadOnlyList<FrameBinding> bindings,
+        IReadOnlyList<AiAssetInputV1> assets)
+    {
+        var learnedBindings = bindings.Where(IsLearnedReferenceBinding).ToArray();
+        if (learnedBindings.Length == 0)
+        {
+            return;
+        }
+
+        var referenceHashes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var binding in learnedBindings)
+        {
+            var criteria = binding.SelectionRequirement.Criteria;
+            var auditVersion = criteria.SingleOrDefault(item =>
+                string.Equals(item.Key, "reference_audit_version", StringComparison.Ordinal))?.Value;
+            var referenceSetDigest = criteria.SingleOrDefault(item =>
+                string.Equals(item.Key, "reference_set_digest", StringComparison.Ordinal))?.Value;
+            var chunks = criteria
+                .Where(item => item.Key.StartsWith(
+                    ReferenceLearningRuleProjector.ReferenceHashChunkPrefix,
+                    StringComparison.Ordinal))
+                .OrderBy(item => item.Key, StringComparer.Ordinal)
+                .ToArray();
+            if (!string.Equals(
+                    auditVersion,
+                    ReferenceLearningRuleProjector.ReferenceAuditVersion,
+                    StringComparison.Ordinal)
+                || !IsSha256Digest(referenceSetDigest)
+                || chunks.Length == 0)
+            {
+                throw new InvalidOperationException("AI_INPUT_REFERENCE_AUDIT_MISSING");
+            }
+
+            foreach (var hash in chunks.SelectMany(chunk => chunk.Value.Split('.', StringSplitOptions.RemoveEmptyEntries)))
+            {
+                var normalized = hash.Trim().ToLowerInvariant();
+                if (!IsSha256(normalized))
+                {
+                    throw new InvalidOperationException("AI_INPUT_REFERENCE_AUDIT_INVALID");
+                }
+
+                referenceHashes.Add(normalized);
+            }
+        }
+
+        if (assets.Any(asset => referenceHashes.Contains(NormalizeDigest(asset.ContentHash)[7..])))
+        {
+            throw new InvalidOperationException("AI_INPUT_REFERENCE_ASSET_FORBIDDEN");
+        }
+    }
+
+    internal static bool IsLearnedReferenceBinding(FrameBinding binding)
+    {
+        var criteria = binding.SelectionRequirement.Criteria;
+        var source = criteria.SingleOrDefault(item =>
+            string.Equals(item.Key, "semantic_source", StringComparison.Ordinal))?.Value;
+        return criteria.Any(item => string.Equals(item.Key, "reference_only", StringComparison.Ordinal)
+                && string.Equals(item.Value, "true", StringComparison.OrdinalIgnoreCase))
+            && source is "AiV2" or "UserOverride";
+    }
+
+    private static bool IsSha256Digest(string? value) => value is not null
+        && value.StartsWith("sha256:", StringComparison.Ordinal)
+        && IsSha256(value[7..]);
+
+    private static bool IsSha256(string value) => value.Length == 64
+        && value.All(Uri.IsHexDigit);
 
     private static string NormalizeDigest(string value)
     {
@@ -151,5 +235,25 @@ public static class AiAnalysisInputProjector
         return normalized.StartsWith("sha256:", StringComparison.Ordinal)
             ? normalized
             : $"sha256:{normalized}";
+    }
+
+    private static string CreateAnalysisCopyReference(string assetId, string compressionProfileVersion)
+    {
+        var prefix = AiAnalysisCopyProfiles.IsWicBoundedV2(compressionProfileVersion)
+            ? "analysis-copy-v2-"
+            : AiAnalysisCopyProfiles.IsWicBoundedV3(compressionProfileVersion)
+                ? "analysis-copy-v3-"
+                : AiAnalysisCopyProfiles.IsWicBoundedV4(compressionProfileVersion)
+                    ? "analysis-copy-v4-"
+                    : "analysis-copy-";
+        var candidate = prefix + assetId;
+        if (candidate.Length <= 128)
+        {
+            return candidate;
+        }
+
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(assetId)))
+            .ToLowerInvariant();
+        return prefix + digest;
     }
 }

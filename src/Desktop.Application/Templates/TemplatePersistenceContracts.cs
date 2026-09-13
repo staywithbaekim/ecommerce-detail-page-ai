@@ -36,8 +36,25 @@ public interface ITemplateRepository
 
 public interface ITemplateOwnedStorage
 {
+    Task<TemplateOwnedDeletionStage?> StageGroupFilesForDeletionAsync(
+        string groupId,
+        CancellationToken cancellationToken);
+
+    Task CommitGroupFilesDeletionAsync(
+        TemplateOwnedDeletionStage stage,
+        CancellationToken cancellationToken);
+
+    Task RestoreGroupFilesAsync(
+        TemplateOwnedDeletionStage stage,
+        CancellationToken cancellationToken);
+
     Task DeleteGroupFilesAsync(string groupId, CancellationToken cancellationToken);
 }
+
+public sealed record TemplateOwnedDeletionStage(
+    string GroupId,
+    string OriginalRelativePath,
+    string StagedRelativePath);
 
 public sealed record CalibrationFrameState(
     string FrameId,

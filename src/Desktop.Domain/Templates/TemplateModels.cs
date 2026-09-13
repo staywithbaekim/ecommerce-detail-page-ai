@@ -75,6 +75,14 @@ public sealed record TemplateGroup
 
         return new TemplateGroup(GroupId, Name, revision.RevisionId, Status, CreatedAt, updatedAt);
     }
+
+    public TemplateGroup Rename(string name, DateTimeOffset updatedAt) => new(
+        GroupId,
+        TemplateValueRules.RequiredText(name, 256, "TPL_GROUP_NAME_INVALID"),
+        CurrentRevisionId,
+        Status,
+        CreatedAt,
+        updatedAt);
 }
 
 public sealed record TemplatePage

@@ -31,12 +31,23 @@ public sealed class TemplatePageImportService(
         }
         if (completed is not null)
         {
-            var expectedResourceId = request.DuplicateDecision == TemplateDuplicateDecision.ReuseExisting
-                ? request.SelectedDuplicateResourceId
-                : request.ResourceId;
-            return string.Equals(completed.ResourceId, expectedResourceId, StringComparison.Ordinal)
+            var isReusedExisting = request.DuplicateDecision == TemplateDuplicateDecision.ReuseExisting
+                ? string.Equals(completed.ResourceId, request.SelectedDuplicateResourceId, StringComparison.Ordinal)
+                : request.DuplicateDecision == TemplateDuplicateDecision.AutoReuseDraftDuplicates
+                    && string.Equals(completed.GroupId, request.GroupId, StringComparison.Ordinal)
+                    && string.Equals(completed.DraftId, request.DraftId, StringComparison.Ordinal)
+                    && !string.Equals(completed.ResourceId, request.ResourceId, StringComparison.Ordinal);
+            var isImported = string.Equals(completed.ResourceId, request.ResourceId, StringComparison.Ordinal)
+                && request.DuplicateDecision switch
+                {
+                    TemplateDuplicateDecision.ReuseExisting or TemplateDuplicateDecision.AutoReuseDraftDuplicates =>
+                        string.Equals(completed.GroupId, request.GroupId, StringComparison.Ordinal)
+                        && string.Equals(completed.DraftId, request.DraftId, StringComparison.Ordinal),
+                    _ => true
+                };
+            return isReusedExisting || isImported
                 ? Success(
-                    request.DuplicateDecision == TemplateDuplicateDecision.ReuseExisting
+                    isReusedExisting
                         ? TemplatePageImportStatus.ReusedExisting
                         : TemplatePageImportStatus.Imported,
                     completed,
@@ -105,6 +116,47 @@ public sealed class TemplatePageImportService(
                     ownedCopy.InternalRelativePath,
                     duplicates,
                     cancellationToken).ConfigureAwait(false);
+            }
+
+            if (request.DuplicateDecision == TemplateDuplicateDecision.AutoReuseDraftDuplicates)
+            {
+                var draftDuplicate = duplicates.FirstOrDefault(candidate =>
+                    string.Equals(candidate.GroupId, request.GroupId, StringComparison.Ordinal)
+                    && string.Equals(candidate.DraftId, request.DraftId, StringComparison.Ordinal));
+                if (draftDuplicate is not null)
+                {
+                    if (!await sourceFiles.DeleteOwnedCopyAsync(
+                            ownedCopy.InternalRelativePath,
+                            cancellationToken).ConfigureAwait(false))
+                    {
+                        return Failure(Error(
+                            "TPL_IMPORT_CLEANUP_REQUIRED",
+                            retryable: true,
+                            "Restart the application to recover the duplicate staging copy."),
+                            duplicates);
+                    }
+
+                    try
+                    {
+                        var recorded = await resources.RecordExistingSelectionAsync(
+                            request.CommandId,
+                            draftDuplicate,
+                            cancellationToken).ConfigureAwait(false);
+                        return Success(
+                            TemplatePageImportStatus.ReusedExisting,
+                            recorded,
+                            idempotent: false,
+                            duplicates);
+                    }
+                    catch (Exception exception) when (exception is InvalidOperationException or IOException)
+                    {
+                        return Failure(Error(
+                            "TPL_REVISION_COMMIT_FAILED",
+                            retryable: true,
+                            "The previous template draft remains available. Retry the duplicate choice."),
+                            duplicates);
+                    }
+                }
             }
 
             if (request.DuplicateDecision == TemplateDuplicateDecision.ReuseExisting)

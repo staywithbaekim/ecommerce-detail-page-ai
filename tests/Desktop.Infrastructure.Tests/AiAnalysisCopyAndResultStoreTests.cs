@@ -171,6 +171,139 @@ public sealed class AiAnalysisCopyAndResultStoreTests
     }
 
     [Fact]
+    public async Task V2OpaquePngUsesBoundedJpegWhileTransparentPngStaysPng()
+    {
+        var root = NewRoot("ai01-copy-v2-png-");
+        var input = Path.Combine(root, "input");
+        Directory.CreateDirectory(input);
+        var opaquePath = Path.Combine(input, "opaque.png");
+        var transparentPath = Path.Combine(input, "transparent.png");
+        var opaqueBytes = CreateImage(SourceImageFormat.Png, 1800, 900, pngOpaque: true);
+        var transparentBytes = CreateImage(SourceImageFormat.Png, 1800, 900, pngOpaque: false);
+        await File.WriteAllBytesAsync(opaquePath, opaqueBytes);
+        await File.WriteAllBytesAsync(transparentPath, transparentBytes);
+        try
+        {
+            var policy = new LocalAppPathPolicy(Path.Combine(root, "app"));
+            using var preparer = new FileAiAnalysisCopyPreparer(policy, new AtomicFileStore(policy));
+            var opaque = await preparer.PrepareAsync(new AiAnalysisCopyPreparationRequest(
+                "copy_v2_opaque",
+                input,
+                Asset("asset_v2_opaque", "opaque.png", opaqueBytes, 1800, 900, SourceImageFormat.Png),
+                AiAnalysisCopyProfiles.WicBoundedV2), CancellationToken.None);
+            var transparent = await preparer.PrepareAsync(new AiAnalysisCopyPreparationRequest(
+                "copy_v2_transparent",
+                input,
+                Asset("asset_v2_transparent", "transparent.png", transparentBytes, 1800, 900, SourceImageFormat.Png),
+                AiAnalysisCopyProfiles.WicBoundedV2), CancellationToken.None);
+
+            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedV2, opaque.CompressionProfileVersion);
+            Assert.Equal("image/jpeg", opaque.MimeType);
+            Assert.Equal("image/png", transparent.MimeType);
+            Assert.Equal("image/jpeg", WicAnalysisImageCodec.Inspect(
+                await File.ReadAllBytesAsync(policy.ResolveOwnedPath("ai-analysis/copies/copy_v2_opaque.bin"))).MimeType);
+            Assert.Equal("image/png", WicAnalysisImageCodec.Inspect(
+                await File.ReadAllBytesAsync(policy.ResolveOwnedPath("ai-analysis/copies/copy_v2_transparent.bin"))).MimeType);
+            Assert.Equal(opaque.Digest, "sha256:" + Digest(await File.ReadAllBytesAsync(
+                policy.ResolveOwnedPath("ai-analysis/copies/copy_v2_opaque.bin"))));
+            Assert.Equal(transparent.Digest, "sha256:" + Digest(await File.ReadAllBytesAsync(
+                policy.ResolveOwnedPath("ai-analysis/copies/copy_v2_transparent.bin"))));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
+    public async Task V3UsesTransportBoundedDimensionsWithoutChangingOpaquePngSemantics()
+    {
+        var root = NewRoot("ai01-copy-v3-png-");
+        var input = Path.Combine(root, "input");
+        Directory.CreateDirectory(input);
+        var sourcePath = Path.Combine(input, "opaque.png");
+        var sourceBytes = CreateImage(SourceImageFormat.Png, 1800, 900, pngOpaque: true);
+        await File.WriteAllBytesAsync(sourcePath, sourceBytes);
+        try
+        {
+            var policy = new LocalAppPathPolicy(Path.Combine(root, "app"));
+            using var preparer = new FileAiAnalysisCopyPreparer(
+                policy,
+                new AtomicFileStore(policy));
+            var copy = await preparer.PrepareAsync(new AiAnalysisCopyPreparationRequest(
+                "copy_v3_opaque",
+                input,
+                Asset("asset_v3_opaque", "opaque.png", sourceBytes, 1800, 900, SourceImageFormat.Png),
+                AiAnalysisCopyProfiles.WicBoundedV3), CancellationToken.None);
+
+            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedV3, copy.CompressionProfileVersion);
+            Assert.Equal("image/jpeg", copy.MimeType);
+            Assert.Equal(1280, copy.PixelWidth);
+            Assert.Equal(640, copy.PixelHeight);
+            Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(sourcePath));
+            var opened = await new FileAiAnalysisCopySource(policy).OpenAsync(
+                "copy_v3_opaque",
+                CancellationToken.None);
+            Assert.Equal(1280, opened.PixelWidth);
+            Assert.Equal("image/jpeg", opened.MimeType);
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
+    public async Task V4RestoresQ82WhileKeepingV3BytesAndTransparentPngIsolated()
+    {
+        var root = NewRoot("ai01-copy-v4-png-");
+        var input = Path.Combine(root, "input");
+        Directory.CreateDirectory(input);
+        var opaquePath = Path.Combine(input, "opaque.png");
+        var transparentPath = Path.Combine(input, "transparent.png");
+        var opaqueBytes = CreateImage(SourceImageFormat.Png, 1800, 900, seed: 91, pngOpaque: true);
+        var transparentBytes = CreateImage(SourceImageFormat.Png, 1800, 900, seed: 92, pngOpaque: false);
+        await File.WriteAllBytesAsync(opaquePath, opaqueBytes);
+        await File.WriteAllBytesAsync(transparentPath, transparentBytes);
+        try
+        {
+            var policy = new LocalAppPathPolicy(Path.Combine(root, "app"));
+            using var preparer = new FileAiAnalysisCopyPreparer(policy, new AtomicFileStore(policy));
+            var v3 = await preparer.PrepareAsync(new AiAnalysisCopyPreparationRequest(
+                "copy_v4_compare_v3",
+                input,
+                Asset("asset_v4_compare_v3", "opaque.png", opaqueBytes, 1800, 900, SourceImageFormat.Png),
+                AiAnalysisCopyProfiles.WicBoundedV3), CancellationToken.None);
+            var v4 = await preparer.PrepareAsync(new AiAnalysisCopyPreparationRequest(
+                "copy_v4_compare_v4",
+                input,
+                Asset("asset_v4_compare_v4", "opaque.png", opaqueBytes, 1800, 900, SourceImageFormat.Png),
+                AiAnalysisCopyProfiles.WicBoundedV4), CancellationToken.None);
+            var transparent = await preparer.PrepareAsync(new AiAnalysisCopyPreparationRequest(
+                "copy_v4_transparent",
+                input,
+                Asset("asset_v4_transparent", "transparent.png", transparentBytes, 1800, 900, SourceImageFormat.Png),
+                AiAnalysisCopyProfiles.WicBoundedV4), CancellationToken.None);
+
+            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedV3, v3.CompressionProfileVersion);
+            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedV4, v4.CompressionProfileVersion);
+            Assert.Equal(1280, v4.PixelWidth);
+            Assert.Equal(640, v4.PixelHeight);
+            Assert.Equal("image/jpeg", v4.MimeType);
+            Assert.Equal("image/png", transparent.MimeType);
+            Assert.NotEqual(v3.Digest, v4.Digest);
+            Assert.Equal(
+                "image/jpeg",
+                WicAnalysisImageCodec.Inspect(await File.ReadAllBytesAsync(
+                    policy.ResolveOwnedPath("ai-analysis/copies/copy_v4_compare_v4.bin"))).MimeType);
+            Assert.Equal(
+                "image/png",
+                WicAnalysisImageCodec.Inspect(await File.ReadAllBytesAsync(
+                    policy.ResolveOwnedPath("ai-analysis/copies/copy_v4_transparent.bin"))).MimeType);
+            Assert.Equal(1280, transparent.PixelWidth);
+            Assert.Equal(640, transparent.PixelHeight);
+            Assert.Equal(1280, new AiAnalysisCopyEncodingOptions().MaxLongestEdge);
+            Assert.Equal(82, new AiAnalysisCopyEncodingOptions().JpegQuality);
+            Assert.Equal(AiAnalysisCopyProfiles.WicBoundedV4, new AiAnalysisCopyEncodingOptions().CompressionProfileVersion);
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
     public async Task ReencodingRemovesExifOrientationAndCommentMetadata()
     {
         var root = NewRoot("ai01-copy-metadata-");
@@ -671,7 +804,8 @@ public sealed class AiAnalysisCopyAndResultStoreTests
         int height,
         ushort orientation = 1,
         int jpegQuality = 92,
-        int seed = 19)
+        int seed = 19,
+        bool pngOpaque = false)
     {
         var stride = width * 4;
         var pixels = new byte[stride * height];
@@ -679,7 +813,7 @@ public sealed class AiAnalysisCopyAndResultStoreTests
         random.NextBytes(pixels);
         for (var index = 3; index < pixels.Length; index += 4)
         {
-            pixels[index] = format == SourceImageFormat.Png
+            pixels[index] = format == SourceImageFormat.Png && !pngOpaque
                 ? (byte)(64 + pixels[index] % 192)
                 : byte.MaxValue;
         }

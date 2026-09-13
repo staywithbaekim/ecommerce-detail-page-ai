@@ -13,7 +13,8 @@ public sealed class TemplateWorkspaceService(
     IManifestStore? manifestStore = null,
     ITemplateOwnedStorage? ownedStorage = null,
     IPathPolicy? paths = null,
-    ITemplateSourceFilePort? sourceFiles = null) : ITemplateWorkspaceService
+    ITemplateSourceFilePort? sourceFiles = null,
+    IFileStore? files = null) : ITemplateWorkspaceService
 {
     public async Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken)
     {
@@ -95,6 +96,17 @@ public sealed class TemplateWorkspaceService(
                 group.UpdatedAt);
     }
 
+    public async Task RenameTemplateGroupAsync(
+        string groupId,
+        string newName,
+        CancellationToken cancellationToken)
+    {
+        var group = await templates.GetGroupAsync(groupId, cancellationToken).ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_GROUP_NOT_FOUND");
+        var renamed = group.Rename(newName?.Trim() ?? string.Empty, timeProvider.GetUtcNow());
+        await templates.SaveGroupAsync(renamed, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<TemplateDraftSession> BeginCreateAsync(
         string groupName,
         CancellationToken cancellationToken)
@@ -139,6 +151,136 @@ public sealed class TemplateWorkspaceService(
             current.Pages.Select(page => page.PageId).ToHashSet(StringComparer.Ordinal));
     }
 
+    public async Task<TemplateDraftSession> BeginPageEditAsync(
+        string groupId,
+        string pageId,
+        CancellationToken cancellationToken)
+    {
+        var group = await templates.GetGroupAsync(groupId, cancellationToken).ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_GROUP_NOT_FOUND");
+        if (group.CurrentRevisionId is null)
+        {
+            throw new TemplateRuleViolationException("TPL_INCREMENT_BASE_INVALID");
+        }
+
+        var current = await templates.GetRevisionAsync(group.CurrentRevisionId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_INCREMENT_BASE_INVALID");
+        if (current.Pages.All(page => !string.Equals(page.PageId, pageId, StringComparison.Ordinal)))
+        {
+            throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        }
+
+        var latest = await templates.GetLatestRevisionForGroupAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        if (latest is { State: TemplateRevisionState.Draft })
+        {
+            var editablePageIds = await ResolveEditablePageIdsAsync(
+                latest,
+                current,
+                cancellationToken).ConfigureAwait(false);
+            if (editablePageIds.Contains(pageId))
+            {
+                return CreatePageEditSession(group, current, latest, editablePageIds);
+            }
+
+            // A crash can happen after the draft revision is durable but before
+            // its page-edit marker is written. If the graph is still an exact
+            // copy of the committed revision, the user's explicit Edit action
+            // is sufficient intent to recover the selected page's scope.
+            if (HasSamePageGraph(latest, current))
+            {
+                editablePageIds.Add(pageId);
+                return CreatePageEditSession(group, current, latest, editablePageIds);
+            }
+
+            throw new TemplateRuleViolationException("TPL_DRAFT_IN_PROGRESS");
+        }
+
+        var revisionId = NewId("revision");
+        var revision = TemplateRevision.CreateIncrement(
+            revisionId,
+            current,
+            current.RevisionNo + 1,
+            timeProvider.GetUtcNow(),
+            []);
+        await templates.SaveDraftRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
+        await templates.SaveCalibrationDraftAsync(
+            CalibrationDraft.Create(
+                PageEditDraftId(revision.RevisionId),
+                revision.RevisionId,
+                [pageId]),
+            cancellationToken).ConfigureAwait(false);
+
+        return new TemplateDraftSession(
+            group.GroupId,
+            group.Name,
+            revisionId,
+            revision.RevisionNo,
+            current.Pages.Select(page => page.PageId).ToHashSet(StringComparer.Ordinal))
+        {
+            EditablePageIds = new HashSet<string>([pageId], StringComparer.Ordinal)
+        };
+    }
+
+    public async Task<TemplateDraftSession> BeginFullEditAsync(
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        var group = await templates.GetGroupAsync(groupId, cancellationToken).ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_GROUP_NOT_FOUND");
+        if (group.CurrentRevisionId is null)
+        {
+            throw new TemplateRuleViolationException("TPL_INCREMENT_BASE_INVALID");
+        }
+
+        var current = await templates.GetRevisionAsync(group.CurrentRevisionId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_INCREMENT_BASE_INVALID");
+        var latest = await templates.GetLatestRevisionForGroupAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        if (latest is { State: TemplateRevisionState.Draft })
+        {
+            var editablePageIds = await ResolveEditablePageIdsAsync(
+                latest,
+                current,
+                cancellationToken).ConfigureAwait(false);
+            if (editablePageIds.Count == current.Pages.Length
+                && current.Pages.All(page => editablePageIds.Contains(page.PageId)))
+            {
+                return CreatePageEditSession(group, current, latest, editablePageIds);
+            }
+
+            throw new TemplateRuleViolationException("TPL_DRAFT_IN_PROGRESS");
+        }
+
+        var revisionId = NewId("revision");
+        var revision = TemplateRevision.CreateIncrement(
+            revisionId,
+            current,
+            current.RevisionNo + 1,
+            timeProvider.GetUtcNow(),
+            []);
+        await templates.SaveDraftRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
+        var allPageIds = current.Pages.Select(page => page.PageId).ToHashSet(StringComparer.Ordinal);
+        await templates.SaveCalibrationDraftAsync(
+            CalibrationDraft.Create(
+                PageEditDraftId(revision.RevisionId),
+                revision.RevisionId,
+                allPageIds),
+            cancellationToken).ConfigureAwait(false);
+
+        return new TemplateDraftSession(
+            group.GroupId,
+            group.Name,
+            revisionId,
+            revision.RevisionNo,
+            allPageIds)
+        {
+            EditablePageIds = allPageIds
+        };
+    }
+
     public async Task<TemplateDraftSession> ResumeDraftAsync(
         string groupId,
         CancellationToken cancellationToken)
@@ -154,14 +296,24 @@ public sealed class TemplateWorkspaceService(
         }
 
         IReadOnlySet<string> basePageIds = new HashSet<string>(StringComparer.Ordinal);
+        IReadOnlySet<string> editablePageIds = new HashSet<string>(StringComparer.Ordinal);
+        TemplateRevision? currentRevision = null;
         if (group.CurrentRevisionId is not null)
         {
-            var current = await templates.GetRevisionAsync(group.CurrentRevisionId, cancellationToken)
+            currentRevision = await templates.GetRevisionAsync(group.CurrentRevisionId, cancellationToken)
                 .ConfigureAwait(false)
                 ?? throw new TemplateRuleViolationException("TPL_INCREMENT_BASE_INVALID");
-            basePageIds = current.Pages
+            basePageIds = currentRevision.Pages
                 .Select(page => page.PageId)
                 .ToHashSet(StringComparer.Ordinal);
+        }
+
+        if (currentRevision is not null)
+        {
+            editablePageIds = await ResolveEditablePageIdsAsync(
+                draft,
+                currentRevision,
+                cancellationToken).ConfigureAwait(false);
         }
 
         return new TemplateDraftSession(
@@ -169,7 +321,10 @@ public sealed class TemplateWorkspaceService(
             group.Name,
             draft.RevisionId,
             draft.RevisionNo,
-            basePageIds);
+            basePageIds)
+        {
+            EditablePageIds = editablePageIds
+        };
     }
 
     public async Task<TemplateWorkspaceImportResult> ImportPageAsync(
@@ -215,7 +370,7 @@ public sealed class TemplateWorkspaceService(
                 new TemplateDraftPage(
                     ToProjection(existing),
                     importedResource,
-                    !session.BasePageIds.Contains(existing.PageId),
+                    session.IsPageAffected(existing.PageId),
                     GetPreviewSource(importedResource, paths)));
         }
 
@@ -257,7 +412,7 @@ public sealed class TemplateWorkspaceService(
             pages.Add(new TemplateDraftPage(
                 ToProjection(page),
                 resource,
-                !session.BasePageIds.Contains(page.PageId),
+                session.IsPageAffected(page.PageId),
                 GetPreviewSource(resource, paths)));
         }
 
@@ -275,7 +430,7 @@ public sealed class TemplateWorkspaceService(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(session);
-        if (session.IsIncremental && session.BasePageIds.Contains(pageId))
+        if (!session.CanEditPage(pageId))
         {
             throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
         }
@@ -313,7 +468,7 @@ public sealed class TemplateWorkspaceService(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(session);
-        if (session.IsIncremental && session.BasePageIds.Contains(pageId))
+        if (!session.CanEditPage(pageId))
         {
             throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
         }
@@ -345,6 +500,10 @@ public sealed class TemplateWorkspaceService(
         {
             await sourceFiles.DeleteOwnedCopyAsync(
                 removedResource.InternalRelativePath,
+                cancellationToken).ConfigureAwait(false);
+            await sourceFiles.DeleteOwnedCopyAsync(
+                TemplatePageImportService.GetPreviewRelativePath(
+                    removedResource.InternalRelativePath),
                 cancellationToken).ConfigureAwait(false);
         }
     }
@@ -434,6 +593,163 @@ public sealed class TemplateWorkspaceService(
         return ToDetails(group, committed);
     }
 
+    public async Task<TemplateGroupDetails> CommitDraftAsNewGroupAsync(
+        TemplateDraftSession session,
+        string newGroupName,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        TemplateValueRules.RequiredText(newGroupName, 256, "TPL_GROUP_NAME_INVALID");
+        if (!session.IsFullTemplateEdit)
+        {
+            throw new TemplateRuleViolationException("TPL_FULL_EDIT_REQUIRED");
+        }
+        if (templates is null || resources is null || sourceFiles is null || paths is null || files is null)
+        {
+            throw new TemplateRuleViolationException("TPL_TEMPLATE_CLONE_UNAVAILABLE");
+        }
+
+        var sourceRevision = await templates.GetRevisionAsync(
+                session.DraftRevisionId,
+                cancellationToken).ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
+        if (sourceRevision.State != TemplateRevisionState.Draft)
+        {
+            throw new TemplateRuleViolationException("TPL_REVISION_IMMUTABLE");
+        }
+        if (sourceRevision.Pages.IsDefaultOrEmpty)
+        {
+            throw new TemplateRuleViolationException("TPL_REVISION_PAGE_SET_INVALID");
+        }
+
+        var newGroupId = NewId("group");
+        var newRevisionId = NewId("revision");
+        var now = timeProvider.GetUtcNow();
+        var newGroup = TemplateGroup.Create(newGroupId, newGroupName.Trim(), now);
+        var newRevision = TemplateRevision.CreateDraft(newRevisionId, newGroupId, 1, now);
+        await templates.SaveGroupAsync(newGroup, cancellationToken).ConfigureAwait(false);
+        await templates.SaveDraftRevisionAsync(newRevision, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var resourceMap = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var page in sourceRevision.Pages)
+            {
+                if (resourceMap.ContainsKey(page.TemplateResourceId))
+                {
+                    continue;
+                }
+
+                var sourceResource = await resources.GetByResourceIdAsync(
+                        page.TemplateResourceId,
+                        cancellationToken).ConfigureAwait(false)
+                    ?? throw new TemplateRuleViolationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");
+                var resourceId = NewId("resource");
+                var destination =
+                    $"templates/groups/{newGroupId}/drafts/{newRevisionId}/staging/{resourceId}/template.psd";
+                var copied = await sourceFiles.CopyVerifiedAsync(
+                    paths.ResolveOwnedPath(sourceResource.InternalRelativePath),
+                    new TemplateSourceFingerprint(sourceResource.Length, sourceResource.Sha256),
+                    destination,
+                    cancellationToken).ConfigureAwait(false);
+                if (!copied.IsSuccess)
+                {
+                    throw new TemplateRuleViolationException(
+                        copied.Error?.Code ?? "TPL_SOURCE_UNREADABLE");
+                }
+
+                var inspection = sourceResource.Inspection;
+                var sourcePreview = TemplatePageImportService.GetPreviewRelativePath(
+                    sourceResource.InternalRelativePath);
+                var destinationPreview = TemplatePageImportService.GetPreviewRelativePath(destination);
+                var preview = await files.ReadAsync(sourcePreview, cancellationToken).ConfigureAwait(false);
+                if (preview is not null)
+                {
+                    await files.WriteAtomicallyAsync(destinationPreview, preview, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    inspection = inspection with { Preview = null };
+                }
+
+                var savedResource = new ImportedTemplateResource(
+                    resourceId,
+                    newGroupId,
+                    newRevisionId,
+                    destination,
+                    copied.Copy!.Length,
+                    copied.Copy.Sha256,
+                    sourceResource.StructureSignature,
+                    inspection,
+                    now);
+                await resources.SaveImportedAsync(
+                    NewId("import"),
+                    savedResource,
+                    cancellationToken).ConfigureAwait(false);
+                resourceMap[page.TemplateResourceId] = resourceId;
+            }
+
+            var pageMap = sourceRevision.Pages.ToDictionary(
+                page => page.PageId,
+                _ => NewId("page"),
+                StringComparer.Ordinal);
+            foreach (var page in sourceRevision.Pages.OrderBy(page => page.Order))
+            {
+                newRevision = newRevision.AddPage(TemplatePage.Create(
+                    pageMap[page.PageId],
+                    newRevisionId,
+                    page.Order,
+                    page.Name,
+                    page.ContentType,
+                    page.GenerationMode,
+                    page.VariantCapacity,
+                    page.Enabled,
+                    resourceMap[page.TemplateResourceId]));
+            }
+
+            foreach (var binding in sourceRevision.FrameBindings)
+            {
+                newRevision = newRevision.AddFrameBinding(FrameBinding.Create(
+                    NewId("frame"),
+                    pageMap[binding.PageId],
+                    binding.LayerPath,
+                    binding.ExpectedLayer,
+                    binding.SupersededLayers,
+                    binding.SelectionRequirement,
+                    binding.LayoutIntent));
+            }
+
+            await templates.SaveDraftRevisionAsync(newRevision, cancellationToken).ConfigureAwait(false);
+            var cloneSession = new TemplateDraftSession(
+                newGroupId,
+                newGroupName.Trim(),
+                newRevisionId,
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            return await CommitDraftAsync(cloneSession, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                await templates.DeleteGroupAsync(newGroupId, CancellationToken.None).ConfigureAwait(false);
+                if (ownedStorage is not null)
+                {
+                    await ownedStorage.DeleteGroupFilesAsync(newGroupId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                // Preserve the original clone error; startup recovery can clean
+                // any unreferenced staging files if the process stops mid-copy.
+            }
+
+            throw;
+        }
+    }
+
     public async Task<TemplateBatchSnapshotView> CreateBatchSnapshotAsync(
         string groupId,
         string batchId,
@@ -509,19 +825,56 @@ public sealed class TemplateWorkspaceService(
         string groupId,
         CancellationToken cancellationToken)
     {
-        var blockers = await templates.GetBlockingBatchIdsAsync(groupId, cancellationToken)
-            .ConfigureAwait(false);
-        if (blockers.Count > 0)
+        try
         {
-            return blockers;
-        }
+            var blockers = await templates.GetBlockingBatchIdsAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            if (blockers.Count > 0)
+            {
+                return blockers;
+            }
 
-        await templates.DeleteGroupAsync(groupId, cancellationToken).ConfigureAwait(false);
-        if (ownedStorage is not null)
-        {
-            await ownedStorage.DeleteGroupFilesAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var deletionStage = ownedStorage is null
+                ? null
+                : await ownedStorage.StageGroupFilesForDeletionAsync(groupId, cancellationToken)
+                    .ConfigureAwait(false);
+            try
+            {
+                await templates.DeleteGroupAsync(groupId, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (deletionStage is not null)
+                {
+                    await ownedStorage!.RestoreGroupFilesAsync(deletionStage, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+
+                throw;
+            }
+
+            if (deletionStage is not null)
+            {
+                // Once metadata deletion commits, finish the staged filesystem
+                // cleanup even if the caller cancels; leaving the tombstone is
+                // no longer a user-cancellable operation.
+                await ownedStorage!.CommitGroupFilesDeletionAsync(deletionStage, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            return [];
         }
-        return [];
+        catch (IOException ioException)
+        {
+            throw new IOException(
+                "TPL_DELETE_FILES_FAILED",
+                ioException);
+        }
+        catch (UnauthorizedAccessException accessException)
+        {
+            throw new IOException(
+                "TPL_DELETE_ACCESS_DENIED",
+                accessException);
+        }
     }
 
     private async Task<IReadOnlyList<ManifestEntry>> BuildManifestEntriesAsync(
@@ -553,7 +906,7 @@ public sealed class TemplateWorkspaceService(
         foreach (var page in revision.Pages.Where(page =>
                      page.Enabled
                      && page.ContentType == TemplatePageContentType.NormalComposition
-                     && (!session.IsIncremental || !session.BasePageIds.Contains(page.PageId))))
+                     && session.IsPageAffected(page.PageId)))
         {
             var resource = await resources.GetByResourceIdAsync(page.TemplateResourceId, cancellationToken)
                 .ConfigureAwait(false)
@@ -668,6 +1021,122 @@ public sealed class TemplateWorkspaceService(
         revision.CreatedAt);
 
     private static string NewId(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
+
+    private static string PageEditDraftId(string revisionId) =>
+        $"page_edit_{revisionId}";
+
+    private static string CalibrationDraftId(string revisionId, string pageId) =>
+        $"calibration_{revisionId}_{pageId}";
+
+    private async Task<HashSet<string>> ResolveEditablePageIdsAsync(
+        TemplateRevision draft,
+        TemplateRevision current,
+        CancellationToken cancellationToken)
+    {
+        var basePageIds = current.Pages
+            .Select(page => page.PageId)
+            .ToHashSet(StringComparer.Ordinal);
+        var editablePageIds = new HashSet<string>(StringComparer.Ordinal);
+
+        var pageEditScope = await templates.GetCalibrationDraftAsync(
+            PageEditDraftId(draft.RevisionId),
+            cancellationToken).ConfigureAwait(false);
+        AddEditablePages(pageEditScope, draft.RevisionId, current.RevisionId, basePageIds, editablePageIds);
+
+        // The calibration editor's durable state is also a reliable page-edit
+        // marker. Check the current format and the legacy format so an already
+        // saved local draft remains recoverable after an app update.
+        foreach (var pageId in basePageIds)
+        {
+            var draftScope = await templates.GetCalibrationDraftAsync(
+                CalibrationDraftId(draft.RevisionId, pageId),
+                cancellationToken).ConfigureAwait(false);
+            AddEditablePages(draftScope, draft.RevisionId, current.RevisionId, basePageIds, editablePageIds);
+
+            var legacyScope = await templates.GetCalibrationDraftAsync(
+                CalibrationDraftId(current.RevisionId, pageId),
+                cancellationToken).ConfigureAwait(false);
+            AddEditablePages(legacyScope, draft.RevisionId, current.RevisionId, basePageIds, editablePageIds);
+        }
+
+        return editablePageIds;
+    }
+
+    private static void AddEditablePages(
+        CalibrationDraft? scope,
+        string draftRevisionId,
+        string currentRevisionId,
+        HashSet<string> basePageIds,
+        HashSet<string> editablePageIds)
+    {
+        if (scope is null
+            || (!string.Equals(scope.BaseRevisionId, draftRevisionId, StringComparison.Ordinal)
+                && !string.Equals(scope.BaseRevisionId, currentRevisionId, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        foreach (var pageId in scope.AffectedPageIds)
+        {
+            if (basePageIds.Contains(pageId))
+            {
+                editablePageIds.Add(pageId);
+            }
+        }
+    }
+
+    private static bool HasSamePageGraph(TemplateRevision left, TemplateRevision right)
+    {
+        var leftPages = left.Pages
+            .OrderBy(page => page.Order)
+            .Select(page => new
+            {
+                page.PageId,
+                page.Order,
+                page.Name,
+                page.ContentType,
+                page.GenerationMode,
+                page.VariantCapacity,
+                page.Enabled,
+                page.TemplateResourceId
+            });
+        var rightPages = right.Pages
+            .OrderBy(page => page.Order)
+            .Select(page => new
+            {
+                page.PageId,
+                page.Order,
+                page.Name,
+                page.ContentType,
+                page.GenerationMode,
+                page.VariantCapacity,
+                page.Enabled,
+                page.TemplateResourceId
+            });
+        return string.Equals(
+                   JsonSerializer.Serialize(leftPages),
+                   JsonSerializer.Serialize(rightPages),
+                   StringComparison.Ordinal)
+               && string.Equals(
+                   JsonSerializer.Serialize(left.FrameBindings.OrderBy(binding => binding.FrameId)),
+                   JsonSerializer.Serialize(right.FrameBindings.OrderBy(binding => binding.FrameId)),
+                   StringComparison.Ordinal);
+    }
+
+    private static TemplateDraftSession CreatePageEditSession(
+        TemplateGroup group,
+        TemplateRevision current,
+        TemplateRevision draft,
+        IReadOnlySet<string> editablePageIds) =>
+        new(
+            group.GroupId,
+            group.Name,
+            draft.RevisionId,
+            draft.RevisionNo,
+            current.Pages.Select(page => page.PageId).ToHashSet(StringComparer.Ordinal))
+        {
+            EditablePageIds = editablePageIds.ToHashSet(StringComparer.Ordinal)
+        };
 
     private static TemplatePageProjection ToProjection(TemplatePage page) => new(
         page.PageId,

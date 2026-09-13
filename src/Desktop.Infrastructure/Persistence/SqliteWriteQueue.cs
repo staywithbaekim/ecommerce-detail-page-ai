@@ -5,6 +5,7 @@ namespace Desktop.Infrastructure.Persistence;
 
 internal sealed class SqliteWriteQueue : IAsyncDisposable
 {
+    private readonly object _disposeGate = new();
     private readonly Channel<IWriteCommand> _channel = Channel.CreateBounded<IWriteCommand>(
         new BoundedChannelOptions(256)
         {
@@ -14,6 +15,8 @@ internal sealed class SqliteWriteQueue : IAsyncDisposable
         });
     private readonly SqliteConnection _connection;
     private readonly Task _worker;
+    private Task? _disposeTask;
+    private int _closed;
 
     public SqliteWriteQueue(string connectionString)
     {
@@ -26,17 +29,40 @@ internal sealed class SqliteWriteQueue : IAsyncDisposable
         Func<SqliteConnection, CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(action);
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref _closed) != 0,
+            this);
+
         var command = new WriteCommand<T>(action, cancellationToken);
-        await _channel.Writer.WriteAsync(command, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _channel.Writer.WriteAsync(command, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException exception)
+        {
+            throw new ObjectDisposedException(nameof(SqliteWriteQueue), exception);
+        }
+
         return await command.Completion.ConfigureAwait(false);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
+        lock (_disposeGate)
+        {
+            _disposeTask ??= DisposeCoreAsync();
+            return new ValueTask(_disposeTask);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        Interlocked.Exchange(ref _closed, 1);
         _channel.Writer.TryComplete();
         await _worker.ConfigureAwait(false);
         using var checkpoint = _connection.CreateCommand();
-        checkpoint.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
+        checkpoint.CommandText = "PRAGMA wal_checkpoint(FULL);";
         checkpoint.ExecuteNonQuery();
         await _connection.DisposeAsync().ConfigureAwait(false);
     }

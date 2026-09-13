@@ -143,6 +143,32 @@
           "type": "array",
           "maxItems": 8,
           "items": { "type": "number" }
+        },
+        "embeddedContentSha256": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/sha256" }
+          ]
+        },
+        "embeddedContentAvailable": { "type": "boolean" }
+      }
+    },
+    "pixelEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available", "renderedPixelCount", "compositeContributionPixelCount",
+        "compositeContributionBounds"
+      ],
+      "properties": {
+        "available": { "type": "boolean" },
+        "renderedPixelCount": { "type": "integer", "minimum": 0 },
+        "compositeContributionPixelCount": { "type": "integer", "minimum": 0 },
+        "compositeContributionBounds": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/bounds" }
+          ]
         }
       }
     },
@@ -180,7 +206,8 @@
             { "type": "null" },
             { "$ref": "#/$defs/smartObject" }
           ]
-        }
+        },
+        "pixelEvidence": { "$ref": "#/$defs/pixelEvidence" }
       }
     },
     "inspection": {

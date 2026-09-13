@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from PIL import ImageChops
 from psd_tools import PSDImage
 
 
@@ -138,9 +139,12 @@ def layer_record(
     }
 
 
-def flatten_layers(parent: Any, prefix: list[int] | None = None) -> list[dict[str, Any]]:
+def flatten_layers(
+    parent: Any,
+    prefix: list[int] | None = None,
+) -> list[tuple[Any, dict[str, Any]]]:
     prefix = prefix or []
-    records: list[dict[str, Any]] = []
+    records: list[tuple[Any, dict[str, Any]]] = []
     indexed_layers = [
         (layer, [*prefix, index])
         for index, layer in enumerate(parent)
@@ -152,10 +156,117 @@ def flatten_layers(parent: Any, prefix: list[int] | None = None) -> list[dict[st
             clipping_bases[id(clipped_layer)] = base
 
     for layer, path in indexed_layers:
-        records.append(layer_record(layer, path, clipping_bases.get(id(layer))))
+        records.append((layer, layer_record(layer, path, clipping_bases.get(id(layer)))))
         if layer.is_group():
             records.extend(flatten_layers(layer, path))
     return records
+
+
+def _viewport(layer: Any, psd: Any) -> tuple[int, int, int, int] | None:
+    left = max(0, int(layer.left))
+    top = max(0, int(layer.top))
+    right = min(int(psd.width), int(layer.right))
+    bottom = min(int(psd.height), int(layer.bottom))
+    return (left, top, right, bottom) if right > left and bottom > top else None
+
+
+def _nonzero_count(mask: Any) -> int:
+    histogram = mask.histogram()
+    return int(sum(histogram[1:]))
+
+
+def _difference_mask(first: Any, second: Any) -> Any:
+    difference = ImageChops.difference(first.convert("RGBA"), second.convert("RGBA"))
+    red, green, blue, alpha = difference.split()
+    mask = ImageChops.lighter(ImageChops.lighter(red, green), ImageChops.lighter(blue, alpha))
+    difference.close()
+    return mask
+
+
+def pixel_evidence(psd: Any, layer: Any, complete_document: Any) -> dict[str, Any]:
+    unavailable = {
+        "available": False,
+        "rendered_pixel_count": 0,
+        "composite_contribution_pixel_count": 0,
+        "composite_contribution_bbox": None,
+    }
+    if layer.kind != "smartobject":
+        return unavailable
+
+    viewport = _viewport(layer, psd)
+    if viewport is None or not layer.is_visible() or int(layer.opacity) <= 0:
+        return {
+            **unavailable,
+            "available": True,
+        }
+
+    complete_view = None
+    without_layer = None
+    difference_mask = None
+    try:
+        # A clipped smart object composites as transparent in isolation because
+        # its clipping base is outside the layer. The shape channel establishes
+        # that the placed layer itself has rendered pixels; removing the layer
+        # from the full document below establishes its final visible effect.
+        rendered_shape = layer.numpy("shape")
+        if rendered_shape is None:
+            return unavailable
+        rendered_pixel_count = int((rendered_shape > 0).sum())
+
+        complete_view = complete_document.crop(viewport)
+        without_layer = psd.composite(
+            viewport=viewport,
+            force=True,
+            color=0.0,
+            alpha=0.0,
+            layer_filter=lambda candidate: candidate.is_visible() and candidate is not layer,
+            ignore_preview=True,
+            apply_icc=False,
+        )
+        difference_mask = _difference_mask(complete_view, without_layer)
+        contribution_count = _nonzero_count(difference_mask)
+        relative_bbox = difference_mask.getbbox()
+        contribution_bbox = None
+        if relative_bbox is not None:
+            contribution_bbox = [
+                relative_bbox[0] + viewport[0],
+                relative_bbox[1] + viewport[1],
+                relative_bbox[2] + viewport[0],
+                relative_bbox[3] + viewport[1],
+            ]
+        return {
+            "available": True,
+            "rendered_pixel_count": rendered_pixel_count,
+            "composite_contribution_pixel_count": contribution_count,
+            "composite_contribution_bbox": contribution_bbox,
+        }
+    except MemoryError:
+        raise
+    except Exception:
+        return unavailable
+    finally:
+        for image in (difference_mask, complete_view, without_layer):
+            if image is not None:
+                image.close()
+
+
+def attach_pixel_evidence(
+    psd: Any,
+    layer_entries: list[tuple[Any, dict[str, Any]]],
+) -> None:
+    complete_document = psd.composite(
+        force=True,
+        color=0.0,
+        alpha=0.0,
+        layer_filter=lambda candidate: candidate.is_visible(),
+        ignore_preview=True,
+        apply_icc=False,
+    )
+    try:
+        for layer, record in layer_entries:
+            record["pixel_evidence"] = pixel_evidence(psd, layer, complete_document)
+    finally:
+        complete_document.close()
 
 
 def structure_signature(layers: list[dict[str, Any]]) -> str:
@@ -246,12 +357,14 @@ def inspect(request: dict[str, Any]) -> dict[str, Any]:
     try:
         psd = PSDImage.open(input_path)
         opened_ms = round((time.perf_counter() - started) * 1000, 3)
-        layers = flatten_layers(psd)
+        layer_entries = flatten_layers(psd)
+        layers = [record for _, record in layer_entries]
         if any(
             layer["clipping"] and layer["clipping_base"] is None
             for layer in layers
         ):
             raise ValueError("Clipping base relationship is unavailable")
+        attach_pixel_evidence(psd, layer_entries)
         inspected_ms = round((time.perf_counter() - started) * 1000, 3)
         preview = None
         if preview_path is not None:

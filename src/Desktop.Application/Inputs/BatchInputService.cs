@@ -239,6 +239,18 @@ public sealed class BatchInputService(
                 return committed.Draft!;
             }
 
+            if (committed.RequiresRecovery)
+            {
+                // The commit journal is now the recovery source.  Do not
+                // overwrite a possible ScanReady SQLite graph with a
+                // ScanBlocked row while the durable evidence is being
+                // reconciled.
+                return scanning.Block(
+                    committed.Failure ?? ScanBlockReason.PersistenceFailure(),
+                    timeProvider.GetUtcNow(),
+                    layout.InputType);
+            }
+
             return await BlockAsync(
                 scanning,
                 committed.Failure ?? ScanBlockReason.SystemFailure(),
@@ -251,6 +263,16 @@ public sealed class BatchInputService(
         }
         catch (Exception exception) when (IsRecoverableSystemFailure(exception))
         {
+            if (exception.Message is "INPUT_PERSISTENCE_FAILURE"
+                or "INPUT_MANIFEST_DATABASE_MISMATCH")
+            {
+                return scanning.Block(
+                    exception.Message == "INPUT_MANIFEST_DATABASE_MISMATCH"
+                        ? ScanBlockReason.ManifestDatabaseMismatch()
+                        : ScanBlockReason.PersistenceFailure(),
+                    timeProvider.GetUtcNow());
+            }
+
             return await BlockBestEffortAsync(
                 scanning,
                 ScanBlockReason.SystemFailure(),

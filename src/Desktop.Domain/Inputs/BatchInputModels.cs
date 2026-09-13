@@ -88,6 +88,16 @@ public sealed record ScanBlockReason
         ScanBlockCategory.System,
         "扫描未能安全提交。请重试；如果问题持续，请导出诊断信息。");
 
+    public static ScanBlockReason PersistenceFailure() => Create(
+        "INPUT_PERSISTENCE_FAILURE",
+        ScanBlockCategory.System,
+        "本地状态未能安全保存，未发送 AI 请求。请重新扫描并建立新批次；源图片未修改。");
+
+    public static ScanBlockReason ManifestDatabaseMismatch() => Create(
+        "INPUT_MANIFEST_DATABASE_MISMATCH",
+        ScanBlockCategory.System,
+        "本地批次清单与数据库记录不一致，已阻止 AI 请求。请点击“重试扫描”；系统会使用同一文件夹建立新批次，源图片和 PSD 不会修改。");
+
     public static ScanBlockReason Interrupted() => Create(
         "INPUT_SCAN_INTERRUPTED",
         ScanBlockCategory.System,

@@ -218,7 +218,7 @@ public sealed partial class SqliteDesktopStore :
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;";
+        command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

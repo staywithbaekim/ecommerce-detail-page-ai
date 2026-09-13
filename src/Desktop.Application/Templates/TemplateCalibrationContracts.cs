@@ -33,7 +33,29 @@ public sealed record TemplateFrameProjection(
 
     public bool HasPersistedBinding { get; init; }
 
+    public string? BoundAssetId { get; init; }
+
+    public double Scale { get; init; } = 1;
+
+    public double OffsetX { get; init; }
+
+    public double OffsetY { get; init; }
+
+    public string SelectionRequirement { get; init; } = string.Empty;
+
     public string RegistrationLabel => IsRegistered ? "已绑定素材" : "未绑定，可跳过";
+
+    public string ReviewStatusText => HasPersistedBinding
+        ? "已确认规则"
+        : IsRegistered ? "已绑定素材" : "未绑定，可跳过";
+
+    public string StatusTone => HasPersistedBinding
+        ? "Completed"
+        : IsRegistered ? "Pending" : "Fixed";
+
+    public string StructuralSummary => string.IsNullOrWhiteSpace(SelectionRequirement)
+        ? PreviewLabel
+        : SelectionRequirement;
 
     public string StatusColor => IsRegistered ? "#34C759" : "#8E8E93";
 

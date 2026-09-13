@@ -14,6 +14,17 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class SqliteDesktopStoreTests
 {
     [Fact]
+    public async Task DisposeAsyncIsIdempotentForSharedServiceRegistrations()
+    {
+        using var directory = new TestDirectory();
+        var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+
+        await store.DisposeAsync();
+        await store.DisposeAsync();
+    }
+
+    [Fact]
     public async Task ReopensFromLastSafeEventAndCheckpoint()
     {
         using var directory = new TestDirectory();
@@ -219,6 +230,62 @@ public sealed class SqliteDesktopStoreTests
         var restoredItem = Assert.Single(restored.PendingItems);
         Assert.Equal(item.WorkItemId, restoredItem.WorkItemId);
         Assert.Equal(item.Request.RequestId, restoredItem.Request.RequestId);
+    }
+
+    [Fact]
+    public async Task AiSchedulerTerminalErrorCodePersistsAndRestoresWithHistoricalRequest()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var request = new AiAnalysisRequestV1(
+            AiAnalysisProtocol.RequestSchemaVersion,
+            "request",
+            "request_terminal",
+            "correlation_terminal",
+            "product_terminal",
+            "batch_terminal",
+            "style_terminal",
+            "snapshot_terminal",
+            "revision_terminal",
+            AiAnalysisKind.ProductJointUnderstanding,
+            "model/proposed",
+            "prompt/v1",
+            AiAnalysisProtocol.ResultSchemaVersion,
+            AiAnalysisCopyProfiles.WicBoundedV2,
+            "consent_terminal",
+            "sha256:" + new string('a', 64),
+            [new AiAssetInputV1(
+                "asset_terminal",
+                "sha256:" + new string('b', 64),
+                "image/jpeg",
+                10,
+                10,
+                "copy_terminal")],
+            [new AiRequirementInputV1("frame_terminal", "商品图", "居中", true)]);
+        var state = new AiAnalysisSchedulingState(
+            [],
+            AiAnalysisBudgetSnapshot.Empty,
+            now,
+            HistoricalRequests: [request],
+            TerminalErrors: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [request.RequestId] = "AI_PROVIDER_REQUEST_TOO_LARGE"
+            });
+
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveSchedulingStateAsync("ai-terminal-error", state, CancellationToken.None);
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var restored = await reopened.LoadSchedulingStateAsync("ai-terminal-error", CancellationToken.None);
+
+        Assert.NotNull(restored);
+        Assert.Equal("AI_PROVIDER_REQUEST_TOO_LARGE", Assert.Single(restored!.TerminalErrors!).Value);
+        Assert.Equal(request.RequestId, Assert.Single(restored.HistoricalRequests!).RequestId);
     }
 
     [Fact]

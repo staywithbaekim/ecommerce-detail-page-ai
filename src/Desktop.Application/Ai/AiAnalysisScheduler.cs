@@ -31,8 +31,10 @@ public sealed class AiAnalysisScheduler : IDisposable
     private readonly Dictionary<string, AiAnalysisWorkItem> _pendingItems = new(StringComparer.Ordinal);
     private readonly HashSet<string> _automaticRefillSuppressedItems = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AiAnalysisRequestV1> _historicalRequests = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _terminalErrors = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _statePersistenceGate = new(1, 1);
     private readonly SemaphoreSlim _processingGate;
+    private readonly SemaphoreSlim _copyPreparationGate;
     private AiAnalysisBudgetSnapshot _budget = AiAnalysisBudgetSnapshot.Empty;
     private AiAnalysisSchedulingControlState _controlState = AiAnalysisSchedulingControlState.Running;
     private string? _controlReason;
@@ -63,6 +65,9 @@ public sealed class AiAnalysisScheduler : IDisposable
         _processingGate = new SemaphoreSlim(
             _queueOptions.MaxConcurrentRequests,
             _queueOptions.MaxConcurrentRequests);
+        _copyPreparationGate = new SemaphoreSlim(
+            _queueOptions.MaxConcurrentCopyPreparations,
+            _queueOptions.MaxConcurrentCopyPreparations);
         _timeProvider = timeProvider ?? TimeProvider.System;
         _stateStore = stateStore;
         _resultStore = resultStore;
@@ -143,6 +148,18 @@ public sealed class AiAnalysisScheduler : IDisposable
     /// </summary>
     public int ReadyCount => _queue.Count;
 
+    /// <summary>Durable terminal or unknown provider error codes keyed by request id.</summary>
+    public IReadOnlyDictionary<string, string> TerminalErrorsSnapshot
+    {
+        get
+        {
+            lock (_pendingGate)
+            {
+                return new Dictionary<string, string>(_terminalErrors, StringComparer.Ordinal);
+            }
+        }
+    }
+
     /// <summary>
     /// Commits a user selection and the matching request-ledger transition as
     /// one full-batch checkpoint.  Presentation must not save either resource
@@ -169,20 +186,37 @@ public sealed class AiAnalysisScheduler : IDisposable
         var fingerprint = AiAnalysisCacheKeyFactory.Create(request);
         var ledger = await _store.FindRequestByFingerprintAsync(fingerprint, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("AI_REQUEST_NOT_FOUND");
-        if (ledger.Status is not ("Validated" or "ManualReview") || ledger.ResultReference is null)
+        var isVerifiedResult = ledger.Status is "Validated" or "ManualReview"
+            && ledger.ResultReference is not null;
+        var isUnknownResult = ledger.Status == "AiResultUnknown"
+            && ledger.ResultReference is null;
+        if (!isVerifiedResult && !isUnknownResult)
         {
             throw new InvalidOperationException("AI_SELECTION_NOT_AVAILABLE");
         }
 
         var session = await _store.LoadSessionAsync(SessionId(request), cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("AI_SESSION_NOT_FOUND");
-        var locked = session.LockSelection(requirementId, assetId, session.SelectionRevision);
-        var nextStatus = AiAnalysisSessionStatus.ManualReview.ToString();
-        var nextLedger = ledger with
+        if (!string.Equals(ledger.Status, session.Status.ToString(), StringComparison.Ordinal))
         {
-            Status = nextStatus,
-            UpdatedAt = NextTimestamp(ledger.UpdatedAt)
-        };
+            throw new InvalidOperationException("AI_SELECTION_STATE_MISMATCH");
+        }
+        var locked = session.LockSelection(requirementId, assetId, session.SelectionRevision);
+        // The first manual lock transitions a validated request to
+        // ManualReview.  Later replacements only advance the session's
+        // selection revision; rewriting the already-terminal ledger with the
+        // same status would look like a stale CAS update and incorrectly make
+        // the second (or third) replacement fail.
+        var nextLedger = isUnknownResult || string.Equals(
+                ledger.Status,
+                AiAnalysisSessionStatus.ManualReview.ToString(),
+                StringComparison.Ordinal)
+            ? ledger
+            : ledger with
+            {
+                Status = AiAnalysisSessionStatus.ManualReview.ToString(),
+                UpdatedAt = NextTimestamp(ledger.UpdatedAt)
+            };
         var usage = (await _store.LoadUsageAsync(request.RequestId, cancellationToken).ConfigureAwait(false))
             .OrderBy(item => item.RecordedAt)
             .LastOrDefault();
@@ -278,33 +312,68 @@ public sealed class AiAnalysisScheduler : IDisposable
         CancellationToken cancellationToken)
     {
         var sourceById = batch.Assets.ToDictionary(asset => asset.AssetId, StringComparer.Ordinal);
-        var prepared = new List<AiAssetInputV1>(request.Assets.Count);
+        var preparations = request.Assets
+            .Select(asset => PrepareCopyAsync(
+                batch,
+                style,
+                asset,
+                sourceById,
+                compressionProfileVersion,
+                cancellationToken))
+            .ToArray();
         try
         {
-            foreach (var asset in request.Assets)
-            {
-                if (!sourceById.TryGetValue(asset.AssetId, out var source)
-                    || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal))
-                    throw new InvalidOperationException("AI_INPUT_ASSET_NOT_FOUND");
-                var metadata = await _copyPreparer!.PrepareAsync(
-                    new AiAnalysisCopyPreparationRequest(asset.AnalysisCopyReference, batch.InputRoot, source, compressionProfileVersion),
-                    cancellationToken).ConfigureAwait(false);
-                prepared.Add(asset with
-                {
-                    AnalysisCopyDigest = metadata.Digest,
-                    AnalysisCopyLength = metadata.ByteLength,
-                    AnalysisCopyMimeType = metadata.MimeType,
-                    AnalysisCopyCompressionProfile = metadata.CompressionProfileVersion,
-                    AnalysisCopyLeaseId = metadata.LeaseId
-                });
-            }
+            var prepared = await Task.WhenAll(preparations).ConfigureAwait(false);
             return request with { Assets = prepared };
         }
         catch
         {
+            var prepared = preparations
+                .Where(task => task.Status == TaskStatus.RanToCompletion)
+                .Select(task => task.Result)
+                .ToArray();
             await ReleasePreparedLeaseIdsAsync(
                 request with { Assets = prepared }, CancellationToken.None).ConfigureAwait(false);
             throw;
+        }
+    }
+
+    private async Task<AiAssetInputV1> PrepareCopyAsync(
+        BatchDraft batch,
+        StyleDraft style,
+        AiAssetInputV1 asset,
+        Dictionary<string, SourceAssetMetadata> sourceById,
+        string compressionProfileVersion,
+        CancellationToken cancellationToken)
+    {
+        if (!sourceById.TryGetValue(asset.AssetId, out var source)
+            || !string.Equals(source.StyleId, style.StyleId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AI_INPUT_ASSET_NOT_FOUND");
+        }
+
+        await _copyPreparationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var metadata = await _copyPreparer!.PrepareAsync(
+                new AiAnalysisCopyPreparationRequest(
+                    asset.AnalysisCopyReference,
+                    batch.InputRoot,
+                    source,
+                    compressionProfileVersion),
+                cancellationToken).ConfigureAwait(false);
+            return asset with
+            {
+                AnalysisCopyDigest = metadata.Digest,
+                AnalysisCopyLength = metadata.ByteLength,
+                AnalysisCopyMimeType = metadata.MimeType,
+                AnalysisCopyCompressionProfile = metadata.CompressionProfileVersion,
+                AnalysisCopyLeaseId = metadata.LeaseId
+            };
+        }
+        finally
+        {
+            _copyPreparationGate.Release();
         }
     }
 
@@ -575,9 +644,14 @@ public sealed class AiAnalysisScheduler : IDisposable
             _controlReason = string.IsNullOrWhiteSpace(state.ControlReason) ? null : state.ControlReason;
             _automaticRefillSuppressedItems.Clear();
             _historicalRequests.Clear();
+            _terminalErrors.Clear();
             foreach (var historical in state.HistoricalRequests ?? [])
             {
                 _historicalRequests[historical.RequestId] = historical;
+            }
+            foreach (var pair in state.TerminalErrors ?? Enumerable.Empty<KeyValuePair<string, string>>())
+            {
+                _terminalErrors[pair.Key] = pair.Value;
             }
         }
         lock (_timestampGate) _lastPersistenceTimestamp = state.UpdatedAt;
@@ -763,6 +837,7 @@ public sealed class AiAnalysisScheduler : IDisposable
             if (!batchScopeConflict && !requestIdConflict && !logicalRequestLimitExceeded)
             {
                 _historicalRequests[request.RequestId] = request;
+                _terminalErrors.Remove(request.RequestId);
             }
         }
         if (batchScopeConflict)
@@ -1431,6 +1506,21 @@ public sealed class AiAnalysisScheduler : IDisposable
                 execution.Error.Code);
         }
 
+        if (execution.Outcome == AiProviderOutcome.TerminalError
+            && string.Equals(execution.Error?.Code, "AI_PROVIDER_REQUEST_TOO_LARGE", StringComparison.Ordinal))
+        {
+            // The final JSON preflight runs before HttpClient.SendAsync. No
+            // provider request was admitted, so release the local reservation
+            // while retaining the terminal error and its durable UI projection.
+            return await CompleteTerminalAsync(
+                item,
+                AiAnalysisWorkDisposition.TerminalError,
+                execution.Error!.Code,
+                AiAnalysisSessionStatus.TerminalError,
+                persistenceToken,
+                releaseUnusedRequestReservation: true).ConfigureAwait(false);
+        }
+
         if (execution.Outcome == AiProviderOutcome.Completed && execution.Result is not null)
         {
             try
@@ -1455,7 +1545,17 @@ public sealed class AiAnalysisScheduler : IDisposable
                 return await ScheduleRetryAsync(item, persistenceToken).ConfigureAwait(false);
             }
 
-            return await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, "AI_PROVIDER_RETRY_EXHAUSTED", AiAnalysisSessionStatus.TerminalError, persistenceToken).ConfigureAwait(false);
+            var providerCode = execution.Error?.Code;
+            var terminalCode = providerCode is
+                "AI_PROVIDER_SUBMISSION_TIMEOUT" or "AI_PROVIDER_SUBMISSION_NETWORK_FAILURE"
+                    ? providerCode
+                    : "AI_PROVIDER_RETRY_EXHAUSTED";
+            return await CompleteTerminalAsync(
+                item,
+                AiAnalysisWorkDisposition.TerminalError,
+                terminalCode,
+                AiAnalysisSessionStatus.TerminalError,
+                persistenceToken).ConfigureAwait(false);
         }
 
         if (string.Equals(execution.Error?.Code, "AI_PROVIDER_NETWORK_UNAVAILABLE", StringComparison.Ordinal))
@@ -1472,7 +1572,12 @@ public sealed class AiAnalysisScheduler : IDisposable
 
         return execution.Outcome switch
         {
-            AiProviderOutcome.AiResultUnknown => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.ResultUnknown, "AI_PROVIDER_RESULT_UNKNOWN", AiAnalysisSessionStatus.AiResultUnknown, persistenceToken).ConfigureAwait(false),
+            AiProviderOutcome.AiResultUnknown => await CompleteTerminalAsync(
+                item,
+                AiAnalysisWorkDisposition.ResultUnknown,
+                execution.Error?.Code ?? "AI_PROVIDER_RESULT_UNKNOWN",
+                AiAnalysisSessionStatus.AiResultUnknown,
+                persistenceToken).ConfigureAwait(false),
             AiProviderOutcome.Cancelled => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.Cancelled, "AI_REQUEST_CANCELLED", AiAnalysisSessionStatus.Cancelled, persistenceToken).ConfigureAwait(false),
             _ => await CompleteTerminalAsync(item, AiAnalysisWorkDisposition.TerminalError, execution.Error?.Code ?? "AI_PROVIDER_ERROR", AiAnalysisSessionStatus.TerminalError, persistenceToken).ConfigureAwait(false)
         };
@@ -1760,9 +1865,18 @@ public sealed class AiAnalysisScheduler : IDisposable
         AiAnalysisWorkDisposition disposition,
         string errorCode,
         AiAnalysisSessionStatus status,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool releaseUnusedRequestReservation = false)
     {
-        await TransitionToAsync(item.Request, status, cancellationToken).ConfigureAwait(false);
+        await TransitionToAsync(
+            item.Request,
+            status,
+            cancellationToken,
+            releaseUnusedRequestReservation: releaseUnusedRequestReservation,
+            terminalErrorCode: status is AiAnalysisSessionStatus.TerminalError
+                or AiAnalysisSessionStatus.AiResultUnknown
+                ? errorCode
+                : null).ConfigureAwait(false);
         return Failure(item, disposition, errorCode);
     }
 
@@ -1772,10 +1886,13 @@ public sealed class AiAnalysisScheduler : IDisposable
         CancellationToken cancellationToken,
         string? replacedPendingWorkItemId = null,
         AiAnalysisWorkItem? replacementPending = null,
-        bool releaseUnusedRequestReservation = false)
+        bool releaseUnusedRequestReservation = false,
+        string? terminalErrorCode = null)
     {
         await _statePersistenceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         AiAnalysisBudgetSnapshot? budgetBeforeRelease = null;
+        string? terminalErrorBefore = null;
+        bool hadTerminalError = false;
         try
         {
             var ledger = await _store.FindRequestByFingerprintAsync(
@@ -1784,6 +1901,24 @@ public sealed class AiAnalysisScheduler : IDisposable
                 ?? throw new InvalidOperationException("AI_REQUEST_LEDGER_MISSING");
             var session = await _store.LoadSessionAsync(SessionId(request), cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("AI_SESSION_NOT_FOUND");
+            lock (_pendingGate)
+            {
+                hadTerminalError = _terminalErrors.TryGetValue(request.RequestId, out terminalErrorBefore);
+                if (next is AiAnalysisSessionStatus.TerminalError
+                    or AiAnalysisSessionStatus.AiResultUnknown)
+                {
+                    if (string.IsNullOrWhiteSpace(terminalErrorCode))
+                    {
+                        throw new InvalidOperationException("AI_TERMINAL_ERROR_CODE_MISSING");
+                    }
+
+                    _terminalErrors[request.RequestId] = terminalErrorCode;
+                }
+                else
+                {
+                    _terminalErrors.Remove(request.RequestId);
+                }
+            }
             if (releaseUnusedRequestReservation)
             {
                 lock (_budgetGate)
@@ -1845,7 +1980,7 @@ public sealed class AiAnalysisScheduler : IDisposable
                 cancellationToken).ConfigureAwait(false);
 
             ApplyPendingMutation(request.RequestId, next.ToString(), replacedPendingWorkItemId, replacementPending);
-            if (releaseUnusedRequestReservation && _stateStore is not null)
+            if (_stateStore is not null)
             {
                 await PersistStateCoreAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -1857,6 +1992,18 @@ public sealed class AiAnalysisScheduler : IDisposable
                 lock (_budgetGate)
                 {
                     _budget = budgetBeforeRelease;
+                }
+            }
+
+            lock (_pendingGate)
+            {
+                if (hadTerminalError)
+                {
+                    _terminalErrors[request.RequestId] = terminalErrorBefore!;
+                }
+                else
+                {
+                    _terminalErrors.Remove(request.RequestId);
                 }
             }
 
@@ -2273,6 +2420,7 @@ public sealed class AiAnalysisScheduler : IDisposable
         AiAnalysisSchedulingControlState controlState;
         string? controlReason;
         AiAnalysisRequestV1[] historicalRequests;
+        KeyValuePair<string, string>[] terminalErrors;
         lock (_pendingGate)
         {
             pending = _pendingItems.Values
@@ -2282,6 +2430,9 @@ public sealed class AiAnalysisScheduler : IDisposable
             controlReason = _controlReason;
             historicalRequests = _historicalRequests.Values
                 .OrderBy(request => request.RequestId, StringComparer.Ordinal)
+                .ToArray();
+            terminalErrors = _terminalErrors
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .ToArray();
         }
         lock (_budgetGate)
@@ -2295,7 +2446,8 @@ public sealed class AiAnalysisScheduler : IDisposable
             NextPersistenceTimestamp(),
             controlState,
             controlReason,
-            historicalRequests);
+            historicalRequests,
+            terminalErrors.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal));
         if (_checkpointPort is not null)
         {
             var command = await BuildCheckpointCommandAsync(state, cancellationToken).ConfigureAwait(false);
@@ -2454,12 +2606,16 @@ public sealed class AiAnalysisScheduler : IDisposable
         AiAnalysisRequestV1[] history;
         AiAnalysisSchedulingControlState controlState;
         string? controlReason;
+        KeyValuePair<string, string>[] terminalErrors;
         lock (_pendingGate)
         {
             pending = _pendingItems.Values.OrderBy(item => item.WorkItemId, StringComparer.Ordinal).ToArray();
             history = _historicalRequests.Values.OrderBy(item => item.RequestId, StringComparer.Ordinal).ToArray();
             controlState = _controlState;
             controlReason = _controlReason;
+            terminalErrors = _terminalErrors
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .ToArray();
         }
         if (requiredPending is not null && pending.All(item =>
                 !string.Equals(item.WorkItemId, requiredPending.WorkItemId, StringComparison.Ordinal)))
@@ -2496,7 +2652,8 @@ public sealed class AiAnalysisScheduler : IDisposable
             NextPersistenceTimestamp(),
             controlState,
             controlReason,
-            history);
+            history,
+            terminalErrors.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal));
         var target = new AiAnalysisCheckpointGraph(
             ledger,
             expectedRequestStatus,
@@ -2746,6 +2903,7 @@ public sealed class AiAnalysisScheduler : IDisposable
             disposableQueue.Dispose();
         }
         _processingGate.Dispose();
+        _copyPreparationGate.Dispose();
         _statePersistenceGate.Dispose();
     }
 }

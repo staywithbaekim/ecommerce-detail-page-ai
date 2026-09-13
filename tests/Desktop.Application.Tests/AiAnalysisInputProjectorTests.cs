@@ -131,6 +131,36 @@ public sealed class AiAnalysisInputProjectorTests
         Assert.Equal("AI_INPUT_SELECTION_REQUIREMENTS_MISSING", exception.Message);
     }
 
+    [Fact]
+    public void RejectsReferenceContentBeforeCreatingPaidRequest()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var revision = LearnedRevision(now, new string('a', 64));
+        var batch = ReadyBatch(revision, now);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            AiAnalysisInputProjector.Project(batch, revision, "style_01", Options()));
+
+        Assert.Equal("AI_INPUT_REFERENCE_ASSET_FORBIDDEN", exception.Message);
+    }
+
+    [Fact]
+    public void LearnedReferenceAuditParticipatesInRequirementsDigestWithoutEnteringPrompt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var firstRevision = LearnedRevision(now, new string('b', 64));
+        var secondRevision = LearnedRevision(now, new string('c', 64));
+        var batch = ReadyBatch(firstRevision, now);
+
+        var first = AiAnalysisInputProjector.Project(batch, firstRevision, "style_01", Options());
+        var second = AiAnalysisInputProjector.Project(batch, secondRevision, "style_01", Options());
+
+        Assert.NotEqual(first.RequirementsDigest, second.RequirementsDigest);
+        var requirement = Assert.Single(first.Requirements);
+        Assert.DoesNotContain(new string('b', 64), requirement.SelectionRequirement, StringComparison.Ordinal);
+        Assert.DoesNotContain("reference", requirement.SelectionRequirement, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static AiAnalysisProjectionOptions Options() =>
         new("corr_01", "consent_01", "model/proposed", "prompt/v1", "copy/v1");
 
@@ -168,6 +198,32 @@ public sealed class AiAnalysisInputProjectorTests
                 LayerStructureSignature.Create("sha256:" + new string('b', 64))),
             [], SelectionRequirement.Create(selection, [SelectionCriterion.Create("asset_id", "asset_01")]),
             LayoutIntent.Create(layout, 1, 0, 0, TemplateRect.Create(0, 0, 100, 100)));
+        return TemplateRevision.Restore(
+            "revision_01", "group_01", 1, TemplateRevisionState.Committed,
+            "templates/revision_01/manifest.json", "sha256:" + new string('d', 64), now,
+            [page], [binding]);
+    }
+
+    private static TemplateRevision LearnedRevision(DateTimeOffset now, string referenceHash)
+    {
+        var page = TemplatePage.Create(
+            "page_01", "revision_01", 0, "详情页", TemplatePageContentType.NormalComposition,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource_01");
+        var binding = FrameBinding.Create(
+            "frame_01", "page_01", LayerPath.Create([1]),
+            ExpectedLayerEvidence.Create(1, "frame", true, false, false, false, 255, "normal",
+                LayerStructureSignature.Create("sha256:" + new string('b', 64))),
+            [],
+            SelectionRequirement.Create(
+                "模特坐姿半身，身体朝左，商品主体无遮挡",
+                [
+                    SelectionCriterion.Create("reference_only", "true"),
+                    SelectionCriterion.Create("semantic_source", "AiV2"),
+                    SelectionCriterion.Create("reference_audit_version", "reference-audit/v1"),
+                    SelectionCriterion.Create("reference_set_digest", "sha256:" + new string('d', 64)),
+                    SelectionCriterion.Create("reference_hashes_00", referenceHash)
+                ]),
+            LayoutIntent.Create("主体完整", 1, 0, 0, TemplateRect.Create(0, 0, 100, 100)));
         return TemplateRevision.Restore(
             "revision_01", "group_01", 1, TemplateRevisionState.Committed,
             "templates/revision_01/manifest.json", "sha256:" + new string('d', 64), now,

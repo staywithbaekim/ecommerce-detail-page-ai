@@ -129,6 +129,10 @@ public static class AiAnalysisCheckpointStateDigest
             historical_requests = (state.HistoricalRequests ?? [])
                 .OrderBy(request => request.RequestId, StringComparer.Ordinal)
                 .ToArray(),
+            terminal_errors = (state.TerminalErrors ?? Enumerable.Empty<KeyValuePair<string, string>>())
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => new { request_id = pair.Key, error_code = pair.Value })
+                .ToArray(),
             budget = new
             {
                 state.Budget.RequestCount,

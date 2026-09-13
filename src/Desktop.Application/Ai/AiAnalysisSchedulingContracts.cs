@@ -64,8 +64,9 @@ public sealed record AiAnalysisQueueOptions(
     int Capacity = 32,
     int MaxAttempts = 2,
     int MaxConcurrentRequests = 8,
-    int MaxAssetsPerRequest = 24,
-    int MaxLogicalRequestsPerStyle = 3)
+    int MaxAssetsPerRequest = AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest,
+    int MaxLogicalRequestsPerStyle = 3,
+    int MaxConcurrentCopyPreparations = 2)
 {
     public void Validate()
     {
@@ -84,7 +85,7 @@ public sealed record AiAnalysisQueueOptions(
             throw new ArgumentOutOfRangeException(nameof(MaxConcurrentRequests));
         }
 
-        if (MaxAssetsPerRequest is < 1 or > AiAnalysisProductionPolicy.MaxAssetsPerRequest)
+        if (MaxAssetsPerRequest is < 1 or > AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxAssetsPerRequest));
         }
@@ -92,6 +93,11 @@ public sealed record AiAnalysisQueueOptions(
         if (MaxLogicalRequestsPerStyle is < 1 or > AiAnalysisProductionPolicy.MaxLogicalRequestsPerStyle)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxLogicalRequestsPerStyle));
+        }
+
+        if (MaxConcurrentCopyPreparations is < 1 or > AiAnalysisProductionPolicy.MaxConcurrentCopyPreparations)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxConcurrentCopyPreparations));
         }
     }
 }
@@ -154,12 +160,30 @@ public sealed record AiAnalysisBudgetPolicy(
 
 public static class AiAnalysisProductionPolicy
 {
+    public const string ModelConfigVersionV2 = "doubao-seed-2.1-pro-260628-output4096-v2";
+    public const string PromptContractVersionV3 = "ai-prompt/v3";
+    public const int MaxOutputTokensPerRequestV2 = 4_096;
     public const int MaxStylesPerBatch = 200;
     public const int MaxQueueCapacity = 32;
     public const int MaxAttemptsPerRequest = 2;
     public const int MaxConcurrentRequests = 8;
-    public const int MaxAssetsPerRequest = 24;
+    /// <summary>
+    /// The supplier permits up to forty images in one visual request. This is
+    /// the limit for a normal target-style batch; reference-learning keeps a
+    /// separate, deliberately smaller bound below.
+    /// </summary>
+    public const int MaxTargetAssetsPerRequest = 40;
+    public const int MaxReferenceAssetsPerRequest = 24;
+
+    /// <summary>
+    /// Compatibility alias for older reference-learning code and persisted
+    /// test fixtures. New target-batch code must use
+    /// <see cref="MaxTargetAssetsPerRequest"/> and reference-learning code
+    /// must use <see cref="MaxReferenceAssetsPerRequest"/> explicitly.
+    /// </summary>
+    public const int MaxAssetsPerRequest = MaxReferenceAssetsPerRequest;
     public const int MaxLogicalRequestsPerStyle = 3;
+    public const int MaxConcurrentCopyPreparations = 2;
     public const int MaxRequestsPerBatch = 1_200;
     public const int MaxInputTokensPerBatch = 10_000_000;
     public const int MaxOutputTokensPerBatch = 2_000_000;
@@ -173,8 +197,9 @@ public static class AiAnalysisProductionPolicy
         Capacity: MaxQueueCapacity,
         MaxAttempts: MaxAttemptsPerRequest,
         MaxConcurrentRequests: MaxConcurrentRequests,
-        MaxAssetsPerRequest: MaxAssetsPerRequest,
-        MaxLogicalRequestsPerStyle: MaxLogicalRequestsPerStyle);
+        MaxAssetsPerRequest: MaxTargetAssetsPerRequest,
+        MaxLogicalRequestsPerStyle: MaxLogicalRequestsPerStyle,
+        MaxConcurrentCopyPreparations: MaxConcurrentCopyPreparations);
 
     public static AiAnalysisBudgetPolicy BudgetV1 => new(
         MaxRequests: MaxRequestsPerBatch,
@@ -210,7 +235,8 @@ public sealed record AiAnalysisSchedulingState(
     DateTimeOffset UpdatedAt,
     AiAnalysisSchedulingControlState ControlState = AiAnalysisSchedulingControlState.Running,
     string? ControlReason = null,
-    IReadOnlyList<AiAnalysisRequestV1>? HistoricalRequests = null);
+    IReadOnlyList<AiAnalysisRequestV1>? HistoricalRequests = null,
+    IReadOnlyDictionary<string, string>? TerminalErrors = null);
 
 public sealed record AiAnalysisBatchScheduleResult(
     string BatchId,

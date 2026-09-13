@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Desktop.Application.Files;
 using Desktop.Application.Psd;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Templates;
@@ -13,7 +14,8 @@ public sealed class ReferenceLearningService(
     IReferencePhotoFingerprintPort photoFingerprints,
     IPathPolicy paths,
     IReferenceLearningSessionStore? sessions = null,
-    TimeProvider? timeProvider = null) : IReferenceLearningService
+    TimeProvider? timeProvider = null,
+    IReferenceLearningAiService? semanticAi = null) : IReferenceLearningService
 {
     private readonly ConcurrentDictionary<string, ReferenceLearningDocument> active = new(StringComparer.Ordinal);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
@@ -54,7 +56,11 @@ public sealed class ReferenceLearningService(
                 new PsdInspectionRequest(
                     request.LearningId,
                     request.InternalPsdRelativePath,
-                    request.PreviewRelativePath),
+                    // The import flow already created the owned preview. During
+                    // WPF review that PNG may be held by an ImageSource, and
+                    // asking the worker to overwrite it would be reported by
+                    // the worker as the misleading "damaged PSD" error.
+                    PreviewRelativePath: null),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -132,12 +138,12 @@ public sealed class ReferenceLearningService(
         {
             return Failure("TPL_LEARN_SESSION_CLOSED", "学习会话已经结束。", "重新开始一次学习会话。");
         }
-        if (!active.TryGetValue(document.LearningId, out var current)
-            || current.UpdatedAt != document.UpdatedAt
-            || !string.Equals(current.RulesDigest, document.RulesDigest, StringComparison.Ordinal))
+        var current = await ResolveCurrentAsync(document, cancellationToken).ConfigureAwait(false);
+        if (current is null)
         {
             return Failure("TPL_LEARN_SESSION_STALE", "学习会话不是最新版本。", "恢复最新会话后重新提交复核。");
         }
+        document = current;
 
         var candidates = document.Candidates.ToDictionary(candidate => candidate.FrameId, StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -216,14 +222,29 @@ public sealed class ReferenceLearningService(
         var ordered = document.Candidates
             .Select(candidate => candidates[candidate.FrameId])
             .ToArray();
+        if (semanticAi is not null)
+        {
+            var working = document.WithCandidates(ordered, ReferenceLearningState.AwaitingReview, null, clock.GetUtcNow());
+            foreach (var review in reviews.Where(review => !string.IsNullOrWhiteSpace(review.SemanticLabel)))
+            {
+                var before = document.Candidates.Single(candidate => string.Equals(candidate.FrameId, review.FrameId, StringComparison.Ordinal));
+                if (!string.Equals(before.SemanticLabel, review.SemanticLabel!.Trim(), StringComparison.Ordinal))
+                {
+                    working = await semanticAi.ApplyUserOverrideAsync(
+                        working,
+                        review.FrameId,
+                        review.SemanticLabel!,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            ordered = working.Candidates.ToArray();
+        }
         var allDecided = ordered.All(candidate => candidate.ReviewDecision != ReferenceReviewDecision.Pending);
-        var accepted = ordered.Count(candidate => candidate.IsHighConfidence);
-        var ready = accepted > 0 && allDecided && ordered
+        var ready = allDecided && ordered
             .Where(candidate => candidate.ReviewDecision != ReferenceReviewDecision.Rejected)
             .All(candidate => candidate.IsHighConfidence);
         var requiresManualCalibration = ordered.Any(candidate =>
-                candidate.ReviewDecision == ReferenceReviewDecision.ManualCalibration)
-            || allDecided && accepted == 0;
+            candidate.ReviewDecision == ReferenceReviewDecision.ManualCalibration);
         var state = ready
             ? ReferenceLearningState.ReadyToCommit
             : requiresManualCalibration
@@ -318,10 +339,17 @@ public sealed class ReferenceLearningService(
             return Failure("TPL_PSD_PATH_NOT_OWNED", "学习只接受应用内部 PSD 副本。", "先导入 PSD，再重新开始学习。");
         }
 
+        ReferencePhotoInventory photos;
         try
         {
             var file = new FileInfo(ownedPsdPath);
-            if (!file.Exists || file.Length != document.PsdLength)
+            if (!file.Exists)
+            {
+                active.TryRemove(document.LearningId, out _);
+                return SourceMissingFailure();
+            }
+
+            if (file.Length != document.PsdLength)
             {
                 active.TryRemove(document.LearningId, out _);
                 return SourceChangedFailure();
@@ -342,7 +370,7 @@ public sealed class ReferenceLearningService(
                 return SourceChangedFailure();
             }
 
-            var photos = await photoFingerprints.ScanAsync(
+            photos = await photoFingerprints.ScanAsync(
                 request.ReferencePhotoDirectory,
                 cancellationToken).ConfigureAwait(false);
             if (!string.Equals(photos.FolderDigest, document.ReferenceFolderDigest, StringComparison.Ordinal)
@@ -369,8 +397,24 @@ public sealed class ReferenceLearningService(
                 retryable: true);
         }
 
+        // Older local sessions were created before semantic usage inference was
+        // wired into the learning result.  Rehydrate those sessions with the
+        // same deterministic evidence rules used for a fresh analysis so the
+        // UI does not keep showing an empty "future selection rule" forever.
+        var enriched = EnrichSemanticHints(document, request.PageName, photos);
+        if (!ReferenceCandidatesEqual(document.Candidates, enriched.Candidates))
+        {
+            var saveFailure = await TrySaveAsync(enriched, cancellationToken).ConfigureAwait(false);
+            if (saveFailure is not null)
+            {
+                return saveFailure;
+            }
+
+            document = enriched;
+        }
+
         active[document.LearningId] = document;
-        return resumed;
+        return ReferenceLearningResult.Success(document);
     }
 
     public async Task<ReferenceLearningResult> CancelAsync(
@@ -383,12 +427,12 @@ public sealed class ReferenceLearningService(
         {
             return Failure("TPL_LEARN_SESSION_CLOSED", "已提交的学习规则不能取消。", "如需修改，请从已提交修订开始新的增量校准。");
         }
-        if (!active.TryGetValue(document.LearningId, out var current)
-            || current.UpdatedAt != document.UpdatedAt
-            || !string.Equals(current.RulesDigest, document.RulesDigest, StringComparison.Ordinal))
+        var current = await ResolveCurrentAsync(document, cancellationToken).ConfigureAwait(false);
+        if (current is null)
         {
             return Failure("TPL_LEARN_SESSION_STALE", "学习会话不是最新版本。", "恢复最新会话后重试。");
         }
+        document = current;
 
         var cancelled = document with
         {
@@ -412,16 +456,19 @@ public sealed class ReferenceLearningService(
         ReferencePhotoInventory photos,
         DateTimeOffset now)
     {
-        var candidates = DetectStructuralSlots(inspection)
-            .Select(slot => BuildCandidate(request.PageId, inspection, slot, photos))
+        var candidates = DetectStructuralSlots(inspection, photos)
+            .Select(slot => BuildCandidate(
+                request.PageId,
+                request.PageName,
+                inspection,
+                slot,
+                photos))
             .ToArray();
         var blocked = candidates.Length == 0
-            ? "PSD 没有可复用的可见智能对象图片框。"
-            : candidates.Any(candidate => candidate.IsProduct
-                && candidate.MatchState is (ReferenceMatchState.ExternalLink
-                    or ReferenceMatchState.Unsupported))
-                ? "存在外链或不支持的智能对象结构，需要人工校准。"
-                : null;
+            ? inspection.Layers.Any(layer => IsStructuralLayer(layer, inspection.Canvas))
+                ? "可见智能对象未同时闭合源照片内容和最终显示贡献，需要人工校准。"
+                : "PSD 没有可复用且对最终页面有显示贡献的智能对象图片框。"
+            : null;
         var state = blocked is null
             ? ReferenceLearningState.AwaitingReview
             : ReferenceLearningState.RequiresManualCalibration;
@@ -451,6 +498,7 @@ public sealed class ReferenceLearningService(
 
     private static ReferenceFrameCandidate BuildCandidate(
         string pageId,
+        string? pageName,
         PsdInspectionDocument inspection,
         StructuralSlot slot,
         ReferencePhotoInventory photos)
@@ -482,17 +530,23 @@ public sealed class ReferenceLearningService(
             _ => ReferenceMatchState.NoMatch
         };
         var selected = matches.Length == 1 ? matches[0] : null;
-        // A completed reference PSD may intentionally contain small, product-
-        // specific assets such as composition or care-label panels.  Size and
-        // filename are not enough evidence to mark a structural candidate as
-        // fixed; keep it reviewable and let the user explicitly retain or bind it.
+        // A completed reference PSD may intentionally contain small product-
+        // specific assets such as composition or care-label panels. The exact
+        // source-payload match and final composite contribution decide whether
+        // it is a replaceable frame; visual text content and filename do not.
         var structuralReason = slot.SupersededLayers.Count > 0
-            ? $"替换栈栈顶；已折叠 {slot.SupersededLayers.Count} 个被覆盖旧图层。"
-            : "单个可见智能对象，具有足够的画布面积。";
+            ? $"有效替换栈栈顶；已折叠 {slot.SupersededLayers.Count} 个被覆盖旧图层，并验证最终页面像素贡献。"
+            : "源素材内容闭合的可见智能对象，并验证最终页面像素贡献。";
         var digest = NormalizeDigest(inspection.StructureSignature);
-        var semanticLabel = InferSemanticLabel(layer, smartObject, selected);
+        var semantic = InferSemanticLabel(
+            pageName,
+            layer,
+            smartObject,
+            selected,
+            DeriveLayout(layer, inspection.Canvas.Width, inspection.Canvas.Height),
+            inspection.Canvas);
         var confidence = matchState == ReferenceMatchState.Exact
-            ? string.IsNullOrWhiteSpace(semanticLabel) ? 0.98 : 1
+            ? semantic.Confidence
             : matchState == ReferenceMatchState.Ambiguous ? 0.5 : 0;
         return new ReferenceFrameCandidate(
             StableFrameId(pageId, layer.LayerId, layer.Path),
@@ -513,9 +567,9 @@ public sealed class ReferenceLearningService(
             selected?.AssetId,
             selected?.RelativePath,
             embeddedHash,
-            semanticLabel,
+            semantic.Label,
             confidence,
-            DeriveLayout(layer, inspection.Canvas.Width, inspection.Canvas.Height),
+            semantic.Layout,
             ReferenceReviewDecision.Pending,
             null,
             slot.SupersededLayers.Select(item => new ReferenceSupersededLayerEvidence(
@@ -525,7 +579,8 @@ public sealed class ReferenceLearningService(
                 item.Clipping)).ToArray(),
             layer.ClippingBase?.Path,
             true,
-            structuralReason);
+            structuralReason,
+            layer.PixelEvidence);
     }
 
     /// <summary>
@@ -534,44 +589,203 @@ public sealed class ReferenceLearningService(
     /// detection above has already made that decision.  Hash/geometry evidence
     /// still has to close before the hint can participate in batch confirmation.
     /// </summary>
-    private static string InferSemanticLabel(
+    private sealed record SemanticInference(
+        string Label,
+        double Confidence,
+        LayoutIntent Layout);
+
+    private static SemanticInference InferSemanticLabel(
+        string? pageName,
         PsdLayerInspection layer,
         PsdSmartObjectInspection smartObject,
-        ReferencePhotoFingerprint? selected)
+        ReferencePhotoFingerprint? selected,
+        LayoutIntent layout,
+        PsdCanvasInspection canvas)
     {
         var cue = string.Join(
             " ",
+            pageName ?? "",
             layer.Name,
             smartObject.Filename,
             selected?.FileName ?? "")
             .ToLowerInvariant();
         if (ContainsAny(cue, "care", "label", "wash", "composition", "成分", "水洗", "标签", "标"))
         {
-            return "成分/水洗唛信息图";
+            return new("成分/水洗唛信息图", 0.98, layout);
         }
         if (ContainsAny(cue, "collar", "neck", "领口", "领"))
         {
-            return "领口细节图";
+            return new("领口细节图", 1, layout);
         }
         if (ContainsAny(cue, "sleeve", "cuff", "袖口", "袖"))
         {
-            return "袖口细节图";
+            return new("袖口细节图", 1, layout);
         }
         if (ContainsAny(cue, "fabric", "textile", "material", "cloth", "面料", "面布"))
         {
-            return "面料细节图";
+            return new("面料细节图", 1, layout);
         }
         if (ContainsAny(cue, "back", "rear", "背面", "后身"))
         {
-            return "完整背面图";
+            return new("完整背面图", 1, layout);
         }
         if (ContainsAny(cue, "front", "main", "hero", "正面", "前身"))
         {
-            return "完整正面图";
+            return new("完整正面图", 1, layout);
         }
 
-        return "";
+        // A small raster that was actually matched into a visible smart
+        // object is usually a composition/care graphic rather than a product
+        // photo.  This remains reviewable (and is intentionally excluded from
+        // one-click confirmation) because the target款 may have different
+        // material percentages.
+        if (selected is { Width: <= 500, Height: <= 500 })
+        {
+            return new("成分/水洗唛信息图", 0.96, layout);
+        }
+
+        var pageCue = (pageName ?? "").ToLowerInvariant();
+        if (ContainsAny(pageCue, "面料", "材质", "布料", "fabric", "textile", "material"))
+        {
+            return new("面料细节图", 0.99, layout);
+        }
+
+        // A camera-generated filename and a generic page/layout position do
+        // not establish a reusable category. Do not turn those weak cues into
+        // the old "商品展示图（请确认）" sentence: the UI must show a
+        // clearly unconfirmed placeholder until AI or the user supplies the
+        // category.
+        return new(ReferenceSelectionRequirementPolicy.UnconfirmedLabel, 0, layout);
     }
+
+    private static ReferenceLearningDocument EnrichSemanticHints(
+        ReferenceLearningDocument document,
+        string? pageName,
+        ReferencePhotoInventory photos)
+    {
+        var invalidAiSemanticFound = false;
+        var candidates = document.Candidates
+            .Select(candidate =>
+            {
+                var metadata = candidate.SemanticMetadata;
+                var isCurrentAiSemantic = metadata?.Source == ReferenceSemanticSource.AiV2
+                    && string.Equals(
+                        metadata.PromptContractVersion,
+                        ReferenceLearningAiProtocol.SemanticPromptVersion,
+                        StringComparison.Ordinal)
+                    && ReferenceSelectionRequirementPolicy.IsValid(candidate.SemanticLabel);
+                var isUserOverride = metadata?.Source == ReferenceSemanticSource.UserOverride
+                    && ReferenceSelectionRequirementPolicy.IsValid(candidate.SemanticLabel);
+                if (isCurrentAiSemantic || isUserOverride)
+                {
+                    return candidate;
+                }
+
+                // A persisted v2/v3 narrative is not a harmless display hint:
+                // it can reach the batch projector if it is left attached to
+                // an old session. Clear it and make the next action explicit.
+                if (metadata?.Source is ReferenceSemanticSource.AiV2 or ReferenceSemanticSource.AiUnavailable)
+                {
+                    invalidAiSemanticFound = true;
+                    return candidate with
+                    {
+                        SemanticLabel = ReferenceSelectionRequirementPolicy.UnconfirmedLabel,
+                        Confidence = 0,
+                        ReviewDecision = ReferenceReviewDecision.Pending,
+                        SemanticMetadata = new ReferenceSemanticMetadata(
+                            ReferenceSemanticSource.AiUnavailable,
+                            ReferenceLearningAiProtocol.RequestSchemaVersion,
+                            ReferenceLearningAiProtocol.ResultSchemaVersion,
+                            ReferenceLearningAiService.ModelConfigVersion,
+                            ReferenceLearningAiProtocol.SemanticPromptVersion,
+                            metadata.CacheKey,
+                            [],
+                            [])
+                    };
+                }
+
+                if (!string.IsNullOrWhiteSpace(candidate.SemanticLabel)
+                    && ReferenceSelectionRequirementPolicy.IsValid(candidate.SemanticLabel))
+                {
+                    return candidate;
+                }
+
+                var selected = candidate.ReferenceAssetId is null
+                    ? null
+                    : photos.Photos.FirstOrDefault(photo => string.Equals(
+                        photo.AssetId,
+                        candidate.ReferenceAssetId,
+                        StringComparison.Ordinal));
+                var smartObject = new PsdSmartObjectInspection(
+                    candidate.LayerId.ToString(CultureInfo.InvariantCulture),
+                    candidate.LayerName,
+                    "data",
+                    null,
+                    "unknown",
+                    selected?.Length ?? 0,
+                    false,
+                    candidate.TransformBox);
+                var layer = new PsdLayerInspection(
+                    candidate.LayerPath,
+                    candidate.LayerId,
+                    candidate.LayerName,
+                    "smartobject",
+                    false,
+                    candidate.Visible,
+                    candidate.EffectiveVisible,
+                    candidate.Clipping,
+                    candidate.Opacity,
+                    candidate.Opacity,
+                    candidate.BlendMode,
+                    new PsdLayerBounds(
+                        (int)Math.Round(candidate.LayoutIntent.SafeBounds.Left),
+                        (int)Math.Round(candidate.LayoutIntent.SafeBounds.Top),
+                        (int)Math.Round(candidate.LayoutIntent.SafeBounds.Right),
+                        (int)Math.Round(candidate.LayoutIntent.SafeBounds.Bottom)),
+                    candidate.UserMask,
+                    candidate.VectorMask,
+                    null,
+                    smartObject);
+                var inference = InferSemanticLabel(
+                    pageName,
+                    layer,
+                    smartObject,
+                    selected,
+                    candidate.LayoutIntent,
+                    document.Canvas);
+                return candidate with
+                {
+                    SemanticLabel = inference.Label,
+                    Confidence = document.Candidates.Any(item => item.FrameId == candidate.FrameId)
+                        && candidate.MatchState == ReferenceMatchState.Exact
+                        ? inference.Confidence
+                        : candidate.Confidence
+                };
+            })
+            .ToArray();
+
+        return document.WithCandidates(
+            candidates,
+            document.State,
+            invalidAiSemanticFound
+                ? "旧版 AI 语义规则已失效，请重新分析或手工填写图片类别。"
+                : document.BlockReason,
+            DateTimeOffset.UtcNow);
+    }
+
+    private static bool ReferenceCandidatesEqual(
+        IReadOnlyList<ReferenceFrameCandidate> left,
+        IReadOnlyList<ReferenceFrameCandidate> right) => left.Count == right.Count
+        && left.Zip(right).All(pair =>
+            string.Equals(pair.First.FrameId, pair.Second.FrameId, StringComparison.Ordinal)
+            && string.Equals(pair.First.SemanticLabel, pair.Second.SemanticLabel, StringComparison.Ordinal)
+            && Math.Abs(pair.First.Confidence - pair.Second.Confidence) < 0.000001
+            && pair.First.ReviewDecision == pair.Second.ReviewDecision
+            && pair.First.SemanticMetadata?.Source == pair.Second.SemanticMetadata?.Source
+            && string.Equals(
+                pair.First.SemanticMetadata?.PromptContractVersion,
+                pair.Second.SemanticMetadata?.PromptContractVersion,
+                StringComparison.Ordinal));
 
     private static bool ContainsAny(string value, params string[] cues) =>
         cues.Any(value.Contains);
@@ -581,12 +795,16 @@ public sealed class ReferenceLearningService(
         IReadOnlyList<PsdLayerInspection> SupersededLayers);
 
     /// <summary>
-    /// Mirrors the PSD structural detector: only visible, meaningful-area
-    /// smart objects are considered, consecutive overlapping siblings form a
-    /// replacement stack, and the topmost layer is the sole candidate.
+    /// Registers only source-matched smart objects with rendered pixels and a
+    /// measurable contribution to the final page. Consecutive siblings form a
+    /// replacement stack when they share a clipping window or broad placed
+    /// overlap. A second contributing match outside an explicit shared clipping
+    /// window starts another frame, so partially overlapping independent frames
+    /// are not merged.
     /// </summary>
     private static StructuralSlot[] DetectStructuralSlots(
-        PsdInspectionDocument inspection)
+        PsdInspectionDocument inspection,
+        ReferencePhotoInventory photos)
     {
         var indexed = inspection.Layers
             .Select((layer, order) => new IndexedLayer(layer, order))
@@ -608,18 +826,27 @@ public sealed class ReferenceLearningService(
                     return;
                 }
 
-                var target = run[^1];
+                var targetIndex = run.FindLastIndex(item =>
+                    HasClosedReferenceContent(item.Layer, photos) &&
+                    HasFinalCompositeContribution(item.Layer));
+                if (targetIndex < 0)
+                {
+                    run.Clear();
+                    return;
+                }
+
+                var target = run[targetIndex];
                 selected.Add((
                     new StructuralSlot(
                         target.Layer,
-                        run.Take(run.Count - 1).Select(item => item.Layer).ToArray()),
+                        run.Take(targetIndex).Select(item => item.Layer).ToArray()),
                     target.Order));
                 run.Clear();
             }
 
             foreach (var item in ordered)
             {
-                if (!IsEligible(item.Layer, inspection.Canvas))
+                if (!IsStructuralLayer(item.Layer, inspection.Canvas))
                 {
                     Flush();
                     continue;
@@ -634,11 +861,21 @@ public sealed class ReferenceLearningService(
                 var previous = run[^1];
                 var consecutive = LastPathSegment(previous.Layer.Path) + 1
                     == LastPathSegment(item.Layer.Path);
-                var overlapping = OverlapRatio(
-                    previous.Layer.Bounds,
-                    item.Layer.Bounds,
-                    inspection.Canvas) >= 0.25;
-                if (consecutive && overlapping)
+                var sameWindow = IsSameReplacementWindow(
+                    previous.Layer,
+                    item.Layer,
+                    inspection.Canvas);
+                var startsAnotherEffectiveFrame =
+                    HasClosedReferenceContent(item.Layer, photos) &&
+                    HasFinalCompositeContribution(item.Layer) &&
+                    run.Any(existing =>
+                        HasClosedReferenceContent(existing.Layer, photos) &&
+                        HasFinalCompositeContribution(existing.Layer));
+                var sharesExplicitWindow = SharesClippingWindow(
+                    previous.Layer,
+                    item.Layer);
+                if (consecutive && sameWindow &&
+                    (!startsAnotherEffectiveFrame || sharesExplicitWindow))
                 {
                     run.Add(item);
                 }
@@ -659,12 +896,14 @@ public sealed class ReferenceLearningService(
 
     private sealed record IndexedLayer(PsdLayerInspection Layer, int Order);
 
-    private static bool IsEligible(PsdLayerInspection layer, PsdCanvasInspection canvas)
+    private static bool IsStructuralLayer(PsdLayerInspection layer, PsdCanvasInspection canvas)
     {
         if (layer.SmartObject is null
             || !layer.Visible
             || !layer.EffectiveVisible
-            || layer.Opacity <= 0)
+            || layer.Opacity <= 0
+            || !layer.PixelEvidence.Available
+            || layer.PixelEvidence.RenderedPixelCount <= 0)
         {
             return false;
         }
@@ -676,6 +915,41 @@ public sealed class ReferenceLearningService(
         var ratio = (double)width * height / Math.Max(1L, (long)canvas.Width * canvas.Height);
         return ratio >= 0.01;
     }
+
+    private static bool HasClosedReferenceContent(
+        PsdLayerInspection layer,
+        ReferencePhotoInventory photos)
+    {
+        var smartObject = layer.SmartObject;
+        return smartObject is
+        {
+            Kind: "data",
+            EmbeddedContentAvailable: true,
+            EmbeddedContentSha256: not null
+        }
+            && photos.Photos.Any(photo => string.Equals(
+                photo.Sha256,
+                smartObject.EmbeddedContentSha256,
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool HasFinalCompositeContribution(PsdLayerInspection layer) =>
+        layer.PixelEvidence.Available
+        && layer.PixelEvidence.CompositeContributionPixelCount > 0
+        && layer.PixelEvidence.CompositeContributionBounds is not null;
+
+    private static bool IsSameReplacementWindow(
+        PsdLayerInspection first,
+        PsdLayerInspection second,
+        PsdCanvasInspection canvas) => SharesClippingWindow(first, second)
+        || OverlapRatio(first.Bounds, second.Bounds, canvas) >= 0.25;
+
+    private static bool SharesClippingWindow(
+        PsdLayerInspection first,
+        PsdLayerInspection second) =>
+        first.ClippingBase is not null
+        && second.ClippingBase is not null
+        && first.ClippingBase.Path.SequenceEqual(second.ClippingBase.Path);
 
     private static double OverlapRatio(
         PsdLayerBounds first,
@@ -745,12 +1019,86 @@ public sealed class ReferenceLearningService(
             Math.Max(transformedWidth / frameWidth, transformedHeight / frameHeight),
             0.01,
             20);
+        var intent = InferLayoutIntent(layer, safeLeft, safeTop, safeRight, safeBottom, canvasWidth, canvasHeight);
         return LayoutIntent.Create(
-            "subject_cover",
+            intent,
             scale,
             left - safeLeft,
             top - safeTop,
             TemplateRect.Create(safeLeft, safeTop, safeRight, safeBottom));
+    }
+
+    /// <summary>
+    /// Infer layout intent based on frame position, size, and layer context.
+    /// This helps AI generate more specific semantic labels.
+    /// </summary>
+    private static string InferLayoutIntent(
+        PsdLayerInspection layer,
+        int frameLeft,
+        int frameTop,
+        int frameRight,
+        int frameBottom,
+        int canvasWidth,
+        int canvasHeight)
+    {
+        var frameWidth = frameRight - frameLeft;
+        var frameHeight = frameBottom - frameTop;
+        var frameArea = (double)frameWidth * frameHeight;
+        var canvasArea = (double)canvasWidth * canvasHeight;
+        var areaRatio = frameArea / canvasArea;
+        var aspectRatio = (double)frameWidth / frameHeight;
+
+        // Calculate frame center
+        var centerX = (frameLeft + frameRight) / 2.0;
+        var centerY = (frameTop + frameBottom) / 2.0;
+        var relativeCenterX = centerX / canvasWidth;
+        var relativeCenterY = centerY / canvasHeight;
+
+        // Check layer name hints
+        var nameLower = layer.Name.ToLowerInvariant();
+        var filenameLower = (layer.SmartObject?.Filename ?? "").ToLowerInvariant();
+        var combinedHints = nameLower + " " + filenameLower;
+
+        // Detail/crop detection: small frame or contains detail keywords
+        if (areaRatio < 0.15 || ContainsAny(combinedHints, "detail", "细节", "局部", "特写", "close", "crop", "领", "袖", "collar", "sleeve", "fabric", "面料"))
+        {
+            return "detail_crop";
+        }
+
+        // Hero/main product: large centered frame
+        if (areaRatio > 0.5 && relativeCenterX is > 0.3 and < 0.7 && relativeCenterY is > 0.3 and < 0.7)
+        {
+            return "hero_centered";
+        }
+
+        // Full product display: large frame covering most canvas
+        if (areaRatio > 0.6)
+        {
+            return "full_product";
+        }
+
+        // Positioned frames in grid layouts
+        if (areaRatio is > 0.15 and < 0.5)
+        {
+            // Top-left quadrant
+            if (relativeCenterX < 0.5 && relativeCenterY < 0.5)
+                return "grid_top_left";
+
+            // Top-right quadrant
+            if (relativeCenterX >= 0.5 && relativeCenterY < 0.5)
+                return "grid_top_right";
+
+            // Bottom-left quadrant
+            if (relativeCenterX < 0.5 && relativeCenterY >= 0.5)
+                return "grid_bottom_left";
+
+            // Bottom-right quadrant
+            if (relativeCenterX >= 0.5 && relativeCenterY >= 0.5)
+                return "grid_bottom_right";
+        }
+
+        // Default fallback
+        return "subject_cover";
     }
 
     private static LayoutIntent BuildReviewedLayout(LayoutIntent current, ReferenceFrameReview review)
@@ -798,10 +1146,47 @@ public sealed class ReferenceLearningService(
         }
     }
 
+    private async Task<ReferenceLearningDocument?> ResolveCurrentAsync(
+        ReferenceLearningDocument supplied,
+        CancellationToken cancellationToken)
+    {
+        if (active.TryGetValue(supplied.LearningId, out var current)
+            && current.UpdatedAt == supplied.UpdatedAt
+            && string.Equals(current.RulesDigest, supplied.RulesDigest, StringComparison.Ordinal))
+            return current;
+        if (sessions is null)
+            return null;
+        try
+        {
+            var persisted = await sessions.GetAsync(supplied.LearningId, cancellationToken).ConfigureAwait(false);
+            if (persisted is null
+                || persisted.UpdatedAt != supplied.UpdatedAt
+                || !string.Equals(persisted.RulesDigest, supplied.RulesDigest, StringComparison.Ordinal))
+                return null;
+            active[supplied.LearningId] = persisted;
+            return persisted;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private static ReferenceLearningResult SourceChangedFailure() => Failure(
         "TPL_LEARN_SOURCE_CHANGED",
         "参考 PSD 或源照片集合已发生变化。",
         "确认当前文件后重新分析；不会沿用旧会话坐标或匹配结果。");
+
+    private static ReferenceLearningResult SourceMissingFailure() => Failure(
+        "TPL_LEARN_SOURCE_MISSING",
+        "当前学习会话引用的应用内部 PSD 副本已不存在。",
+        "重新导入对应 PSD 后重新开始学习；不会修改用户原始 PSD。");
 
     private static string NormalizeDigest(string value)
     {

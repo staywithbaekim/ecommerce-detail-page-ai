@@ -3,14 +3,23 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using Desktop.Application.Ai;
+using Desktop.Application.Templates;
 
 namespace Desktop.App;
 
 public sealed partial class MainWindowViewModel
 {
+    private enum AiConsentContinuation
+    {
+        None = 0,
+        BatchScan,
+        ReferenceLearning
+    }
+
     private IAiBatchAnalysisWorkflow? _aiBatchWorkflow;
     private AiBatchAnalysisProjection? _aiBatchProjection;
     private AiUploadConsentRecord? _uploadConsent;
+    private AiConsentContinuation _pendingAiConsentContinuation;
     private bool _aiBusy;
     private bool _isAiUploadConsentDialogVisible;
     private bool _aiUploadConsentAcknowledged;
@@ -33,6 +42,7 @@ public sealed partial class MainWindowViewModel
     public ICommand CancelAiAnalysisCommand { get; private set; } = null!;
     public ICommand WaitForAiNetworkCommand { get; private set; } = null!;
     public ICommand RefreshAiAnalysisCommand { get; private set; } = null!;
+    public ICommand RetryAiAnalysisCommand { get; private set; } = null!;
     public ICommand LockAiSelectionCommand { get; private set; } = null!;
     public ICommand AnalyzeAiAssetCommand { get; private set; } = null!;
     public ICommand SelectTopNCandidateCommand { get; private set; } = null!;
@@ -107,6 +117,10 @@ public sealed partial class MainWindowViewModel
     public string AiPageTitle => _aiBatchProjection?.Status == AiBatchUiStatus.Cancelled
         ? "批次已取消"
         : "生成前检查";
+
+    public string AiStyleReviewContextText => SelectedAiStyle is null
+        ? $"模板组：{AiTemplateSummary}"
+        : $"模板组：{AiTemplateSummary} · 当前款式：{SelectedAiStyle.StyleName}";
 
     public string AiPageSubtitle => _aiBatchProjection is null
         ? "扫描与分析尚未开始"
@@ -197,11 +211,13 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    public bool CanConfirmAiCandidateSelection =>
-        IsAiCandidatePreviewVisible && AiCandidatePreview?.IsLockEnabled == true && !_aiBusy;
+    // AI's Top-1 is already the default selection.  Candidate inspection is a
+    // read-only view; replacement is the single user action that changes a
+    // frame.  Keep the legacy commands as non-visible compatibility members,
+    // but never expose a second confirmation path in the UI.
+    public bool CanConfirmAiCandidateSelection => !_aiBusy && false;
 
-    public bool CanAnalyzeAiPreviewAsset =>
-        IsAiCandidatePreviewVisible && AiCandidatePreview?.IsLocked == true && !_aiBusy;
+    public bool CanAnalyzeAiPreviewAsset => !_aiBusy && false;
 
     public AiRequirementUsageViewModel? AiReplacementTarget => _aiReplacementTarget;
 
@@ -210,8 +226,19 @@ public sealed partial class MainWindowViewModel
     public bool IsAiReplacementActive => AiReplacementTarget is not null;
 
     public string AiReplacementInstructionText => AiReplacementTarget is null
-        ? "点击左侧“替换”，再从这里选择一张照片。"
-        : $"正在替换：{AiReplacementTarget.PageName} · {AiReplacementTarget.FrameDisplayName}";
+        ? "点击左侧“替换用图”，再选择一张照片。"
+        : _aiBusy
+            ? "正在保存选图，请稍候…"
+            : SelectedAiReplacementAsset is null
+                ? $"当前用图：{AiReplacementTarget.CurrentAssetDisplayName}；请选择要替换的照片。"
+                : string.Equals(
+                    AiReplacementTarget.SelectedAssetId,
+                    SelectedAiReplacementAsset.AssetId,
+                    StringComparison.Ordinal)
+                    ? $"当前用图：{AiReplacementTarget.CurrentAssetDisplayName}；这就是当前照片，无需更换。"
+                    : $"当前用图：{AiReplacementTarget.CurrentAssetDisplayName}；已选择 {SelectedAiReplacementAsset.DisplayName}，点击“确认”完成替换。";
+
+    public string ConfirmAiReplacementText => _aiBusy ? "保存中…" : "确认";
 
     public bool CanConfirmAiReplacement =>
         AiReplacementTarget is not null
@@ -296,6 +323,16 @@ public sealed partial class MainWindowViewModel
 
     public bool IsAiReady => _aiBatchProjection?.CanEnterGeneration == true;
 
+    /// <summary>
+    /// A submission timeout is safe to retry only when the adapter proved that
+    /// the request body was not fully written.  The workflow projection uses
+    /// the dedicated action text for that case; response-unknown and ordinary
+    /// terminal failures intentionally do not expose this command.
+    /// </summary>
+    public bool CanRetryAiAnalysis =>
+        string.Equals(_aiBatchProjection?.ActionText, "重试分析", StringComparison.Ordinal)
+        && !_aiBusy;
+
     private void InitializeAiBatchAnalysis(IAiBatchAnalysisWorkflow? workflow)
     {
         _aiBatchWorkflow = workflow;
@@ -314,6 +351,9 @@ public sealed partial class MainWindowViewModel
         RefreshAiAnalysisCommand = new AsyncRelayCommand(
             RefreshAiAnalysisAsync,
             () => _aiBatchProjection is not null && !_aiBusy);
+        RetryAiAnalysisCommand = new AsyncRelayCommand(
+            RetryAiAnalysisAsync,
+            () => CanRetryAiAnalysis);
         LockAiSelectionCommand = new AsyncRelayCommand<AiCandidateViewModel>(
             LockAiSelectionAsync);
         AnalyzeAiAssetCommand = new AsyncRelayCommand<AiCandidateViewModel>(
@@ -378,9 +418,34 @@ public sealed partial class MainWindowViewModel
         await RefreshAiAnalysisAsync().ConfigureAwait(true);
     }
 
-    private bool ShouldAutoRefreshAi =>
-        IsAiAnalysisVisible
-        && _aiBatchProjection?.Status is AiBatchUiStatus.Waiting or AiBatchUiStatus.Analysing;
+    private bool ShouldAutoRefreshAi
+    {
+        get
+        {
+            // The style-review screen is a detail view of the same live batch.
+            // Keep polling while it is open so the overview and the detail view
+            // cannot diverge while another page is still being analysed.
+            if (!IsAiAnalysisVisible && !IsAiStyleReviewVisible)
+            {
+                return false;
+            }
+
+            if (_aiBatchProjection is null
+                || _aiBatchProjection.ControlState != AiAnalysisSchedulingControlState.Running)
+            {
+                return false;
+            }
+
+            // A batch can be reported as ReviewRequired as soon as one page is
+            // ready for review, even though sibling pages are still waiting or
+            // analysing. Inspect page state instead of relying on the aggregate
+            // batch status, otherwise progress such as 3/6 would remain stale.
+            return _aiBatchProjection.Status is AiBatchUiStatus.Waiting or AiBatchUiStatus.Analysing
+                || _aiBatchProjection.Styles
+                    .SelectMany(style => style.Pages)
+                    .Any(page => page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing);
+        }
+    }
 
     private void UpdateAiAutoRefresh()
     {
@@ -492,8 +557,11 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        SetAiReplacementState(requirement, requirement.SelectedAssetId);
-        AiStatusMessage = $"请选择用于“{requirement.PageName} · {requirement.FrameDisplayName}”的照片；确认前不会更改当前用图。";
+        // The current photo is not a pending replacement. It remains the
+        // visible binding until the user chooses a different photo and commits
+        // the change explicitly.
+        SetAiReplacementState(requirement, null);
+        AiStatusMessage = $"请选择要替换的照片：{requirement.SelectionLabel}。选择后点击“确认”即可保存。";
     }
 
     private bool IsAiReplacementAssetSelectable(AiStyleAssetViewModel? asset) =>
@@ -542,11 +610,15 @@ public sealed partial class MainWindowViewModel
                 CancellationToken.None).ConfigureAwait(true);
             ApplyAiProjection(projection);
             ClearAiReplacementState();
-            AiStatusMessage = $"已改用所选照片，并锁定“{target.PageName} · {target.FrameDisplayName}”；刷新或重启后仍会保留。";
+            AiStatusMessage = $"已替换为 {asset.DisplayName}（{target.SelectionLabel}）；刷新或重启后仍会保留。";
         }
         catch (InvalidOperationException exception)
         {
             AiStatusMessage = ToAiUserMessage(exception.Message);
+        }
+        catch (Exception)
+        {
+            AiStatusMessage = "本地选图保存失败，当前用图没有更改；请刷新后重新选择。";
         }
         finally
         {
@@ -557,7 +629,7 @@ public sealed partial class MainWindowViewModel
 
     private void SetAiReplacementState(
         AiRequirementUsageViewModel requirement,
-        string? selectedAssetId)
+        string? pendingAssetId)
     {
         _aiReplacementTarget = requirement;
         _selectedAiReplacementAsset = null;
@@ -568,7 +640,8 @@ public sealed partial class MainWindowViewModel
             foreach (var asset in style.Assets)
             {
                 asset.IsSelected = active
-                    && string.Equals(asset.AssetId, selectedAssetId, StringComparison.Ordinal);
+                    && pendingAssetId is not null
+                    && string.Equals(asset.AssetId, pendingAssetId, StringComparison.Ordinal);
                 if (asset.IsSelected)
                 {
                     _selectedAiReplacementAsset = asset;
@@ -597,6 +670,11 @@ public sealed partial class MainWindowViewModel
 
     private async Task<bool> EnsureAiUploadConsentForScanAsync()
     {
+        if (!await EnsureAiCredentialConfiguredForScanAsync().ConfigureAwait(true))
+        {
+            return false;
+        }
+
         if (_aiBatchWorkflow is null)
         {
             return true;
@@ -610,9 +688,11 @@ public sealed partial class MainWindowViewModel
             NotifyAiChanged();
             if (IsAiUploadConsentGranted)
             {
+                _pendingAiConsentContinuation = AiConsentContinuation.None;
                 return true;
             }
 
+            _pendingAiConsentContinuation = AiConsentContinuation.BatchScan;
             AiUploadConsentAcknowledged = false;
             IsAiUploadConsentDialogVisible = true;
             BatchStatusMessage = IsAiUploadConsentRevoked
@@ -635,6 +715,7 @@ public sealed partial class MainWindowViewModel
         }
 
         var granted = false;
+        var continuation = AiConsentContinuation.None;
         _aiBusy = true;
         NotifyAiChanged();
         try
@@ -645,6 +726,8 @@ public sealed partial class MainWindowViewModel
             granted = _uploadConsent.IsGranted;
             if (granted)
             {
+                continuation = _pendingAiConsentContinuation;
+                _pendingAiConsentContinuation = AiConsentContinuation.None;
                 IsAiUploadConsentDialogVisible = false;
                 AiUploadConsentAcknowledged = false;
                 AiStatusMessage = "上传授权已保存；现在可以开始 AI 分析。";
@@ -660,7 +743,11 @@ public sealed partial class MainWindowViewModel
             NotifyAiChanged();
         }
 
-        if (granted)
+        if (granted && continuation == AiConsentContinuation.ReferenceLearning)
+        {
+            await StartReferenceLearningAsync().ConfigureAwait(true);
+        }
+        else if (granted && continuation == AiConsentContinuation.BatchScan)
         {
             await ScanBatchInputAsync().ConfigureAwait(true);
         }
@@ -668,6 +755,7 @@ public sealed partial class MainWindowViewModel
 
     private void CancelAiUploadConsent()
     {
+        _pendingAiConsentContinuation = AiConsentContinuation.None;
         IsAiUploadConsentDialogVisible = false;
         AiUploadConsentAcknowledged = false;
         BatchStatusMessage = "未授予上传权限；源文件未修改，扫描和 AI 分析均未启动。";
@@ -794,6 +882,46 @@ public sealed partial class MainWindowViewModel
         catch (InvalidOperationException exception)
         {
             AiStatusMessage = ToAiUserMessage(exception.Message);
+        }
+        finally
+        {
+            _aiBusy = false;
+            NotifyAiChanged();
+        }
+    }
+
+    private async Task RetryAiAnalysisAsync()
+    {
+        if (!CanRetryAiAnalysis)
+        {
+            return;
+        }
+
+        if (_batchInputWorkflow is null
+            || SelectedBatchTemplate is null
+            || string.IsNullOrWhiteSpace(BatchInputDirectory)
+            || string.IsNullOrWhiteSpace(BatchOutputDirectory)
+            || SelectedBatchPageCount == 0)
+        {
+            AiStatusMessage = "当前批次配置已失效，请返回批次设置重新选择模板、商品目录和输出目录后重试。";
+            return;
+        }
+
+        // A provider submission timeout is safe to retry, but the exhausted
+        // logical request itself is terminal. Build a fresh input batch and
+        // let the normal scan/admission path create a new request identity;
+        // never mutate or requeue the old terminal graph in place.
+        _aiBusy = true;
+        NotifyAiChanged();
+        try
+        {
+            BeginFreshBatchDraft();
+            SetBatchStatus(
+                BatchInputUiStatus.Draft,
+                "已保留当前模板、目录和输出设置，正在重新建立批次并重试 AI 分析。旧失败记录不会重复发送。");
+            _batchScreen = BatchWorkspaceScreen.BatchInput;
+            NotifyBatchScreenChanged();
+            await ScanBatchInputAsync().ConfigureAwait(true);
         }
         finally
         {
@@ -929,6 +1057,12 @@ public sealed partial class MainWindowViewModel
 
     private void ApplyAiProjection(AiBatchAnalysisProjection projection)
     {
+        // Rebuilding the projection creates new style view-model instances. If
+        // the user is currently inside the style review page, keep the logical
+        // style selection attached to the new instance; otherwise the review
+        // pane remains bound to a stale object and appears not to change after
+        // a successful replacement.
+        var selectedStyleId = SelectedAiStyle?.StyleId;
         (string StyleId, string RequirementId)? replacementKey = AiReplacementTarget is null
             ? null
             : (AiReplacementTarget.StyleId, AiReplacementTarget.RequirementId);
@@ -939,6 +1073,17 @@ public sealed partial class MainWindowViewModel
         foreach (var style in projection.Styles)
         {
             AiStyles.Add(new AiStyleAnalysisViewModel(style, this));
+        }
+        if (selectedStyleId is not null)
+        {
+            var reboundStyle = AiStyles.FirstOrDefault(style =>
+                string.Equals(style.StyleId, selectedStyleId, StringComparison.Ordinal));
+            SelectedAiStyle = reboundStyle;
+            if (reboundStyle is null && _batchScreen == BatchWorkspaceScreen.AiStyleReview)
+            {
+                _batchScreen = BatchWorkspaceScreen.AiAnalysis;
+                NotifyBatchScreenChanged();
+            }
         }
         RebuildAiStatusFilters();
         ApplyAiStyleFilter();
@@ -983,10 +1128,18 @@ public sealed partial class MainWindowViewModel
     {
         AiStatusFilters.Clear();
         AddFilter(AiStyleFilter.All, "全部", AiStyles.Count, "Neutral");
-        AddFilter(AiStyleFilter.Ready, "可生成", AiStyles.Count(style => style.Status == AiStyleUiStatus.Ready), "Ready");
-        AddFilter(AiStyleFilter.Review, "待检查", AiStyles.Count(style =>
-            style.Status is AiStyleUiStatus.Waiting or AiStyleUiStatus.Analysing or AiStyleUiStatus.ReviewRequired), "Review");
-        AddFilter(AiStyleFilter.Blocked, "不可生成", AiStyles.Count(style => style.Status is AiStyleUiStatus.BusinessError or AiStyleUiStatus.SystemError), "Blocked");
+        // The executable queue includes advisory-yellow pages.  Count a style
+        // here when its projection has at least one page that can be rendered;
+        // requiring the enum to be exactly Ready would make a fully analysed
+        // yellow style disappear into “待检查” and falsely suggest that every
+        // frame still needs confirmation.
+        AddFilter(AiStyleFilter.Ready, "可生成", AiStyles.Count(style => style.CanGenerate), "Ready");
+        AddFilter(AiStyleFilter.Review, "待检查", AiStyles.Count(style => style.Pages.Any(page =>
+            page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing
+            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration)), "Review");
+        AddFilter(AiStyleFilter.Blocked, "不可生成", AiStyles.Count(style => style.Pages.Any(page =>
+            page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError
+            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration)), "Blocked");
     }
 
     private void AddFilter(AiStyleFilter filter, string label, int count, string tone) =>
@@ -1005,9 +1158,13 @@ public sealed partial class MainWindowViewModel
     {
         AiStyleFilter.All => true,
         AiStyleFilter.Processing => style.Status is AiStyleUiStatus.Waiting or AiStyleUiStatus.Analysing,
-        AiStyleFilter.Ready => style.Status == AiStyleUiStatus.Ready,
-        AiStyleFilter.Review => style.Status is AiStyleUiStatus.Waiting or AiStyleUiStatus.Analysing or AiStyleUiStatus.ReviewRequired,
-        AiStyleFilter.Blocked => style.Status is AiStyleUiStatus.BusinessError or AiStyleUiStatus.SystemError,
+        AiStyleFilter.Ready => style.CanGenerate,
+        AiStyleFilter.Review => style.Pages.Any(page =>
+            page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing
+            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration),
+        AiStyleFilter.Blocked => style.Pages.Any(page =>
+            page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError
+            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration),
         _ => true
     };
 
@@ -1022,6 +1179,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(AiBatchProgressText));
         OnPropertyChanged(nameof(AiBatchStatusState));
         OnPropertyChanged(nameof(AiPageTitle));
+        OnPropertyChanged(nameof(AiStyleReviewContextText));
         OnPropertyChanged(nameof(AiPageSubtitle));
         OnPropertyChanged(nameof(AiTemplateSummary));
         OnPropertyChanged(nameof(AiTemplateMeta));
@@ -1049,6 +1207,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(AiZeroReasonTwoText));
         OnPropertyChanged(nameof(AiZeroReasonThreeLabel));
         OnPropertyChanged(nameof(AiZeroReasonThreeText));
+        OnPropertyChanged(nameof(CanRetryAiAnalysis));
         OnPropertyChanged(nameof(IsAiBusy));
         OnPropertyChanged(nameof(IsAiCandidatePreviewVisible));
         OnPropertyChanged(nameof(AiCandidatePreview));
@@ -1058,6 +1217,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(SelectedAiReplacementAsset));
         OnPropertyChanged(nameof(IsAiReplacementActive));
         OnPropertyChanged(nameof(AiReplacementInstructionText));
+        OnPropertyChanged(nameof(ConfirmAiReplacementText));
         OnPropertyChanged(nameof(CanConfirmAiReplacement));
         OnPropertyChanged(nameof(IsAiUploadConsentGranted));
         OnPropertyChanged(nameof(IsAiUploadConsentRevoked));
@@ -1078,6 +1238,7 @@ public sealed partial class MainWindowViewModel
         (CancelAiAnalysisCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (WaitForAiNetworkCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (RefreshAiAnalysisCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        (RetryAiAnalysisCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (GrantAiUploadConsentCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (RevokeAiUploadConsentCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (RefreshAiConsentCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -1088,23 +1249,41 @@ public sealed partial class MainWindowViewModel
         (SelectAiReplacementAssetCommand as RelayCommand<AiStyleAssetViewModel>)?.RaiseCanExecuteChanged();
         (ConfirmAiReplacementCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (OpenAiStyleReviewCommand as RelayCommand<AiStyleAnalysisViewModel>)?.RaiseCanExecuteChanged();
+        NotifyAiCredentialChanged();
     }
 
-    private static string ToAiUserMessage(string code) => code switch
+    private static string ToAiUserMessage(string code)
     {
-        "AI_INPUT_BATCH_NOT_READY" => "批次尚未完成扫描，请先完成输入检查。",
-        "AI_BATCH_NOT_FOUND" => "找不到该批次，请返回工作台重新打开。",
-        "AI_SESSION_NOT_FOUND" => "分析状态缺失，需要恢复；未启动生成。",
-        "AI_SELECTION_NOT_AVAILABLE" => "当前页面还没有可供人工锁定的分析结果。",
-        "AI_SELECTION_REVISION_CONFLICT" => "分析结果已更新，请刷新后重新选择。",
-        "AI_REFINEMENT_SELECTION_INVALID" => "所选素材已失效，请刷新后重新选择。",
-        "AI_REFINEMENT_SELECTION_NOT_LOCKED" => "请先锁定选中的候选图，再进行逐图主体分析。",
-        "AI_UPLOAD_CONSENT_REQUIRED" => "首次使用 AI 前请先同意上传授权：仅上传压缩分析副本到火山方舟，不上传 PSD、原始高清图片、本地路径或正式输出；可在设置中确认。",
-        "AI_UPLOAD_CONSENT_REVOKED" => "上传授权已撤回，请在设置中重新授权后再开始分析。",
-        "AI_SCHEDULER_CANCELLED" => "该批次已取消，不能继续分析。",
-        "AI_CHECKPOINT_BATCH_SCOPE_INVALID" => "批次正在恢复，请稍后刷新。",
-        _ => "分析未能安全完成，请按页面提示处理后重试。"
-    };
+        if (code.StartsWith("AI_CHECKPOINT_", StringComparison.Ordinal)
+            || code.StartsWith("AI_SCHEDULER_STATE_", StringComparison.Ordinal)
+            || code is "AI_SCHEDULER_PENDING_LEDGER_MISSING"
+                or "AI_SCHEDULER_PENDING_SESSION_MISSING")
+        {
+            return "本地分析状态未保存或不一致，未发送新的 AI 请求。请重新扫描并建立新批次。";
+        }
+
+        return code switch
+        {
+            "AI_INPUT_BATCH_NOT_READY" => "批次尚未完成扫描，请先完成输入检查。",
+            "AI_BATCH_NOT_FOUND" => "找不到该批次，请返回工作台重新打开。",
+            "INPUT_PERSISTENCE_FAILURE" or "AI_INPUT_PERSISTENCE_FAILURE" =>
+                "本地状态未能安全保存，未发送 AI 请求。请重新扫描并建立新批次；源图片未修改。",
+            "INPUT_MANIFEST_DATABASE_MISMATCH" =>
+                "本地批次清单与数据库记录不一致，已阻止 AI 请求。请重新扫描并建立新批次。",
+            "AI_SESSION_NOT_FOUND" => "分析状态缺失，需要恢复；未启动生成。",
+            "AI_SELECTION_NOT_AVAILABLE" => "当前页面还没有可供人工锁定的分析结果。",
+            "AI_SELECTION_STATE_MISMATCH" => "本地分析状态不一致，当前用图没有更改；请刷新后重新选择。",
+            "AI_SELECTION_REVISION_CONFLICT" => "分析结果已更新，请刷新后重新选择。",
+            "AI_REFINEMENT_SELECTION_INVALID" => "所选素材已失效，请刷新后重新选择。",
+            "AI_REFINEMENT_SELECTION_NOT_LOCKED" => "请先锁定选中的候选图，再进行逐图主体分析。",
+            "AI_UPLOAD_CONSENT_REQUIRED" => "首次使用 AI 前请先同意上传授权：仅上传压缩分析副本到火山方舟，不上传 PSD、原始高清图片、本地路径或正式输出；可在设置中确认。",
+            "AI_UPLOAD_CONSENT_REVOKED" => "上传授权已撤回，请在设置中重新授权后再开始分析。",
+            "AI_SCHEDULER_CANCELLED" => "该批次已取消，不能继续分析。",
+            "AI_CHECKPOINT_BATCH_SCOPE_INVALID" => "批次正在恢复，请稍后刷新。",
+            "AI_PROVIDER_REQUEST_TOO_LARGE" => "最终 JSON 请求体超过 16 MiB；未发送 AI 请求。请减少本款照片后重新建立批次。",
+            _ => "分析未能安全完成，请按页面提示处理后重试。"
+        };
+    }
 }
 
 public sealed class AiStyleAnalysisViewModel
@@ -1113,7 +1292,7 @@ public sealed class AiStyleAnalysisViewModel
     private readonly AiStyleAnalysisProjection _projection;
     private bool _isExpanded;
     private bool _isReplacementActive;
-    private string _replacementInstructionText = "点击左侧“替换”，再从这里选择一张照片。";
+    private string _replacementInstructionText = "点击左侧“替换用图”，再选择一张照片。";
 
     public AiStyleAnalysisViewModel(AiStyleAnalysisProjection projection, MainWindowViewModel owner)
     {
@@ -1143,6 +1322,7 @@ public sealed class AiStyleAnalysisViewModel
     public string StatusText => _projection.StatusText;
     public string StatusState => _projection.StatusState;
     public AiStyleUiStatus Status => _projection.Status;
+    public bool CanGenerate => _projection.CanGenerate;
     public int AssetCount => _projection.AssetCount;
     public bool IsExpanded
     {
@@ -1159,7 +1339,14 @@ public sealed class AiStyleAnalysisViewModel
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsExpanded)));
         }
     }
-    public string MetaText => $"{AssetCount} 张素材 · {Pages.Count(page => page.Status is AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired)} / {Pages.Count} 页面已分析";
+    public int AnalyzedPageCount => Pages.Count(page => page.Status is
+        AiPageUiStatus.Ready
+            or AiPageUiStatus.ReviewRequired
+            or AiPageUiStatus.BusinessError
+            or AiPageUiStatus.SystemError
+            or AiPageUiStatus.Cancelled);
+    public int ProcessedPageCount => AnalyzedPageCount;
+    public string MetaText => $"{AssetCount} 张素材 · 已处理 {ProcessedPageCount}/{Pages.Count} 页";
     public ObservableCollection<AiPageAnalysisViewModel> Pages { get; }
     public ObservableCollection<AiRequirementUsageViewModel> AllRequirements { get; }
     public ObservableCollection<AiStyleAssetViewModel> Assets { get; }
@@ -1199,8 +1386,8 @@ public sealed class AiStyleAnalysisViewModel
     {
         IsReplacementActive = active;
         ReplacementInstructionText = active && requirement is not null
-            ? $"正在替换：{requirement.PageName} · {requirement.FrameDisplayName}"
-            : "点击左侧“替换”，再从这里选择一张照片。";
+            ? $"正在替换：{requirement.SelectionLabel}"
+            : "点击左侧“替换用图”，再选择一张照片。";
         foreach (var page in Pages)
         {
             foreach (var item in page.Requirements)
@@ -1233,12 +1420,14 @@ public sealed class AiPageAnalysisViewModel
                     projection.PageId,
                     projection.PageName,
                     selected.RequirementId,
-                    selected.FrameDisplayName,
+                    AiSelectionLabelFormatter.FormatFrameDisplayName(
+                        selected.FrameDisplayName,
+                        selected.SelectionRequirement),
                     selected.SelectionRequirement,
                     selected.IsLocked
                         ? AiRequirementSelectionUiStatus.ManualLocked
                         : AiRequirementSelectionUiStatus.AiSelected,
-                    selected.IsLocked ? "人工选用 · 已锁定" : "AI 推荐 · 已选用",
+                    selected.IsLocked ? "人工选用 · 已锁定" : "AI 推荐 · 已确认",
                     selected.AssetId,
                     selected.PreviewPath);
             })
@@ -1251,10 +1440,12 @@ public sealed class AiPageAnalysisViewModel
     public string StyleId => _projection.StyleId;
     public string PageId => _projection.PageId;
     public string PageName => _projection.PageName;
+    public string PageContextText => $"PSD 页面：{PageName}";
     public string StatusText => _projection.StatusText;
     public string StatusState => _projection.StatusState;
     public AiPageUiStatus Status => _projection.Status;
     public string ActionText => _projection.ActionText;
+    public bool RequiresManualConfiguration => _projection.RequiresManualConfiguration;
     public bool HasWarnings => _projection.HasWarnings;
     public IReadOnlyList<string> WarningTexts => _projection.WarningTexts;
     public ObservableCollection<AiCandidateViewModel> Candidates { get; }
@@ -1276,16 +1467,22 @@ public sealed class AiRequirementUsageViewModel : INotifyPropertyChanged
     public string PageId => _projection.PageId;
     public string PageName => _projection.PageName;
     public string RequirementId => _projection.RequirementId;
-    public string FrameDisplayName => _projection.FrameDisplayName;
+    public string FrameDisplayName => AiSelectionLabelFormatter.FormatFrameDisplayName(
+        _projection.FrameDisplayName,
+        _projection.SelectionRequirement);
     public string SelectionRequirement => _projection.SelectionRequirement;
+    public string SelectionLabel => AiSelectionLabelFormatter.Format(SelectionRequirement);
+    public string PageContextText => $"PSD 页面：{PageName}";
+    public string CurrentAssetDisplayName => _projection.SelectedAssetDisplayName ?? "未选图";
+    public string TechnicalFrameContext => $"{PageName} · {FrameDisplayName}";
     public string StatusText => _projection.StatusText;
     public string StatusState => _projection.StatusState;
     public string? SelectedAssetId => _projection.SelectedAssetId;
     public string PreviewPath => _projection.SelectedPreviewPath ?? "";
     public bool HasSelection => _projection.HasSelection;
     public string PreviewAutomationName => HasSelection
-        ? $"查看{PageName}的{FrameDisplayName}当前用图"
-        : $"{PageName}的{FrameDisplayName}尚未选图";
+        ? $"查看{PageName}的{SelectionLabel}当前用图"
+        : $"{PageName}的{SelectionLabel}尚未选图";
     public bool IsReplacementTarget
     {
         get => _isReplacementTarget;
@@ -1403,16 +1600,20 @@ public sealed class AiCandidateViewModel : INotifyPropertyChanged
     public string RankText => _projection.RankText;
     public string ConfidenceText => _projection.ConfidenceText;
     public string EvidenceText => _projection.EvidenceText;
-    public string FrameDisplayName => _projection.FrameDisplayName;
+    public string FrameDisplayName => AiSelectionLabelFormatter.FormatFrameDisplayName(
+        _projection.FrameDisplayName,
+        _projection.SelectionRequirement);
     public string PageName => _projection.PageName;
+    public string SelectionLabel => AiSelectionLabelFormatter.Format(SelectionRequirement);
+    public string PageContextText => $"PSD 页面：{PageName}";
     public string PreviewPath => _projection.PreviewPath ?? "";
     public bool HasPreview => !string.IsNullOrWhiteSpace(_projection.PreviewPath);
     public string SelectionRequirement => _projection.SelectionRequirement;
-    public string UsageText => $"用于：{PageName} · {FrameDisplayName}";
+    public string UsageText => $"用于：PSD 页面 {PageName} · {SelectionLabel}";
     public string RecommendationText => _projection.Rank == 1 ? "AI 推荐" : _projection.RankText;
-    public string AnalysisHint => IsLocked
-        ? "如需进一步确认商品边界，可选择“检查商品范围”；这会发起一次新的 AI 分析。"
-        : "先确认选用这张图片，之后才能按需检查商品范围。";
+    public string AnalysisHint => _projection.IsLocked
+        ? "当前图片为已确认用图；如需更换，请关闭预览后点击“替换用图”。"
+        : "当前图片为 AI 默认用图；如需更换，请关闭预览后点击“替换用图”。";
     public bool IsLocked => _projection.IsLocked;
     public bool IsLockEnabled => IsTopNSelected && !_projection.IsLocked;
     public bool IsTopNSelected
@@ -1433,9 +1634,55 @@ public sealed class AiCandidateViewModel : INotifyPropertyChanged
     }
     public string SelectionText => IsTopNSelected ? "当前首选" : "选为首选";
     public string LockText => _projection.LockText;
-    public string ChooseText => _projection.IsLocked ? "已选用" : "选用这张";
+    public string ChooseText => _projection.IsLocked ? "已确认" : "确认";
 
     public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+internal static class AiSelectionLabelFormatter
+{
+    private const string GenericFallback = "商品主体清晰完整，构图适合当前图片框。";
+
+    public static string Format(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalized)
+            || string.Equals(normalized, GenericFallback, StringComparison.Ordinal)
+            || string.Equals(normalized, ReferenceSelectionRequirementPolicy.UnconfirmedLabel, StringComparison.Ordinal)
+            || normalized.Contains("请选择", StringComparison.Ordinal)
+            || normalized.Contains("请为这个图片框", StringComparison.Ordinal))
+        {
+            return ReferenceSelectionRequirementPolicy.UnconfirmedLabel;
+        }
+
+        if (ReferenceSelectionRequirementPolicy.TryNormalize(normalized, out var compact))
+        {
+            return compact;
+        }
+
+        return normalized.Length <= ReferenceSelectionRequirementPolicy.MaxLength
+            ? normalized
+            : normalized[..(ReferenceSelectionRequirementPolicy.MaxLength - 1)] + "…";
+    }
+
+    public static string FormatFrameDisplayName(string? frameDisplayName, string? selectionRequirement)
+    {
+        var normalized = frameDisplayName?.Trim() ?? string.Empty;
+        if (IsTechnicalFrameName(normalized))
+        {
+            return Format(selectionRequirement);
+        }
+
+        return Format(normalized);
+    }
+
+    private static bool IsTechnicalFrameName(string value) =>
+        value.Equals("图片框", StringComparison.Ordinal)
+        || value.StartsWith("图片框 ", StringComparison.Ordinal)
+        || value.StartsWith("图片框_", StringComparison.Ordinal)
+        || value.StartsWith("frame_", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("frame-", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("frame ", StringComparison.OrdinalIgnoreCase);
 }
 
 public enum AiStyleFilter

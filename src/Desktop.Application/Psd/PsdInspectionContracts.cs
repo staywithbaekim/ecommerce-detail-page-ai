@@ -85,13 +85,28 @@ public sealed record PsdLayerInspection(
     bool HasMask,
     bool HasVectorMask,
     PsdClippingBaseInspection? ClippingBase,
-    PsdSmartObjectInspection? SmartObject);
+    PsdSmartObjectInspection? SmartObject)
+{
+    /// <summary>
+    /// Rendered-pixel evidence produced inside the isolated worker. Older
+    /// workers leave this unavailable so learning fails closed instead of
+    /// treating visibility flags or layer bounds as final-output proof.
+    /// </summary>
+    public PsdLayerPixelEvidence PixelEvidence { get; init; } =
+        new(false, 0, 0, null);
+}
 
 public sealed record PsdLayerBounds(
     int Left,
     int Top,
     int Right,
     int Bottom);
+
+public sealed record PsdLayerPixelEvidence(
+    bool Available,
+    long RenderedPixelCount,
+    long CompositeContributionPixelCount,
+    PsdLayerBounds? CompositeContributionBounds);
 
 public sealed record PsdClippingBaseInspection(
     IReadOnlyList<int> Path,

@@ -101,6 +101,40 @@ public sealed class AiBatchAnalysisProjectionTests
     }
 
     [Fact]
+    public void AdvisoryYellowStyleIsInExecutableQueueWithoutPerFrameConfirmation()
+    {
+        var yellow = Page("page_review", AiPageUiStatus.ReviewRequired);
+        var style = new AiStyleAnalysisProjection(
+            "batch_01",
+            "style_01",
+            "SKU-01",
+            AiStyleUiStatus.ReviewRequired,
+            "可生成 · 建议检查",
+            [yellow],
+            4);
+        var projection = new AiBatchAnalysisProjection(
+            "batch_01",
+            AiBatchUiStatus.ReviewRequired,
+            "分析完成；绿色和黄色页面均可直接生成。",
+            "进入生成",
+            1,
+            1,
+            1,
+            1,
+            [style],
+            AiAnalysisSchedulingControlState.Running,
+            null);
+
+        Assert.True(style.CanGenerate);
+        Assert.True(projection.CanEnterGeneration);
+        Assert.Equal(1, projection.ExecutablePageCount);
+        Assert.Equal("已完成 1/1 款 · 已处理 1/1 页 · 可生成 1/1 页", projection.ProgressText);
+        Assert.True(projection.IsTerminal);
+        Assert.False(projection.CanPause);
+        Assert.False(projection.CanCancel);
+    }
+
+    [Fact]
     public void UnconfirmedReviewPageDoesNotEnterGeneration()
     {
         var awaitingConfirmation = Page("page_review", AiPageUiStatus.ReviewRequired) with
@@ -167,7 +201,7 @@ public sealed class AiBatchAnalysisProjectionTests
             IsLocked: false);
 
         Assert.Equal("Top-2", candidate.RankText);
-        Assert.Equal("选用这张", candidate.LockText);
+        Assert.Equal("确认", candidate.LockText);
         Assert.True(candidate.CanLock);
         Assert.Equal("正面 · 主体清晰", candidate.EvidenceText);
 

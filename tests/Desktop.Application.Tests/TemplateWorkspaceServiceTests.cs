@@ -59,6 +59,31 @@ public sealed class TemplateWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task RenamePersistsNameWithoutChangingDraftRevision()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var service = CreateService(templates, resources);
+        var session = await service.BeginCreateAsync("原模板名称", CancellationToken.None);
+
+        await service.RenameTemplateGroupAsync(
+            session.GroupId,
+            "  新模板名称  ",
+            CancellationToken.None);
+
+        var group = await templates.GetGroupAsync(session.GroupId, CancellationToken.None);
+        var resumed = await service.ResumeDraftAsync(session.GroupId, CancellationToken.None);
+        var revision = await templates.GetLatestRevisionForGroupAsync(
+            session.GroupId,
+            CancellationToken.None);
+
+        Assert.Equal("新模板名称", group!.Name);
+        Assert.Equal("新模板名称", resumed.GroupName);
+        Assert.Equal(session.DraftRevisionId, resumed.DraftRevisionId);
+        Assert.Equal(session.DraftRevisionId, revision!.RevisionId);
+    }
+
+    [Fact]
     public async Task RemovingNewDraftPageLeavesSourceResourceUntouchedAndReordersDraft()
     {
         var templates = new MemoryTemplateRepository();
@@ -235,6 +260,144 @@ public sealed class TemplateWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task PageEditCreatesIsolatedDraftWithOnlySelectedPageEditable()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var now = new DateTimeOffset(2026, 9, 7, 1, 0, 0, TimeSpan.Zero);
+        var baseRevision = TemplateRevision.Restore(
+            "revision_edit_base",
+            "group_edit",
+            4,
+            TemplateRevisionState.Committed,
+            "templates/groups/group_edit/revisions/revision_edit_base/revision-manifest.json",
+            $"sha256:{FileHash}",
+            now,
+            [
+                Page("page_front", "revision_edit_base", 0, "resource_front"),
+                Page("page_detail", "revision_edit_base", 1, "resource_detail")
+            ],
+            []);
+        var group = TemplateGroup.Restore(
+            "group_edit",
+            "可编辑模板组",
+            baseRevision.RevisionId,
+            TemplateGroupStatus.Active,
+            now,
+            now);
+        templates.Add(group, baseRevision);
+        resources.Add(
+            Resource("resource_front", "group_edit", "revision_edit_base", 790, 1252),
+            Resource("resource_detail", "group_edit", "revision_edit_base", 790, 1252));
+        var service = CreateService(templates, resources);
+
+        var session = await service.BeginPageEditAsync(
+            group.GroupId,
+            "page_detail",
+            CancellationToken.None);
+        var resumedFromSecondEditClick = await service.BeginPageEditAsync(
+            group.GroupId,
+            "page_detail",
+            CancellationToken.None);
+        var draft = await service.GetDraftAsync(session, CancellationToken.None);
+
+        Assert.True(session.IsPageEdit);
+        Assert.Equal(session.DraftRevisionId, resumedFromSecondEditClick.DraftRevisionId);
+        Assert.Equal(session.RevisionNo, resumedFromSecondEditClick.RevisionNo);
+        Assert.Contains("page_detail", session.EditablePageIds);
+        Assert.True(draft.Pages.Single(page => page.Page.PageId == "page_detail").IsAffected);
+        Assert.False(draft.Pages.Single(page => page.Page.PageId == "page_front").IsAffected);
+
+        await service.ConfigurePageAsync(
+            session,
+            "page_detail",
+            "已编辑详情页",
+            TemplatePageContentTypeOption.NormalComposition,
+            TemplateGenerationModeOption.OncePerProduct,
+            null,
+            enabled: true,
+            CancellationToken.None);
+        var blocked = await Assert.ThrowsAsync<TemplateRuleViolationException>(() =>
+            service.ConfigurePageAsync(
+                session,
+                "page_front",
+                "不允许修改",
+                TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct,
+                null,
+                enabled: true,
+                CancellationToken.None));
+
+        var committed = await service.GetCommittedDetailsAsync(group.GroupId, CancellationToken.None);
+        var editedDraft = await service.GetDraftAsync(session, CancellationToken.None);
+        var resumed = await service.ResumeDraftAsync(group.GroupId, CancellationToken.None);
+        Assert.Equal("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY", blocked.Code);
+        Assert.Equal(baseRevision.RevisionId, committed!.RevisionId);
+        Assert.True(resumed.IsPageEdit);
+        Assert.Contains("page_detail", resumed.EditablePageIds);
+        Assert.Equal("已编辑详情页", editedDraft.Pages.Single(page => page.Page.PageId == "page_detail").Page.Name);
+        Assert.Equal("page_front", editedDraft.Pages.Single(page => page.Page.PageId == "page_front").Page.Name);
+    }
+
+    [Fact]
+    public async Task FullEditCreatesAllPageEditableDraftWithoutChangingCommittedRevision()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var now = new DateTimeOffset(2026, 9, 7, 2, 0, 0, TimeSpan.Zero);
+        var committedRevision = TemplateRevision.Restore(
+            "revision_full_edit_base",
+            "group_full_edit",
+            3,
+            TemplateRevisionState.Committed,
+            "templates/groups/group_full_edit/revisions/revision_full_edit_base/revision-manifest.json",
+            $"sha256:{FileHash}",
+            now,
+            [
+                Page("page_front", "revision_full_edit_base", 0, "resource_front"),
+                Page("page_detail", "revision_full_edit_base", 1, "resource_detail")
+            ],
+            []);
+        var group = TemplateGroup.Restore(
+            "group_full_edit",
+            "全量编辑模板组",
+            committedRevision.RevisionId,
+            TemplateGroupStatus.Active,
+            now,
+            now);
+        templates.Add(group, committedRevision);
+        resources.Add(
+            Resource("resource_front", group.GroupId, committedRevision.RevisionId, 790, 1252),
+            Resource("resource_detail", group.GroupId, committedRevision.RevisionId, 790, 1252));
+        var service = CreateService(templates, resources);
+
+        var session = await service.BeginFullEditAsync(group.GroupId, CancellationToken.None);
+        var draft = await service.GetDraftAsync(session, CancellationToken.None);
+
+        Assert.True(session.IsFullTemplateEdit);
+        Assert.Equal(session.BasePageIds, session.EditablePageIds);
+        Assert.All(draft.Pages, page => Assert.True(page.IsAffected));
+
+        await service.ConfigurePageAsync(
+            session,
+            "page_detail",
+            "已修改详情页",
+            TemplatePageContentTypeOption.NormalComposition,
+            TemplateGenerationModeOption.OncePerProduct,
+            null,
+            enabled: true,
+            CancellationToken.None);
+
+        var committed = await service.GetCommittedDetailsAsync(group.GroupId, CancellationToken.None);
+        var editedDraft = await service.GetDraftAsync(session, CancellationToken.None);
+        Assert.Equal(committedRevision.RevisionId, committed!.RevisionId);
+        Assert.Equal("page_front", committed.Pages[0].PageId);
+        Assert.Equal(
+            "已修改详情页",
+            editedDraft.Pages.Single(page => page.Page.PageId == "page_detail").Page.Name);
+    }
+
+    [Fact]
     public async Task DraftBatchRequiresExplicitUpdateAndAnalysisStartedBatchIsFrozen()
     {
         var templates = new MemoryTemplateRepository();
@@ -348,10 +511,66 @@ public sealed class TemplateWorkspaceServiceTests
         Assert.True(markers.CommittedWritten);
     }
 
+    [Fact]
+    public async Task DeleteKeepsMetadataWhenOwnedFilesCannotBeStaged()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var storage = new RecordingOwnedStorage
+        {
+            StageFailure = new IOException("injected file lock")
+        };
+        var service = CreateService(templates, resources, ownedStorage: storage);
+        var session = await service.BeginCreateAsync("锁定模板", CancellationToken.None);
+
+        var failure = await Assert.ThrowsAsync<IOException>(() =>
+            service.DeleteTemplateGroupAsync(session.GroupId, CancellationToken.None));
+
+        Assert.Equal("TPL_DELETE_FILES_FAILED", failure.Message);
+        Assert.NotNull(await templates.GetGroupAsync(session.GroupId, CancellationToken.None));
+        Assert.Equal(["stage"], storage.Events);
+    }
+
+    [Fact]
+    public async Task DeleteRestoresStagedFilesWhenMetadataDeletionFails()
+    {
+        var templates = new MemoryTemplateRepository { DeleteFailures = 1 };
+        var resources = new MemoryResourceRepository();
+        var storage = new RecordingOwnedStorage();
+        templates.DeleteObserver = () => storage.Events.Add("metadata");
+        var service = CreateService(templates, resources, ownedStorage: storage);
+        var session = await service.BeginCreateAsync("回滚模板", CancellationToken.None);
+
+        var failure = await Assert.ThrowsAsync<IOException>(() =>
+            service.DeleteTemplateGroupAsync(session.GroupId, CancellationToken.None));
+
+        Assert.Equal("TPL_DELETE_FILES_FAILED", failure.Message);
+        Assert.NotNull(await templates.GetGroupAsync(session.GroupId, CancellationToken.None));
+        Assert.Equal(["stage", "metadata", "restore"], storage.Events);
+    }
+
+    [Fact]
+    public async Task DeleteCommitsStagedFilesOnlyAfterMetadataDeletion()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var storage = new RecordingOwnedStorage();
+        templates.DeleteObserver = () => storage.Events.Add("metadata");
+        var service = CreateService(templates, resources, ownedStorage: storage);
+        var session = await service.BeginCreateAsync("可删除模板", CancellationToken.None);
+
+        var blockers = await service.DeleteTemplateGroupAsync(session.GroupId, CancellationToken.None);
+
+        Assert.Empty(blockers);
+        Assert.Null(await templates.GetGroupAsync(session.GroupId, CancellationToken.None));
+        Assert.Equal(["stage", "metadata", "commit"], storage.Events);
+    }
+
     private static TemplateWorkspaceService CreateService(
         MemoryTemplateRepository templates,
         MemoryResourceRepository resources,
-        IManifestStore? manifests = null)
+        IManifestStore? manifests = null,
+        ITemplateOwnedStorage? ownedStorage = null)
     {
         var time = new FixedTimeProvider(new DateTimeOffset(2026, 8, 28, 1, 0, 0, TimeSpan.Zero));
         return new TemplateWorkspaceService(
@@ -363,7 +582,8 @@ public sealed class TemplateWorkspaceServiceTests
                 resources,
                 time),
             time,
-            manifests);
+            manifests,
+            ownedStorage);
     }
 
     private static TemplatePage Page(
@@ -459,6 +679,8 @@ public sealed class TemplateWorkspaceServiceTests
         private readonly Dictionary<string, CalibrationDraft> _drafts = new(StringComparer.Ordinal);
         private readonly Dictionary<string, BatchTemplateSnapshot> _snapshots = new(StringComparer.Ordinal);
         public int CommitFailures { get; set; }
+        public int DeleteFailures { get; set; }
+        public Action? DeleteObserver { get; set; }
 
         public void Add(TemplateGroup group, TemplateRevision revision)
         {
@@ -546,6 +768,13 @@ public sealed class TemplateWorkspaceServiceTests
 
         public Task DeleteGroupAsync(string groupId, CancellationToken cancellationToken)
         {
+            DeleteObserver?.Invoke();
+            if (DeleteFailures > 0)
+            {
+                DeleteFailures--;
+                throw new IOException("injected metadata delete failure");
+            }
+
             _groups.Remove(groupId);
             foreach (var revisionId in _revisions.Values
                          .Where(revision => string.Equals(revision.GroupId, groupId, StringComparison.Ordinal))
@@ -580,6 +809,51 @@ public sealed class TemplateWorkspaceServiceTests
                 throw new TemplateRuleViolationException("TPL_BATCH_SNAPSHOT_FROZEN");
             }
             _snapshots[snapshot.BatchId] = snapshot;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingOwnedStorage : ITemplateOwnedStorage
+    {
+        public List<string> Events { get; } = [];
+
+        public Exception? StageFailure { get; init; }
+
+        public Task<TemplateOwnedDeletionStage?> StageGroupFilesForDeletionAsync(
+            string groupId,
+            CancellationToken cancellationToken)
+        {
+            Events.Add("stage");
+            if (StageFailure is not null)
+            {
+                throw StageFailure;
+            }
+
+            return Task.FromResult<TemplateOwnedDeletionStage?>(new(
+                groupId,
+                $"templates/groups/{groupId}",
+                $"templates/deleting/{groupId}-{new string('a', 32)}"));
+        }
+
+        public Task CommitGroupFilesDeletionAsync(
+            TemplateOwnedDeletionStage stage,
+            CancellationToken cancellationToken)
+        {
+            Events.Add("commit");
+            return Task.CompletedTask;
+        }
+
+        public Task RestoreGroupFilesAsync(
+            TemplateOwnedDeletionStage stage,
+            CancellationToken cancellationToken)
+        {
+            Events.Add("restore");
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteGroupFilesAsync(string groupId, CancellationToken cancellationToken)
+        {
+            Events.Add("delete");
             return Task.CompletedTask;
         }
     }

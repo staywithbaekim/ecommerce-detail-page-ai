@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -98,10 +99,21 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
             request.RequestId,
             inputPath,
             previewPath);
+
+        // Convert executable path to short path format (8.3) to avoid PyInstaller
+        // issues with non-ASCII characters in paths (e.g., Chinese folder names).
+        string executablePath = _options.ExecutablePath;
+        string workingDirectory = Path.GetDirectoryName(_options.ExecutablePath)!;
+        if (OperatingSystem.IsWindows())
+        {
+            executablePath = GetShortPathName(executablePath) ?? executablePath;
+            workingDirectory = GetShortPathName(workingDirectory) ?? workingDirectory;
+        }
+
         var startInfo = new ProcessStartInfo
         {
-            FileName = _options.ExecutablePath,
-            WorkingDirectory = Path.GetDirectoryName(_options.ExecutablePath)!,
+            FileName = executablePath,
+            WorkingDirectory = workingDirectory,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -341,7 +353,18 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
             {
                 EmbeddedContentSha256 = layer.SmartObject.EmbeddedContentSha256,
                 EmbeddedContentAvailable = layer.SmartObject.EmbeddedContentAvailable
-            });
+            })
+    {
+        PixelEvidence = layer.PixelEvidence is null
+            ? new PsdLayerPixelEvidence(false, 0, 0, null)
+            : new PsdLayerPixelEvidence(
+                layer.PixelEvidence.Available,
+                layer.PixelEvidence.RenderedPixelCount,
+                layer.PixelEvidence.CompositeContributionPixelCount,
+                layer.PixelEvidence.CompositeContributionBbox is null
+                    ? null
+                    : Bounds(layer.PixelEvidence.CompositeContributionBbox))
+    };
 
     private static PsdLayerBounds Bounds(int[] values) => new(
         values[0],
@@ -424,6 +447,11 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
             return false;
         }
 
+        if (layer.PixelEvidence is not null && !IsValid(layer.PixelEvidence))
+        {
+            return false;
+        }
+
         return layer.SmartObject is null ||
             (!string.IsNullOrWhiteSpace(layer.SmartObject.UniqueId) &&
              !string.IsNullOrWhiteSpace(layer.SmartObject.Filename) &&
@@ -436,6 +464,17 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
                  ? IsSha256(layer.SmartObject.EmbeddedContentSha256)
                  : layer.SmartObject.EmbeddedContentSha256 is null));
     }
+
+    private static bool IsValid(WorkerLayerPixelEvidence evidence) =>
+        evidence.RenderedPixelCount >= 0 &&
+        evidence.CompositeContributionPixelCount >= 0 &&
+        (evidence.Available ||
+            (evidence.RenderedPixelCount == 0 &&
+             evidence.CompositeContributionPixelCount == 0 &&
+             evidence.CompositeContributionBbox is null)) &&
+        (evidence.CompositeContributionPixelCount == 0
+            ? evidence.CompositeContributionBbox is null
+            : IsBounds(evidence.CompositeContributionBbox));
 
     private static bool IsValid(WorkerClippingBase clippingBase) =>
         clippingBase.Path is { Length: > 0 } &&
@@ -559,7 +598,14 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         bool HasMask,
         bool HasVectorMask,
         WorkerClippingBase? ClippingBase,
-        WorkerSmartObject? SmartObject);
+        WorkerSmartObject? SmartObject,
+        WorkerLayerPixelEvidence? PixelEvidence);
+
+    private sealed record WorkerLayerPixelEvidence(
+        bool Available,
+        long RenderedPixelCount,
+        long CompositeContributionPixelCount,
+        int[]? CompositeContributionBbox);
 
     private sealed record WorkerClippingBase(
         int[]? Path,
@@ -587,4 +633,28 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         bool EmbeddedContentAvailable);
 
     private sealed class WorkerOutputLimitException : Exception;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetShortPathName(
+        string longPath,
+        char[] shortPath,
+        int bufferSize);
+
+    private static string? GetShortPathName(string longPath)
+    {
+        if (string.IsNullOrEmpty(longPath))
+        {
+            return null;
+        }
+
+        const int maxPath = 260;
+        var shortPath = new char[maxPath];
+        var result = GetShortPathName(longPath, shortPath, maxPath);
+        if (result == 0 || result >= maxPath)
+        {
+            return null;
+        }
+
+        return new string(shortPath, 0, result);
+    }
 }

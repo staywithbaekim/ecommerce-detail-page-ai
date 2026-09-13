@@ -136,6 +136,43 @@
         "window_layer_path": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0 } },
         "is_product": { "type": "boolean" },
         "structural_reason": { "type": ["string", "null"], "maxLength": 2000 },
+        "pixel_evidence": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["available", "rendered_pixel_count", "composite_contribution_pixel_count", "composite_contribution_bounds"],
+          "properties": {
+            "available": { "type": "boolean" },
+            "rendered_pixel_count": { "type": "integer", "minimum": 0 },
+            "composite_contribution_pixel_count": { "type": "integer", "minimum": 0 },
+            "composite_contribution_bounds": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "required": ["left", "top", "right", "bottom"],
+              "properties": {
+                "left": { "type": "integer" },
+                "top": { "type": "integer" },
+                "right": { "type": "integer" },
+                "bottom": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "semantic_metadata": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["source", "request_schema_version", "result_schema_version", "model_config_version", "prompt_contract_version", "cache_key", "positive_evidence", "exclusion_evidence", "user_overridden"],
+          "properties": {
+            "source": { "enum": ["LegacyV1", "AiV2", "UserOverride", "AiUnavailable"] },
+            "request_schema_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "result_schema_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "model_config_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "prompt_contract_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "cache_key": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "positive_evidence": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } },
+            "exclusion_evidence": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } },
+            "user_overridden": { "type": "boolean" }
+          }
+        },
         "semantic_label": { "type": "string", "maxLength": 256 },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "layout_intent": {

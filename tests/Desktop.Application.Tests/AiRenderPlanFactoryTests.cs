@@ -79,7 +79,7 @@ public sealed class AiRenderPlanFactoryTests
     }
 
     [Fact]
-    public async Task SelectedAssetWithoutGeometryWaitsForRefinementWithoutWritingAPlan()
+    public async Task SelectedAssetWithoutGeometryUsesCalibratedLayoutFallback()
     {
         var fixture = Fixture();
         var availability = new TestAvailability(true);
@@ -92,10 +92,10 @@ public sealed class AiRenderPlanFactoryTests
             fixture.Now), CancellationToken.None);
 
         var page = Assert.Single(result.Pages);
-        Assert.Equal(AiRenderPagePreparationStatus.AwaitingSubjectAnalysis, page.Status);
-        Assert.Equal("AI_RENDER_SUBJECT_GEOMETRY_PENDING", page.ReasonCode);
-        Assert.False(page.HasPlan);
-        Assert.Equal(0, availability.Calls);
+        Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status);
+        Assert.Equal("AI_RENDER_PLAN_VALID_LAYOUT_FALLBACK", page.ReasonCode);
+        Assert.True(page.HasPlan);
+        Assert.Equal(1, availability.Calls);
     }
 
     [Fact]

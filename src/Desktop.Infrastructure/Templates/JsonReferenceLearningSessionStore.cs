@@ -149,7 +149,20 @@ public sealed class JsonReferenceLearningSessionStore(
                 layer.Clipping)).ToArray(),
             candidate.StructuralWindowLayerPath,
             candidate.IsProduct,
-            candidate.StructuralReason)).ToArray(),
+            candidate.StructuralReason,
+            candidate.EffectivePixelEvidence,
+            candidate.SemanticMetadata is null
+                ? null
+                : new SemanticMetadataSnapshot(
+                    candidate.SemanticMetadata.Source,
+                    candidate.SemanticMetadata.RequestSchemaVersion,
+                    candidate.SemanticMetadata.ResultSchemaVersion,
+                    candidate.SemanticMetadata.ModelConfigVersion,
+                    candidate.SemanticMetadata.PromptContractVersion,
+                    candidate.SemanticMetadata.CacheKey,
+                    candidate.SemanticMetadata.PositiveEvidence,
+                    candidate.SemanticMetadata.ExclusionEvidence,
+                    candidate.SemanticMetadata.UserOverridden))).ToArray(),
         document.State,
         document.RulesDigest,
         document.CreatedAt,
@@ -198,7 +211,20 @@ public sealed class JsonReferenceLearningSessionStore(
                 layer.Clipping)).ToArray(),
             candidate.WindowLayerPath,
             candidate.IsProduct,
-            candidate.StructuralReason)).ToArray();
+            candidate.StructuralReason,
+            candidate.PixelEvidence,
+            candidate.SemanticMetadata is null
+                ? null
+                : new ReferenceSemanticMetadata(
+                    candidate.SemanticMetadata.Source,
+                    candidate.SemanticMetadata.RequestSchemaVersion,
+                    candidate.SemanticMetadata.ResultSchemaVersion,
+                    candidate.SemanticMetadata.ModelConfigVersion,
+                    candidate.SemanticMetadata.PromptContractVersion,
+                    candidate.SemanticMetadata.CacheKey,
+                    candidate.SemanticMetadata.PositiveEvidence,
+                    candidate.SemanticMetadata.ExclusionEvidence,
+                    candidate.SemanticMetadata.UserOverridden))).ToArray();
         var document = new ReferenceLearningDocument(
             envelope.LearningId,
             envelope.PageId,
@@ -218,15 +244,25 @@ public sealed class JsonReferenceLearningSessionStore(
         {
             SchemaVersion = envelope.SchemaVersion
         };
-        if (!string.Equals(
-            document.RulesDigest,
-            ReferenceLearningDigest.Compute(
-                document.PsdSha256,
-                document.StructureSignature,
-                document.ReferenceFolderDigest,
-                document.ReferencePhotos,
-                document.Candidates),
-            StringComparison.Ordinal))
+        var currentDigest = ReferenceLearningDigest.Compute(
+            document.PsdSha256,
+            document.StructureSignature,
+            document.ReferenceFolderDigest,
+            document.ReferencePhotos,
+            document.Candidates);
+        var isCurrent = string.Equals(document.RulesDigest, currentDigest, StringComparison.Ordinal);
+        var isLegacyWithoutPixelEvidence = document.Candidates.All(candidate =>
+                !candidate.EffectivePixelEvidence.Available)
+            && string.Equals(
+                document.RulesDigest,
+                ReferenceLearningDigest.ComputeLegacyWithoutPixelEvidence(
+                    document.PsdSha256,
+                    document.StructureSignature,
+                    document.ReferenceFolderDigest,
+                    document.ReferencePhotos,
+                    document.Candidates),
+                StringComparison.Ordinal);
+        if (!isCurrent && !isLegacyWithoutPixelEvidence)
         {
             throw new InvalidOperationException("TPL_LEARN_SESSION_DIGEST_INVALID");
         }
@@ -279,7 +315,20 @@ public sealed class JsonReferenceLearningSessionStore(
         IReadOnlyList<SupersededLayerSnapshot>? SupersededLayers = null,
         IReadOnlyList<int>? WindowLayerPath = null,
         bool IsProduct = true,
-        string? StructuralReason = null);
+        string? StructuralReason = null,
+        PsdLayerPixelEvidence? PixelEvidence = null,
+        SemanticMetadataSnapshot? SemanticMetadata = null);
+
+    private sealed record SemanticMetadataSnapshot(
+        ReferenceSemanticSource Source,
+        string RequestSchemaVersion,
+        string ResultSchemaVersion,
+        string ModelConfigVersion,
+        string PromptContractVersion,
+        string CacheKey,
+        IReadOnlyList<string> PositiveEvidence,
+        IReadOnlyList<string> ExclusionEvidence,
+        bool UserOverridden);
 
     private sealed record SupersededLayerSnapshot(
         IReadOnlyList<int> LayerPath,

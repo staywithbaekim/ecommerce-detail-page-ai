@@ -7,12 +7,12 @@ using Desktop.Domain.Inputs;
 namespace Desktop.Infrastructure.Ai;
 
 public sealed record AiAnalysisCopyEncodingOptions(
-    int MaxLongestEdge = 1600,
+    int MaxLongestEdge = 1280,
     int JpegQuality = 82,
     long MaxSourceBytes = 64L * 1024 * 1024,
     long MaxOutputBytes = 8L * 1024 * 1024,
     long MaxSourcePixels = 100_000_000,
-    string CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV1)
+    string CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV4)
 {
     public void Validate()
     {
@@ -33,15 +33,29 @@ public sealed record AiAnalysisCopyEncodingOptions(
             throw new ArgumentException("AI_COPY_COMPRESSION_PROFILE_INVALID", nameof(CompressionProfileVersion));
         }
 
-        if ((string.Equals(
-                    CompressionProfileVersion,
-                    AiAnalysisCopyProfiles.WicBoundedV1,
-                    StringComparison.Ordinal)
-                || string.Equals(
-                    CompressionProfileVersion,
-                    AiAnalysisCopyProfiles.WicBoundedCandidateV1,
-                    StringComparison.Ordinal))
+        if ((AiAnalysisCopyProfiles.IsWicBoundedV1(CompressionProfileVersion)
+                || AiAnalysisCopyProfiles.IsWicBoundedV2(CompressionProfileVersion))
             && (MaxLongestEdge != 1600
+                || JpegQuality != 82
+                || MaxSourceBytes != 64L * 1024 * 1024
+                || MaxOutputBytes != 8L * 1024 * 1024
+                || MaxSourcePixels != 100_000_000))
+        {
+            throw new InvalidOperationException("AI_COPY_COMPRESSION_PROFILE_OPTIONS_MISMATCH");
+        }
+
+        if (AiAnalysisCopyProfiles.IsWicBoundedV3(CompressionProfileVersion)
+            && (MaxLongestEdge != 1280
+                || JpegQuality != 76
+                || MaxSourceBytes != 64L * 1024 * 1024
+                || MaxOutputBytes != 8L * 1024 * 1024
+                || MaxSourcePixels != 100_000_000))
+        {
+            throw new InvalidOperationException("AI_COPY_COMPRESSION_PROFILE_OPTIONS_MISMATCH");
+        }
+
+        if (AiAnalysisCopyProfiles.IsWicBoundedV4(CompressionProfileVersion)
+            && (MaxLongestEdge != 1280
                 || JpegQuality != 82
                 || MaxSourceBytes != 64L * 1024 * 1024
                 || MaxOutputBytes != 8L * 1024 * 1024
@@ -138,7 +152,15 @@ public static class WicAnalysisImageCodec
         var resized = ResizeToLongestEdge(oriented, options.MaxLongestEdge);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var outputMime = expectedFormat == SourceImageFormat.Png ? "image/png" : "image/jpeg";
+        // The v2 profile closes the real request-body gap by converting PNG
+        // input that has no meaningful transparency to the already-approved
+        // JPEG q82 representation.  A PNG with any non-opaque pixel remains
+        // PNG so transparent product artwork is never flattened accidentally.
+        var outputMime = expectedFormat == SourceImageFormat.Png
+            && (!AiAnalysisCopyProfiles.ConvertsOpaquePngToJpeg(options.CompressionProfileVersion)
+                || HasNonOpaqueAlpha(resized, cancellationToken))
+            ? "image/png"
+            : "image/jpeg";
         var prepared = ConvertForEncoder(resized, outputMime);
         BitmapEncoder encoder = outputMime == "image/png"
             ? new PngBitmapEncoder()
@@ -226,6 +248,35 @@ public static class WicAnalysisImageCodec
         SourceImageFormat.Tiff => decoder is TiffBitmapDecoder,
         _ => false
     };
+
+    private static bool HasNonOpaqueAlpha(
+        BitmapSource source,
+        CancellationToken cancellationToken)
+    {
+        // Inspect the post-orientation/post-resize pixels, rather than the
+        // source metadata, because indexed PNGs and premultiplied formats can
+        // carry an alpha channel whose pixels are nevertheless all opaque.
+        var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+        converted.Freeze();
+        var stride = checked(converted.PixelWidth * 4);
+        var buffer = new byte[checked(stride * converted.PixelHeight)];
+        converted.CopyPixels(buffer, stride, 0);
+        for (var index = 3; index < buffer.Length; index += 4)
+        {
+            if ((index & 0xFFFFF) == 3)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (buffer[index] != byte.MaxValue)
+            {
+                return true;
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return false;
+    }
 
     private static FormatConvertedBitmap ConvertForEncoder(BitmapSource source, string mimeType)
     {

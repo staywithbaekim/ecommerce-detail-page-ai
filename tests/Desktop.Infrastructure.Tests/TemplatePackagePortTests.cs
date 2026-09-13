@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
+using Desktop.Contracts.Validation;
 using Desktop.Application.Templates;
 using Desktop.Application.Psd;
 using Desktop.Infrastructure.Templates;
@@ -8,6 +9,62 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class TemplatePackagePortTests
 {
+    [Fact]
+    public async Task RuntimeSchemaAcceptsCurrentPsdEvidenceProjectionAndLegacyNulls()
+    {
+        using var directory = new TestDirectory();
+        var path = Path.Combine(directory.Path, "current-evidence.tplpkg");
+        var sourcePath = Path.Combine(directory.Path, "source.psd");
+        var bytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 5, 6, 7, 8 };
+        await File.WriteAllBytesAsync(sourcePath, bytes);
+        var sourceHash = Convert.ToHexString(SHA256.HashData(bytes));
+        var inspection = Inspection(sourceHash, bytes.Length);
+        var originalLayer = Assert.Single(inspection.Layers);
+        var currentLayer = originalLayer with
+        {
+            SmartObject = originalLayer.SmartObject! with
+            {
+                EmbeddedContentSha256 = new string('d', 64),
+                EmbeddedContentAvailable = true
+            },
+            PixelEvidence = new PsdLayerPixelEvidence(
+                true,
+                100,
+                80,
+                new PsdLayerBounds(1, 2, 3, 4))
+        };
+        var currentInspection = inspection with { Layers = [currentLayer] };
+        var manifest = new TemplatePackageManifest(
+            TemplatePackageProtocol.Version,
+            "当前证据模板",
+            1,
+            "revision_current_evidence",
+            "sha256:" + new string('c', 64),
+            [new TemplatePackageEntry("resource_current", "resources/current.psd", bytes.Length, sourceHash)],
+            [new TemplatePackagePage(
+                "page_current",
+                0,
+                "页面",
+                TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct,
+                null,
+                true,
+                "resource_current",
+                currentInspection,
+                [PackageBinding()])]);
+
+        var port = new ZipTemplatePackagePort(new JsonSchemaContractValidator());
+        await port.ExportAsync(
+            manifest,
+            new Dictionary<string, string> { ["resource_current"] = sourcePath },
+            path,
+            CancellationToken.None);
+
+        var validated = await port.ValidateAsync(path, CancellationToken.None);
+        Assert.Equal("revision_current_evidence", validated.RevisionId);
+        Assert.Single(validated.Entries);
+    }
+
     [Fact]
     public async Task ExportAndValidateRoundTripRejectsSensitiveAndHashTampering()
     {
@@ -133,6 +190,30 @@ public sealed class TemplatePackagePortTests
         "sha256:" + new string('b', 64),
         "Choose the main product image.",
         [new TemplatePackageSelectionCriterion("asset_id", "asset_front")],
+        "subject_complete",
+        1,
+        0,
+        0,
+        0,
+        0,
+        790,
+        1252);
+
+    private static TemplatePackageFrameBinding PackageBinding() => new(
+        "frame_current",
+        "page_current",
+        [2],
+        257,
+        "registered_frame",
+        true,
+        false,
+        false,
+        false,
+        255,
+        "normal",
+        "sha256:" + new string('b', 64),
+        "Choose the current product image.",
+        [new TemplatePackageSelectionCriterion("asset_id", "asset_current")],
         "subject_complete",
         1,
         0,

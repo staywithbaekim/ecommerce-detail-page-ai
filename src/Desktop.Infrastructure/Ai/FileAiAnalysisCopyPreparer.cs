@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Desktop.Application.Ai;
@@ -16,7 +17,12 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
     private readonly IPathPolicy _pathPolicy;
     private readonly IFileStore _files;
     private readonly AiAnalysisCopyEncodingOptions _encodingOptions;
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    // A single process-wide gate made otherwise independent source images
+    // serialize behind one another. Keep the safety boundary per copy
+    // reference instead: the same reference still has one writer/lease
+    // sequence, while different references can be prepared concurrently by
+    // the bounded scheduler producer.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _referenceGates = new(StringComparer.Ordinal);
 
     public FileAiAnalysisCopyPreparer(
         IPathPolicy pathPolicy,
@@ -36,27 +42,26 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
         ArgumentNullException.ThrowIfNull(request);
         ValidateReference(request.AnalysisCopyReference);
         ArgumentNullException.ThrowIfNull(request.SourceAsset);
-        if (!string.Equals(
-                request.CompressionProfileVersion,
-                _encodingOptions.CompressionProfileVersion,
-                StringComparison.Ordinal))
-            throw new InvalidDataException("AI_COPY_COMPRESSION_PROFILE_UNSUPPORTED");
+        var encodingOptions = ResolveEncodingOptions(request.CompressionProfileVersion);
 
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var gate = _referenceGates.GetOrAdd(
+            request.AnalysisCopyReference,
+            static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var sourcePath = ResolveSourcePath(request.InputRoot, request.SourceAsset.SourceRelativePath);
             var sourceInfo = new FileInfo(sourcePath);
             if (sourceInfo.Length != request.SourceAsset.Length)
                 throw new InvalidDataException("AI_COPY_SOURCE_LENGTH_MISMATCH");
-            if (sourceInfo.Length <= 0 || sourceInfo.Length > _encodingOptions.MaxSourceBytes)
+            if (sourceInfo.Length <= 0 || sourceInfo.Length > encodingOptions.MaxSourceBytes)
                 throw new InvalidDataException("AI_COPY_SOURCE_TOO_LARGE");
             var beforeDigest = await ComputeSourceDigestAsync(
                 sourcePath,
                 request.SourceAsset.Sha256,
                 cancellationToken).ConfigureAwait(false);
             var encoded = await Task.Run(
-                () => WicAnalysisImageCodec.Encode(sourcePath, request.SourceAsset.Format, _encodingOptions, cancellationToken),
+                () => WicAnalysisImageCodec.Encode(sourcePath, request.SourceAsset.Format, encodingOptions, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
             if (encoded.SourcePixelWidth != request.SourceAsset.PixelWidth
                 || encoded.SourcePixelHeight != request.SourceAsset.PixelHeight)
@@ -130,7 +135,7 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
                 throw;
             }
         }
-        finally { _gate.Release(); }
+        finally { gate.Release(); }
     }
 
     public async Task AcquireAsync(string analysisCopyReference, string leaseId, CancellationToken cancellationToken)
@@ -138,7 +143,10 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
         cancellationToken.ThrowIfCancellationRequested();
         ValidateReference(analysisCopyReference);
         ValidateLease(leaseId);
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var gate = _referenceGates.GetOrAdd(
+            analysisCopyReference,
+            static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var metadataRelative = $"ai-analysis/copies/{analysisCopyReference}.json";
@@ -153,7 +161,7 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
                     cancellationToken).ConfigureAwait(false);
             }
         }
-        finally { _gate.Release(); }
+        finally { gate.Release(); }
     }
 
     public async Task ReleaseAsync(string analysisCopyReference, string leaseId, CancellationToken cancellationToken)
@@ -161,7 +169,10 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
         cancellationToken.ThrowIfCancellationRequested();
         ValidateReference(analysisCopyReference);
         ValidateLease(leaseId);
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var gate = _referenceGates.GetOrAdd(
+            analysisCopyReference,
+            static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var relative = $"ai-analysis/copies/{analysisCopyReference}.bin";
@@ -182,7 +193,7 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
             _ = await _files.DeleteAsync(relative, cancellationToken).ConfigureAwait(false);
             _ = await _files.DeleteAsync(metadataRelative, cancellationToken).ConfigureAwait(false);
         }
-        finally { _gate.Release(); }
+        finally { gate.Release(); }
     }
 
     private async Task<AiAnalysisCopyMetadata?> ReadMetadataAsync(string relativePath, CancellationToken cancellationToken)
@@ -250,6 +261,53 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
             throw new InvalidDataException("AI_COPY_LEASE_INVALID");
     }
 
+    private AiAnalysisCopyEncodingOptions ResolveEncodingOptions(string requestedProfile)
+    {
+        if (string.IsNullOrWhiteSpace(requestedProfile))
+        {
+            throw new InvalidDataException("AI_COPY_COMPRESSION_PROFILE_UNSUPPORTED");
+        }
+
+        if (string.Equals(
+                requestedProfile,
+                _encodingOptions.CompressionProfileVersion,
+                StringComparison.Ordinal))
+        {
+            return _encodingOptions;
+        }
+
+        // Keep older versioned profiles reproducible after the application
+        // default advances.  Each approved family resolves to its own frozen
+        // geometry/quality values; never relabel bytes encoded with another
+        // profile's parameters.
+        if (AiAnalysisCopyProfiles.IsWicBoundedV1(requestedProfile)
+            || AiAnalysisCopyProfiles.IsWicBoundedV2(requestedProfile))
+        {
+            return new AiAnalysisCopyEncodingOptions(
+                MaxLongestEdge: 1600,
+                JpegQuality: 82,
+                CompressionProfileVersion: requestedProfile);
+        }
+
+        if (AiAnalysisCopyProfiles.IsWicBoundedV3(requestedProfile))
+        {
+            return new AiAnalysisCopyEncodingOptions(
+                MaxLongestEdge: 1280,
+                JpegQuality: 76,
+                CompressionProfileVersion: requestedProfile);
+        }
+
+        if (AiAnalysisCopyProfiles.IsWicBoundedV4(requestedProfile))
+        {
+            return new AiAnalysisCopyEncodingOptions(
+                MaxLongestEdge: 1280,
+                JpegQuality: 82,
+                CompressionProfileVersion: requestedProfile);
+        }
+
+        throw new InvalidDataException("AI_COPY_COMPRESSION_PROFILE_UNSUPPORTED");
+    }
+
     private static string NewLeaseId() => "lease-" + Guid.NewGuid().ToString("N");
 
     private static void ValidateMetadata(AiAnalysisCopyMetadata metadata)
@@ -268,5 +326,13 @@ public sealed class FileAiAnalysisCopyPreparer : IAiAnalysisCopyPreparer, IAiAna
             throw new InvalidDataException("AI_COPY_LEASE_INVALID");
     }
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose()
+    {
+        foreach (var gate in _referenceGates.Values)
+        {
+            gate.Dispose();
+        }
+
+        _referenceGates.Clear();
+    }
 }

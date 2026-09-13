@@ -7,6 +7,7 @@ using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Inputs;
 using Desktop.Infrastructure.Persistence;
+using Microsoft.Data.Sqlite;
 
 namespace Desktop.Infrastructure.Tests;
 
@@ -14,6 +15,292 @@ public sealed class BatchInputInfrastructureTests
 {
     private const string RuleDigest =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    [Fact]
+    public async Task CommittedManifestAndJournalRebuildMissingSqliteBatchGraph()
+    {
+        using var directory = new TestDirectory();
+        var sourceRoot = Path.Combine(directory.Path, "source");
+        var outputRoot = Path.Combine(directory.Path, "output");
+        var appRoot = Path.Combine(directory.Path, "app");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(outputRoot);
+        await File.WriteAllBytesAsync(Path.Combine(sourceRoot, "front.png"), CreatePng(4, 3));
+        var options = new DesktopDataOptions(appRoot);
+
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            var (group, revision) = await SeedCommittedTemplateAsync(store);
+            var manifests = CreateManifestStore(appRoot);
+            var journals = CreateInputJournalStore(appRoot);
+            var repository = new RecoveringBatchRepository(
+                store,
+                manifests,
+                TimeProvider.System,
+                journals);
+            var service = new BatchInputService(
+                new ReadOnlyFileInventory(),
+                new StreamingAssetMetadataReader(),
+                repository,
+                new SqliteBatchScanCommitter(
+                    store,
+                    manifests,
+                    TimeProvider.System,
+                    journals),
+                TimeProvider.System,
+                templates: store);
+            var draft = await service.CreateDraftFromTemplateAsync(new CreateBatchFromTemplateCommand(
+                "batch_journal_rebuild",
+                group.GroupId,
+                sourceRoot,
+                outputRoot,
+                [revision.Pages[0].PageId],
+                BatchSelectionMode.Automatic,
+                false));
+
+            var ready = await service.ScanAsync(draft.BatchId);
+            Assert.Equal(BatchScanStatus.ScanReady, ready.ScanStatus);
+            var journal = await journals.GetAsync(ready.BatchId, CancellationToken.None);
+            Assert.NotNull(journal);
+            Assert.Equal(InputCommitJournalState.Committed, journal!.State);
+        }
+
+        await using (var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = options.DatabasePath,
+                Pooling = false
+            }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var delete = connection.CreateCommand();
+            delete.CommandText = "PRAGMA foreign_keys=ON; DELETE FROM input_batches WHERE batch_id = $batch_id;";
+            delete.Parameters.AddWithValue("$batch_id", "batch_journal_rebuild");
+            await delete.ExecuteNonQueryAsync();
+        }
+
+        await using var reopenedStore = new SqliteDesktopStore(options);
+        await reopenedStore.InitializeAsync();
+        var reopenedManifests = CreateManifestStore(appRoot);
+        var reopenedJournals = CreateInputJournalStore(appRoot);
+        var reopenedRepository = new RecoveringBatchRepository(
+            reopenedStore,
+            reopenedManifests,
+            TimeProvider.System,
+            reopenedJournals);
+
+        var recovered = await reopenedRepository.GetAsync(
+            "batch_journal_rebuild",
+            CancellationToken.None);
+
+        Assert.NotNull(recovered);
+        Assert.Equal(BatchScanStatus.ScanReady, recovered!.ScanStatus);
+        Assert.Single(recovered.Assets);
+        Assert.Equal(
+            recovered.ManifestDigest,
+            (await reopenedManifests.InspectAsync(
+                recovered.BatchId,
+                CancellationToken.None))!.ManifestDigest);
+        Assert.Equal(
+            recovered.BatchId,
+            (await reopenedStore.GetAsync(recovered.BatchId, CancellationToken.None))!.BatchId);
+    }
+
+    [Fact]
+    public async Task CommittedBatchIgnoresAssetOrderChangedBySqliteCollation()
+    {
+        using var directory = new TestDirectory();
+        var sourceRoot = Path.Combine(directory.Path, "source");
+        var outputRoot = Path.Combine(directory.Path, "output");
+        var appRoot = Path.Combine(directory.Path, "app");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(outputRoot);
+        // OrdinalIgnoreCase scanning puts a.png before B.png, while SQLite's
+        // default binary collation puts B.png before a.png on reload.
+        await File.WriteAllBytesAsync(Path.Combine(sourceRoot, "a.png"), CreatePng(4, 3));
+        await File.WriteAllBytesAsync(Path.Combine(sourceRoot, "B.png"), CreatePng(4, 3));
+        var options = new DesktopDataOptions(appRoot);
+
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var (group, revision) = await SeedCommittedTemplateAsync(store);
+        var manifests = CreateManifestStore(appRoot);
+        var journals = CreateInputJournalStore(appRoot);
+        var repository = new RecoveringBatchRepository(
+            store,
+            manifests,
+            TimeProvider.System,
+            journals);
+        var service = new BatchInputService(
+            new ReadOnlyFileInventory(),
+            new StreamingAssetMetadataReader(),
+            repository,
+            new SqliteBatchScanCommitter(
+                store,
+                manifests,
+                TimeProvider.System,
+                journals),
+            TimeProvider.System,
+            templates: store);
+        var draft = await service.CreateDraftFromTemplateAsync(new CreateBatchFromTemplateCommand(
+            "batch_asset_order_collation",
+            group.GroupId,
+            sourceRoot,
+            outputRoot,
+            [revision.Pages[0].PageId],
+            BatchSelectionMode.Automatic,
+            false));
+
+        var ready = await service.ScanAsync(draft.BatchId);
+
+        Assert.Equal(BatchScanStatus.ScanReady, ready.ScanStatus);
+        Assert.Equal(2, ready.Assets.Length);
+        var journal = await journals.GetAsync(ready.BatchId, CancellationToken.None);
+        Assert.NotNull(journal);
+        Assert.Equal(InputCommitJournalState.Committed, journal!.State);
+        var manifest = await manifests.InspectAsync(ready.BatchId, CancellationToken.None);
+        Assert.NotNull(manifest);
+        Assert.True(manifest!.IsCommitted);
+        Assert.Equal(ready.ManifestDigest, manifest.ManifestDigest);
+    }
+
+    [Fact]
+    public async Task CommittedManifestWithoutDatabaseRowIsExplicitMismatch()
+    {
+        using var directory = new TestDirectory();
+        var appRoot = Path.Combine(directory.Path, "app");
+        var manifests = CreateManifestStore(appRoot);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(appRoot));
+        await store.InitializeAsync();
+        var revision = CommittedRevision("revision_orphan", "group_orphan", includeSecondPage: false);
+        var snapshot = BatchTemplateSnapshot.Create(
+            "snapshot_orphan",
+            "batch_orphan_manifest",
+            revision,
+            ["page_input_01"],
+            DateTimeOffset.UtcNow);
+        var scanning = BatchDraft.Create(
+            "batch_orphan_manifest",
+            directory.Path,
+            directory.Path,
+            snapshot,
+            BatchSelectionMode.Automatic,
+            false,
+            DateTimeOffset.UtcNow).BeginScanning(DateTimeOffset.UtcNow);
+        var style = StyleDraft.Create("style_orphan", "款式", "", 0, ["asset_orphan"]);
+        var asset = SourceAssetMetadata.CreateReadable(
+            "asset_orphan",
+            style.StyleId,
+            "image.png",
+            "image.png",
+            100,
+            new string('a', 64),
+            1,
+            1,
+            SourceImageFormat.Png,
+            "image/png");
+        var manifest = AssetManifestV1.Create(
+            scanning,
+            BatchInputType.SingleStyle,
+            [style],
+            [asset],
+            new string('b', 64),
+            DateTimeOffset.UtcNow);
+        var staged = await manifests.StageAsync(manifest, CancellationToken.None);
+        await manifests.CommitAsync(staged, CancellationToken.None);
+        var repository = new RecoveringBatchRepository(store, manifests, TimeProvider.System);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.GetAsync(scanning.BatchId, CancellationToken.None));
+
+        Assert.Equal("INPUT_MANIFEST_DATABASE_MISMATCH", error.Message);
+    }
+
+    [Fact]
+    public async Task ManifestCommitFailureKeepsJournalStageForRestartRecovery()
+    {
+        using var directory = new TestDirectory();
+        var sourceRoot = Path.Combine(directory.Path, "source");
+        var outputRoot = Path.Combine(directory.Path, "output");
+        var appRoot = Path.Combine(directory.Path, "app");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(outputRoot);
+        await File.WriteAllBytesAsync(Path.Combine(sourceRoot, "front.png"), CreatePng(4, 3));
+        var options = new DesktopDataOptions(appRoot);
+
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            var (group, revision) = await SeedCommittedTemplateAsync(store);
+            var manifests = CreateManifestStore(appRoot);
+            var failingManifests = new FailOnceManifestStore(manifests);
+            var journals = CreateInputJournalStore(appRoot);
+            var repository = new RecoveringBatchRepository(
+                store,
+                manifests,
+                TimeProvider.System,
+                journals);
+            var service = new BatchInputService(
+                new ReadOnlyFileInventory(),
+                new StreamingAssetMetadataReader(),
+                repository,
+                new SqliteBatchScanCommitter(
+                    store,
+                    failingManifests,
+                    TimeProvider.System,
+                    journals),
+                TimeProvider.System,
+                templates: store);
+            var draft = await service.CreateDraftFromTemplateAsync(new CreateBatchFromTemplateCommand(
+                "batch_manifest_recovery",
+                group.GroupId,
+                sourceRoot,
+                outputRoot,
+                [revision.Pages[0].PageId],
+                BatchSelectionMode.Automatic,
+                false));
+
+            var blocked = await service.ScanAsync(draft.BatchId);
+
+            Assert.Equal(BatchScanStatus.ScanBlocked, blocked.ScanStatus);
+            Assert.Equal("INPUT_PERSISTENCE_FAILURE", blocked.BlockReason?.Code);
+            var journal = await journals.GetAsync(draft.BatchId, CancellationToken.None);
+            Assert.NotNull(journal);
+            Assert.Equal(InputCommitJournalState.RecoveryRequired, journal!.State);
+            var staged = await manifests.InspectAsync(draft.BatchId, CancellationToken.None);
+            Assert.NotNull(staged);
+            Assert.True(staged!.IsStaged);
+            Assert.False(staged.IsCommitted);
+            Assert.Equal(BatchScanStatus.ScanReady, (await store.GetAsync(draft.BatchId, CancellationToken.None))!.ScanStatus);
+        }
+
+        await using var reopenedStore = new SqliteDesktopStore(options);
+        await reopenedStore.InitializeAsync();
+        var reopenedManifests = CreateManifestStore(appRoot);
+        var reopenedJournals = CreateInputJournalStore(appRoot);
+        var reopenedRepository = new RecoveringBatchRepository(
+            reopenedStore,
+            reopenedManifests,
+            TimeProvider.System,
+            reopenedJournals);
+
+        var recovered = await reopenedRepository.GetAsync(
+            "batch_manifest_recovery",
+            CancellationToken.None);
+
+        Assert.NotNull(recovered);
+        Assert.Equal(BatchScanStatus.ScanReady, recovered!.ScanStatus);
+        var committed = await reopenedManifests.InspectAsync(
+            recovered.BatchId,
+            CancellationToken.None);
+        Assert.NotNull(committed);
+        Assert.True(committed!.IsCommitted);
+        Assert.False(committed.IsStaged);
+        Assert.Equal(
+            InputCommitJournalState.Committed,
+            (await reopenedJournals.GetAsync(recovered.BatchId, CancellationToken.None))!.State);
+    }
 
     [Fact]
     public async Task TwoHundredStyleBatchCommitsManifestPreservesSourcesAndSurvivesRestart()
@@ -338,6 +625,39 @@ public sealed class BatchInputInfrastructureTests
     private static AssetManifestFileStore CreateManifestStore(string appRoot) => new(
         new AtomicFileStore(new LocalAppPathPolicy(appRoot)),
         new JsonSchemaContractValidator());
+
+    private static JsonInputCommitJournalStore CreateInputJournalStore(string appRoot) => new(
+        new AtomicFileStore(new LocalAppPathPolicy(appRoot)),
+        new LocalAppPathPolicy(appRoot));
+
+    private sealed class FailOnceManifestStore(IAssetManifestStore inner) : IAssetManifestStore
+    {
+        private int _failed;
+
+        public Task<StagedAssetManifest> StageAsync(
+            AssetManifestV1 manifest,
+            CancellationToken cancellationToken) => inner.StageAsync(manifest, cancellationToken);
+
+        public Task CommitAsync(
+            StagedAssetManifest stagedManifest,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref _failed, 1) == 0)
+            {
+                throw new IOException("TEST_MANIFEST_COMMIT_FAILURE");
+            }
+
+            return inner.CommitAsync(stagedManifest, cancellationToken);
+        }
+
+        public Task RollbackAsync(
+            StagedAssetManifest stagedManifest,
+            CancellationToken cancellationToken) => inner.RollbackAsync(stagedManifest, cancellationToken);
+
+        public Task<AssetManifestInspection?> InspectAsync(
+            string batchId,
+            CancellationToken cancellationToken) => inner.InspectAsync(batchId, cancellationToken);
+    }
 
     private static async Task<(TemplateGroup Group, TemplateRevision Revision)> SeedCommittedTemplateAsync(
         SqliteDesktopStore store,

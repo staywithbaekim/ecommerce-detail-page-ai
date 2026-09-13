@@ -6,6 +6,7 @@ using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
+using Desktop.Domain.Ai;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.SizeTables;
 using Desktop.Domain.Templates;
@@ -19,6 +20,40 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class AiBatchWorkflowRenderPlanIntegrationTests
 {
+    [Fact]
+    public async Task LocalCheckpointMismatchBlocksBeforeProviderAndProjectsLocalStateFailure()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 9, 11, 0, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now);
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_local_state_failure");
+
+        var resultStore = new FileAiAnalysisResultStore(
+            new AtomicFileStore(new LocalAppPathPolicy(directory.Path)),
+            new JsonSchemaContractValidator());
+        var provider = new GeometryProvider();
+        using var workflow = Workflow(
+            store,
+            resultStore,
+            provider,
+            checkpointPort: new RecoveryRequiredCheckpointPort(
+                "AI_CHECKPOINT_COMMITTED_MANIFEST_WITHOUT_JOURNAL"));
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None));
+
+        Assert.Equal("AI_CHECKPOINT_COMMITTED_MANIFEST_WITHOUT_JOURNAL", error.Message);
+        Assert.Equal(0, provider.Calls);
+        var projection = await workflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
+        Assert.NotNull(projection);
+        Assert.Equal(AiBatchUiStatus.RecoveryRequired, projection!.Status);
+        Assert.Contains("本地分析状态", projection.StatusText, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task PersistedAnalysisClosesIntoRenderPlanAndStopsBeforeUnavailablePhotoshop()
     {
@@ -90,7 +125,46 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
     }
 
     [Fact]
-    public async Task LowConfidenceAiDefaultCannotCloseRenderPlanBeforeManualConfirmation()
+    public async Task FirstReadyStyleReachesProviderWhileNextStyleIsStillPreparing()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 9, 9, 0, 0, TimeSpan.Zero);
+        var fixture = TwoStyleFixture(directory.Path, now);
+        var options = new DesktopDataOptions(directory.Path);
+
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_admission_overlap");
+
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new FirstProviderSignal();
+        var preparer = new StagedCopyPreparer("style_second");
+        using var workflow = Workflow(
+            store,
+            resultStore,
+            provider,
+            copyPreparer: preparer);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+
+        await provider.FirstCall.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(preparer.SecondStyleIsWaiting);
+        Assert.Equal(1, provider.Calls);
+
+        preparer.ReleaseSecondStyle();
+        var projection = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.Ready);
+
+        Assert.Equal(2, provider.Calls);
+        Assert.Equal(2, projection.CompletedStyleCount);
+    }
+
+    [Fact]
+    public async Task LowConfidenceAiDefaultIsExecutableWithoutManualConfirmation()
     {
         using var directory = new TestDirectory();
         var now = new DateTimeOffset(2026, 8, 31, 10, 30, 0, TimeSpan.Zero);
@@ -140,18 +214,21 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.NotNull(projection);
         Assert.Equal(AiBatchUiStatus.ReviewRequired, projection!.Status);
         var pageProjection = Assert.Single(Assert.Single(projection.Styles).Pages);
-        Assert.True(pageProjection.RequiresManualConfiguration);
-        Assert.False(projection.CanEnterGeneration);
+        Assert.False(pageProjection.RequiresManualConfiguration);
+        Assert.True(Assert.Single(projection.Styles).CanGenerate);
+        Assert.True(projection.CanEnterGeneration);
+        Assert.Equal("进入生成", projection.ActionText);
+        Assert.Equal("已完成 1/1 款 · 已处理 1/1 页 · 可生成 1/1 页", projection.ProgressText);
 
         var preparation = await workflow.PrepareRenderingAsync(
             fixture.Batch.BatchId,
             CancellationToken.None);
 
-        Assert.Equal(AiRenderPreparationStatus.UserActionRequired, preparation.Status);
-        Assert.Equal("AI_RENDER_NO_EXECUTABLE_PAGE", preparation.ReasonCode);
+        Assert.Equal(AiRenderPreparationStatus.WaitingForPhotoshop, preparation.Status);
+        Assert.Equal("PHOTOSHOP_FORMAL_ADAPTER_NOT_AVAILABLE", preparation.ReasonCode);
         var page = Assert.Single(preparation.Pages);
-        Assert.Equal(AiRenderPagePreparationStatus.BusinessBlocked, page.Status);
-        Assert.False(page.HasPlan);
+        Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status);
+        Assert.True(page.HasPlan);
         Assert.False(Directory.Exists(fixture.Batch.OutputRoot));
 
         var sessionId = $"session-ai-{fixture.Batch.BatchId}-style_render_integration";
@@ -220,6 +297,402 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.DoesNotContain(page.WarningTexts, text => text.Contains("置信度", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(AiTargetMatchEvidence.Exact, "0.85", "0.849", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.Exact, "0.86", "0.70", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.Exact, "0.86", "0.80", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.Exact, "0.99", "0.99", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.SafeSimilar, "0.90", "0.899", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.SafeSimilar, "0.90", "0.90", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.SafeSimilar, "0.91", "0.70", AiPageUiStatus.Ready)]
+    [InlineData(AiTargetMatchEvidence.SafeSimilar, "0.89", "0.889", AiPageUiStatus.ReviewRequired)]
+    [InlineData(AiTargetMatchEvidence.MaterialDifference, "0.80", "0.30", AiPageUiStatus.ReviewRequired)]
+    [InlineData(AiTargetMatchEvidence.Unsafe, "0.99", "0.10", AiPageUiStatus.BusinessError)]
+    [InlineData(AiTargetMatchEvidence.Exact, "0.59", "0.10", AiPageUiStatus.BusinessError)]
+    public async Task LearnedRequirementUsesFitClassConfidenceAndSemanticRisk(
+        string fitClass,
+        string topConfidenceText,
+        string runnerConfidenceText,
+        AiPageUiStatus expectedStatus)
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now, includeSecondAsset: true, learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_learned_thresholds");
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var topConfidence = decimal.Parse(topConfidenceText, System.Globalization.CultureInfo.InvariantCulture);
+        var runnerConfidence = decimal.Parse(runnerConfidenceText, System.Globalization.CultureInfo.InvariantCulture);
+        var provider = new ScenarioProvider(request => Result(
+            request,
+            matches:
+            [
+                new("frame_render_integration", "asset_front", 1, topConfidence, [fitClass, "subject_clear"]),
+                new("frame_render_integration", "asset_second", 2, runnerConfidence, [AiTargetMatchEvidence.MaterialDifference])
+            ],
+            geometry: [new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)]));
+        using var workflow = Workflow(store, resultStore, provider);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        var projection = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Styles.SelectMany(style => style.Pages)
+                .Any(page => page.Status == expectedStatus));
+
+        var page = Assert.Single(Assert.Single(projection.Styles).Pages);
+        Assert.Equal(expectedStatus, page.Status);
+        Assert.Equal(1, provider.Calls);
+        Assert.DoesNotContain(
+            page.WarningTexts,
+            text => text.Contains("候选接近", StringComparison.Ordinal));
+        if (fitClass == AiTargetMatchEvidence.MaterialDifference)
+        {
+            Assert.Contains(
+                page.WarningTexts,
+                text => text.Contains("实质差异", StringComparison.Ordinal));
+        }
+        else if (expectedStatus == AiPageUiStatus.ReviewRequired)
+        {
+            Assert.Contains(
+                page.WarningTexts,
+                text => text.Contains("绿色置信度门槛", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task LearnedRequirementRejectsUnclassifiedProviderResultAsSystemRecovery()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 8, 12, 10, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now, learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_learned_invalid_class");
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new ScenarioProvider(request => Result(
+            request,
+            matches: [new("frame_render_integration", "asset_front", 1, 0.99m, ["subject_clear"])],
+            geometry: [new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)]));
+        using var workflow = Workflow(store, resultStore, provider);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        var projection = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Styles.SelectMany(style => style.Pages)
+                .Any(page => page.Status == AiPageUiStatus.SystemError));
+
+        var page = Assert.Single(Assert.Single(projection.Styles).Pages);
+        Assert.Equal("匹配结果无效，需要恢复", page.StatusText);
+        Assert.Equal(AiBatchUiStatus.RecoveryRequired, projection.Status);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task ManualLockOverridesLearnedRecommendationAndSurvivesRefreshWithoutAnotherCall()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 8, 12, 15, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now, includeSecondAsset: true, learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_learned_manual_lock");
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new ScenarioProvider(request => Result(
+            request,
+            matches:
+            [
+                new("frame_render_integration", "asset_front", 1, 0.88m, [AiTargetMatchEvidence.Exact]),
+                new("frame_render_integration", "asset_second", 2, 0.84m, [AiTargetMatchEvidence.MaterialDifference])
+            ],
+            geometry:
+            [
+                new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m),
+                new("asset_second", 0.2m, 0.1m, 0.8m, 0.9m, 0.94m)
+            ]));
+        using var checkpoints = new AiAnalysisCheckpointCoordinator(
+            store,
+            new AiAnalysisStateManifestStore(files),
+            TimeProvider.System);
+        using var workflow = Workflow(store, resultStore, provider, checkpointPort: checkpoints);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        _ = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.Ready);
+        var locked = await workflow.LockSelectionAsync(
+            fixture.Batch.BatchId,
+            "style_render_integration",
+            "frame_render_integration",
+            "asset_second",
+            CancellationToken.None);
+        var refreshed = await workflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
+
+        Assert.Equal(AiBatchUiStatus.Ready, locked.Status);
+        Assert.Equal(AiBatchUiStatus.Ready, refreshed!.Status);
+        var requirement = Assert.Single(Assert.Single(Assert.Single(refreshed.Styles).Pages).Requirements!);
+        Assert.Equal("asset_second", requirement.SelectedAssetId);
+        Assert.True(requirement.IsManualLocked);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task RepeatedManualLocksPersistLatestSelectionAndRevisionWithoutAnotherProviderCall()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 8, 12, 18, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now, includeSecondAsset: true, learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_lelearned_repeated_lock");
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new ScenarioProvider(request => Result(
+            request,
+            matches:
+            [
+                new("frame_render_integration", "asset_front", 1, 0.96m, [AiTargetMatchEvidence.Exact]),
+                new("frame_render_integration", "asset_second", 2, 0.74m, [AiTargetMatchEvidence.MaterialDifference])
+            ],
+            geometry:
+            [
+                new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m),
+                new("asset_second", 0.2m, 0.1m, 0.8m, 0.9m, 0.94m)
+            ]));
+        using var checkpoints = new AiAnalysisCheckpointCoordinator(
+            store,
+            new AiAnalysisStateManifestStore(files),
+            TimeProvider.System);
+        using var workflow = Workflow(store, resultStore, provider, checkpointPort: checkpoints);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        _ = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.Ready);
+
+        var firstReplacement = await workflow.LockSelectionAsync(
+            fixture.Batch.BatchId,
+            "style_render_integration",
+            "frame_render_integration",
+            "asset_second",
+            CancellationToken.None);
+        Assert.Equal("asset_second", Assert.Single(Assert.Single(firstReplacement.Styles).Pages)
+            .Requirements!.Single().SelectedAssetId);
+
+        var secondReplacement = await workflow.LockSelectionAsync(
+            fixture.Batch.BatchId,
+            "style_render_integration",
+            "frame_render_integration",
+            "asset_front",
+            CancellationToken.None);
+        var refreshed = await workflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
+        var requirement = Assert.Single(Assert.Single(Assert.Single(refreshed!.Styles).Pages).Requirements!);
+        Assert.Equal("asset_front", requirement.SelectedAssetId);
+        Assert.True(requirement.IsManualLocked);
+        Assert.Equal(AiBatchUiStatus.Ready, secondReplacement.Status);
+
+        var session = await store.LoadSessionAsync(
+            "session-ai-batch_render_integration-style_render_integration",
+            CancellationToken.None);
+        Assert.NotNull(session);
+        Assert.Equal(2, session!.SelectionRevision);
+        Assert.Equal("asset_front", session.LockedSelections["frame_render_integration"].AssetId);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task UnknownFirstLayerKeepsSystemStateWhileManualLocksPersistAndProjectPerFrame()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 12, 15, 30, 0, TimeSpan.Zero);
+        var fixture = Fixture(
+            directory.Path,
+            now,
+            includeSecondNormalPage: true,
+            learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_unknown_manual_lock");
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new UnknownProvider();
+        using var checkpoints = new AiAnalysisCheckpointCoordinator(
+            store,
+            new AiAnalysisStateManifestStore(files),
+            TimeProvider.System);
+        using var workflow = Workflow(store, resultStore, provider, checkpointPort: checkpoints);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        _ = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.RecoveryRequired);
+        var lockedProjection = await workflow.LockSelectionAsync(
+            fixture.Batch.BatchId,
+            "style_render_integration",
+            "frame_render_integration",
+            "asset_front",
+            CancellationToken.None);
+        var refreshed = await workflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
+
+        Assert.Equal(AiBatchUiStatus.RecoveryRequired, lockedProjection.Status);
+        Assert.Equal(AiBatchUiStatus.RecoveryRequired, refreshed!.Status);
+        var pages = Assert.Single(refreshed.Styles).Pages;
+        Assert.All(pages, page =>
+        {
+            Assert.Equal("已上传，未收到响应", page.StatusText);
+            Assert.Contains(page.WarningTexts, warning => warning.Contains("是否被火山接收仍未知", StringComparison.Ordinal));
+        });
+        var locked = Assert.Single(pages.Single(page => page.PageId == "page_render_integration").Requirements!);
+        var stillUnknown = Assert.Single(pages.Single(page => page.PageId == "page_render_second").Requirements!);
+        Assert.Equal(AiRequirementSelectionUiStatus.ManualLocked, locked.Status);
+        Assert.Equal("人工选用 · 已锁定", locked.StatusText);
+        Assert.Equal("asset_front", locked.SelectedAssetId);
+        Assert.Equal(AiRequirementSelectionUiStatus.Unavailable, stillUnknown.Status);
+        Assert.Equal("未收到响应，可人工选图", stillUnknown.StatusText);
+        Assert.Null(stillUnknown.SelectedAssetId);
+        var session = await store.LoadSessionAsync(
+            "session-ai-batch_render_integration-style_render_integration",
+            CancellationToken.None);
+        Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, session!.Status);
+        Assert.False(session.HasVerifiedResult);
+        Assert.Empty(await store.LoadUsageAsync(
+            "ai-batch_render_integration-style_render_integration",
+            CancellationToken.None));
+        Assert.Null(await resultStore.LoadAsync(
+            "results/ai-batch_render_integration-style_render_integration",
+            CancellationToken.None));
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task UnwrittenSubmissionShowsSafeNetworkRetryInsteadOfUnknownResult()
+    {
+        using var directory = new TestDirectory();
+        var fixture = Fixture(
+            directory.Path,
+            new DateTimeOffset(2026, 9, 12, 18, 0, 0, TimeSpan.Zero),
+            includeSecondNormalPage: true,
+            learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_submission_failure");
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var provider = new SubmissionFailureProvider();
+        using var checkpoints = new AiAnalysisCheckpointCoordinator(
+            store,
+            new AiAnalysisStateManifestStore(files),
+            TimeProvider.System);
+        using var workflow = Workflow(
+            store,
+            new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator()),
+            provider,
+            checkpointPort: checkpoints);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        var projection = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.RecoveryRequired
+                && candidate.StatusText.Contains("火山未受理", StringComparison.Ordinal));
+
+        Assert.Equal(1, provider.Calls);
+        Assert.Contains("火山未受理", projection.StatusText, StringComparison.Ordinal);
+        Assert.Equal("重试分析", projection.ActionText);
+        Assert.All(Assert.Single(projection.Styles).Pages, page =>
+        {
+            Assert.Equal("AI 请求未送达", page.StatusText);
+            Assert.Equal("重试分析", page.ActionText);
+            Assert.Contains(page.WarningTexts, warning =>
+                warning.Contains("完整请求体未上传", StringComparison.Ordinal)
+                && warning.Contains("火山未受理", StringComparison.Ordinal));
+            Assert.All(page.Requirements!, requirement =>
+                Assert.Equal("提交失败，可安全重试", requirement.StatusText));
+        });
+    }
+
+    [Fact]
+    public async Task OneDailyRequestCanReuseOneTargetAcrossFramesAndBuildIndependentPlans()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 8, 12, 20, 0, TimeSpan.Zero);
+        var fixture = Fixture(
+            directory.Path,
+            now,
+            includeSecondNormalPage: true,
+            learnedRequirements: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_learned_multi_frame");
+        var resultStore = new FileAiAnalysisResultStore(
+            new AtomicFileStore(new LocalAppPathPolicy(directory.Path)),
+            new JsonSchemaContractValidator());
+        var provider = new ScenarioProvider(request => Result(
+            request,
+            matches:
+            [
+                new("frame_render_integration", "asset_front", 1, 0.96m, [AiTargetMatchEvidence.Exact]),
+                new("frame_render_second", "asset_front", 1, 0.95m, [AiTargetMatchEvidence.Exact])
+            ],
+            geometry: [new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)]));
+        var plans = new AiRenderPlanFactory(
+            new TemplateRenderPlanBuilder(new RenderPlanValidator(new JsonSchemaContractValidator())),
+            new UnavailablePhotoshopAvailabilityPort());
+        using var workflow = Workflow(store, resultStore, provider, store, plans);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        var projection = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.Ready);
+        _ = await workflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
+
+        Assert.Equal(1, provider.Calls);
+        Assert.All(Assert.Single(projection.Styles).Pages, page =>
+            Assert.Equal("asset_front", Assert.Single(page.Requirements!).SelectedAssetId));
+        var usage = await store.LoadUsageAsync(
+            "ai-batch_render_integration-style_render_integration",
+            CancellationToken.None);
+        Assert.Single(usage);
+
+        var preparation = await workflow.PrepareRenderingAsync(fixture.Batch.BatchId, CancellationToken.None);
+        Assert.Equal(2, preparation.Pages.Count);
+        Assert.All(preparation.Pages, page => Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status));
+        var first = JsonDocument.Parse(preparation.Pages.Single(page =>
+            page.PageId == "page_render_integration").RenderPlanJson!);
+        var second = JsonDocument.Parse(preparation.Pages.Single(page =>
+            page.PageId == "page_render_second").RenderPlanJson!);
+        using (first)
+        using (second)
+        {
+            Assert.Equal(1d, first.RootElement.GetProperty("targets")[0]
+                .GetProperty("layout").GetProperty("scale").GetDouble());
+            Assert.Equal(1.2d, second.RootElement.GetProperty("targets")[0]
+                .GetProperty("layout").GetProperty("scale").GetDouble());
+            Assert.Equal(10d, second.RootElement.GetProperty("targets")[0]
+                .GetProperty("layout").GetProperty("offset").GetProperty("x").GetDouble());
+        }
+        Assert.All(preparation.Pages, page =>
+        {
+            Assert.DoesNotContain(new string('9', 64), page.RenderPlanJson!, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("reference_only", page.RenderPlanJson!, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
     [Fact]
     public async Task SelectedAssetGeometryRefinementClosesOnlyTheCurrentSelectionAndRenderPlan()
     {
@@ -258,7 +731,7 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
             candidate => candidate.Status == AiBatchUiStatus.ReviewRequired);
         var awaitingPage = Assert.Single(Assert.Single(awaitingGeometry.Styles).Pages);
         Assert.Equal(AiPageUiStatus.ReviewRequired, awaitingPage.Status);
-        Assert.True(awaitingPage.RequiresManualConfiguration);
+        Assert.False(awaitingPage.RequiresManualConfiguration);
         Assert.Contains(awaitingPage.WarningTexts, text => text.Contains("主体边界", StringComparison.Ordinal));
 
         _ = await workflow.AnalyzeSelectedAssetAsync(
@@ -537,6 +1010,42 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
     }
 
     [Fact]
+    public async Task ProviderReferenceMismatchExplainsThatARebuiltBatchIsRequired()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 12, 15, 0, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now);
+        var options = new DesktopDataOptions(directory.Path);
+
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_provider_reference_mismatch");
+
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var provider = new TerminalFailureProvider("AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH");
+        using var workflow = Workflow(store, resultStore, provider);
+
+        await workflow.GrantUploadConsentAsync(CancellationToken.None);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
+        var projection = await WaitForProjectionAsync(
+            workflow,
+            fixture.Batch.BatchId,
+            candidate => candidate.Status == AiBatchUiStatus.RecoveryRequired);
+
+        Assert.Equal("重新建立批次", projection.ActionText);
+        Assert.Contains("结果引用", projection.StatusText, StringComparison.Ordinal);
+        Assert.Contains("修复版本", projection.StatusText, StringComparison.Ordinal);
+        var page = Assert.Single(Assert.Single(projection.Styles).Pages);
+        Assert.Equal(AiPageUiStatus.SystemError, page.Status);
+        Assert.Equal("AI 返回引用不匹配，需要重新建立批次", page.StatusText);
+        Assert.Equal("重新建立批次", page.ActionText);
+        Assert.Contains("阻止选图和生成", Assert.Single(page.WarningTexts), StringComparison.Ordinal);
+        Assert.Equal(1, provider.Calls);
+        await Task.Delay(100);
+    }
+
+    [Fact]
     public async Task CrossReferencedGeometryRefinementIsolatedToPagesUsingThatAsset()
     {
         using var directory = new TestDirectory();
@@ -749,18 +1258,21 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         ITemplateResourceRepository? templateResources = null,
         IAiRenderPlanFactory? renderPlans = null,
         ISizeTableRepository? sizeTables = null,
-        ISizeTableRasterizer? sizeTableRasterizer = null) => new(
+        ISizeTableRasterizer? sizeTableRasterizer = null,
+        IAiAnalysisCheckpointPort? checkpointPort = null,
+        IAiAnalysisCopyPreparer? copyPreparer = null) => new(
             store,
             store,
             store,
             results,
             store,
-            new TestSchedulerFactory(store, results, provider),
+            new TestSchedulerFactory(store, results, provider, checkpointPort, copyPreparer),
             store,
             templateResources,
             renderPlans,
             sizeTables,
-            sizeTableRasterizer);
+            sizeTableRasterizer,
+            checkpointPort);
 
     private static async Task<AiBatchAnalysisProjection> WaitForProjectionAsync(
         AiBatchAnalysisWorkflow workflow,
@@ -816,7 +1328,8 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         DateTimeOffset now,
         bool includeSecondAsset = false,
         bool includeSecondNormalPage = false,
-        bool includeDynamicSizePage = false)
+        bool includeDynamicSizePage = false,
+        bool learnedRequirements = false)
     {
         var group = TemplateGroup.Create("group_render_integration", "渲染闭合集成模板", now);
         var page = TemplatePage.Create(
@@ -844,7 +1357,7 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                 "normal",
                 LayerStructureSignature.Create("sha256:" + new string('a', 64))),
             [],
-            SelectionRequirement.Create("商品主体清晰完整，构图适合当前图片框。"),
+            Requirement("模特坐姿半身，身体朝左，商品主体无遮挡", learnedRequirements),
             LayoutIntent.Create("subject_complete", 1, 0, 0, TemplateRect.Create(0, 0, 790, 1252)));
         var pages = new List<TemplatePage> { page };
         var bindings = new List<FrameBinding> { binding };
@@ -876,8 +1389,8 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                     "normal",
                     LayerStructureSignature.Create("sha256:" + new string('a', 64))),
                 [],
-                SelectionRequirement.Create("需要清晰完整的商品背面。"),
-                LayoutIntent.Create("back_complete", 1, 0, 0, TemplateRect.Create(0, 0, 790, 1252))));
+                Requirement("模特站姿背身全身，商品轮廓完整", learnedRequirements),
+                LayoutIntent.Create("back_complete", 1.2, 10, 20, TemplateRect.Create(10, 20, 700, 1000))));
         }
         if (includeDynamicSizePage)
         {
@@ -979,6 +1492,73 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         return new IntegrationFixture(group, revision, batch, resource);
     }
 
+    private static IntegrationFixture TwoStyleFixture(string root, DateTimeOffset now)
+    {
+        var fixture = Fixture(root, now);
+        var assets = new[]
+        {
+            SourceAssetMetadata.CreateReadable(
+                "asset_first",
+                "style_first",
+                "first/first.jpg",
+                "first.jpg",
+                128,
+                new string('1', 64),
+                1000,
+                1200,
+                SourceImageFormat.Jpeg,
+                "image/jpeg"),
+            SourceAssetMetadata.CreateReadable(
+                "asset_second",
+                "style_second",
+                "second/second.jpg",
+                "second.jpg",
+                128,
+                new string('2', 64),
+                1000,
+                1200,
+                SourceImageFormat.Jpeg,
+                "image/jpeg")
+        };
+        var batch = BatchDraft.Create(
+                fixture.Batch.BatchId,
+                fixture.Batch.InputRoot,
+                fixture.Batch.OutputRoot,
+                fixture.Batch.TemplateSnapshot,
+                BatchSelectionMode.Automatic,
+                fixture.Batch.IncludeEditablePsd,
+                now)
+            .BeginScanning(now.AddTicks(1))
+            .MarkScanReady(
+                BatchInputType.StyleDirectoryBatch,
+                [
+                    StyleDraft.Create("style_first", "款式 1", "first", 0, ["asset_first"]),
+                    StyleDraft.Create("style_second", "款式 2", "second", 1, ["asset_second"])
+                ],
+                assets,
+                "batches/batch_render_integration/asset-manifest/manifest.json",
+                "sha256:" + new string('f', 64),
+                now.AddTicks(2));
+        return fixture with { Batch = batch };
+    }
+
+    private static SelectionRequirement Requirement(string description, bool learned) =>
+        !learned
+            ? SelectionRequirement.Create(description)
+            : SelectionRequirement.Create(
+                description,
+                [
+                    SelectionCriterion.Create("reference_only", "true"),
+                    SelectionCriterion.Create("semantic_source", "AiV2"),
+                    SelectionCriterion.Create("semantic_request_version", "reference-learning-ai/v2"),
+                    SelectionCriterion.Create("semantic_result_version", "reference-learning-ai-result/v2"),
+                    SelectionCriterion.Create("semantic_model_version", ReferenceLearningAiService.ModelConfigVersion),
+                    SelectionCriterion.Create("semantic_prompt_version", ReferenceLearningAiProtocol.SemanticPromptVersion),
+                    SelectionCriterion.Create("reference_audit_version", "reference-audit/v1"),
+                    SelectionCriterion.Create("reference_set_digest", "sha256:" + new string('8', 64)),
+                    SelectionCriterion.Create("reference_hashes_00", new string('9', 64))
+                ]);
+
     private static TemplateRevision Commit(TemplateRevision revision)
     {
         var importing = revision.AdvanceTo(
@@ -1014,7 +1594,9 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
     private sealed class TestSchedulerFactory(
         SqliteDesktopStore store,
         IAiAnalysisResultStore results,
-        IAiServicePort provider) : IAiAnalysisSchedulerFactory
+        IAiServicePort provider,
+        IAiAnalysisCheckpointPort? checkpointPort = null,
+        IAiAnalysisCopyPreparer? copyPreparer = null) : IAiAnalysisSchedulerFactory
     {
         public AiAnalysisScheduler Create(string batchId)
         {
@@ -1034,7 +1616,109 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                 stateStore: store,
                 stateKey: $"render-integration-{batchId}",
                 resultStore: results,
-                consentPort: store);
+                checkpointPort: checkpointPort,
+                consentPort: store,
+                copyPreparer: copyPreparer,
+                copyLeaseManager: copyPreparer as IAiAnalysisCopyLeaseManager);
+        }
+    }
+
+    private sealed class RecoveryRequiredCheckpointPort(string reasonCode) : IAiAnalysisCheckpointPort
+    {
+        public Task<AiAnalysisCheckpointResult> CommitAsync(
+            AiAnalysisCheckpointCommand command,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AiAnalysisCheckpointResult(
+                command.CheckpointId,
+                command.Manifest.BatchId,
+                AiAnalysisCheckpointOutcome.RecoveryRequired,
+                reasonCode));
+
+        public Task<AiAnalysisCheckpointResult> RecoverAsync(
+            string batchId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AiAnalysisCheckpointResult(
+                null,
+                batchId,
+                AiAnalysisCheckpointOutcome.RecoveryRequired,
+                reasonCode));
+    }
+
+    private sealed class FirstProviderSignal : IAiServicePort
+    {
+        private readonly TaskCompletionSource _firstCall = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public Task FirstCall => _firstCall.Task;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public Task<AiAnalysisExecutionResult> AnalyzeAsync(
+            AiAnalysisRequestV1 request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _calls);
+            _firstCall.TrySetResult();
+            return Task.FromResult(AiAnalysisExecutionResult.Completed(
+                Result(
+                    request,
+                    matches:
+                    [
+                        new AiRequirementMatchV1(
+                            Assert.Single(request.Requirements).RequirementId,
+                            Assert.Single(request.Assets).AssetId,
+                            1,
+                            0.95m,
+                            ["front_view", "clear_subject"])
+                    ],
+                    geometry:
+                    [
+                        new AiSubjectGeometryV1(
+                            Assert.Single(request.Assets).AssetId,
+                            0.1m,
+                            0.1m,
+                            0.9m,
+                            0.9m,
+                            0.96m)
+                    ]),
+                new AiProviderUsage(10, 4, 14, false),
+                TimeSpan.FromMilliseconds(5)));
+        }
+    }
+
+    private sealed class StagedCopyPreparer(string blockedStyleId) : IAiAnalysisCopyPreparer
+    {
+        private readonly TaskCompletionSource _secondStyleEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseSecondStyle = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool SecondStyleIsWaiting => _secondStyleEntered.Task.IsCompleted;
+
+        public void ReleaseSecondStyle() => _releaseSecondStyle.TrySetResult();
+
+        public async Task<AiAnalysisCopyMetadata> PrepareAsync(
+            AiAnalysisCopyPreparationRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.Equals(request.SourceAsset.StyleId, blockedStyleId, StringComparison.Ordinal))
+            {
+                _secondStyleEntered.TrySetResult();
+                await _releaseSecondStyle.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return new AiAnalysisCopyMetadata(
+                request.AnalysisCopyReference,
+                "sha256:" + request.SourceAsset.Sha256.ToLowerInvariant(),
+                request.SourceAsset.Length,
+                request.SourceAsset.MimeType,
+                request.SourceAsset.PixelWidth,
+                request.SourceAsset.PixelHeight,
+                request.CompressionProfileVersion,
+                "lease-" + request.AnalysisCopyReference);
         }
     }
 
@@ -1097,6 +1781,68 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                 createResult(request),
                 new AiProviderUsage(10, 4, 14, false),
                 TimeSpan.FromMilliseconds(5)));
+        }
+    }
+
+    private sealed class TerminalFailureProvider(string code) : IAiServicePort
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public Task<AiAnalysisExecutionResult> AnalyzeAsync(
+            AiAnalysisRequestV1 request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _calls);
+            return Task.FromResult(AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.TerminalError,
+                new ContractError(code, false, "provider", "请重新建立批次。"),
+                TimeSpan.FromMilliseconds(5),
+                new AiProviderUsage(10, 4, 14, false)));
+        }
+    }
+
+    private sealed class UnknownProvider : IAiServicePort
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public Task<AiAnalysisExecutionResult> AnalyzeAsync(
+            AiAnalysisRequestV1 request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _calls);
+            return Task.FromResult(AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.AiResultUnknown,
+                new ContractError("AI_PROVIDER_RESPONSE_HEADERS_TIMEOUT", false, "provider", "已上传但未收到响应"),
+                TimeSpan.Zero));
+        }
+    }
+
+    private sealed class SubmissionFailureProvider : IAiServicePort
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public Task<AiAnalysisExecutionResult> AnalyzeAsync(
+            AiAnalysisRequestV1 request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _calls);
+            return Task.FromResult(AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.RetryableError,
+                new ContractError(
+                    "AI_PROVIDER_SUBMISSION_TIMEOUT",
+                    true,
+                    "provider",
+                    "完整请求体未上传"),
+                TimeSpan.Zero));
         }
     }
 

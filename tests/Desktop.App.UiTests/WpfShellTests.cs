@@ -1,14 +1,20 @@
 using System.Runtime.ExceptionServices;
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Globalization;
 using Desktop.Application.Ai;
 using Desktop.Application.Psd;
 using Desktop.Application.SizeTables;
 using Desktop.Application.Templates;
+using Desktop.Contracts.Ai;
 using Xunit.Abstractions;
 
 namespace Desktop.App.UiTests;
@@ -20,6 +26,110 @@ public sealed class WpfShellTests
     public WpfShellTests(ITestOutputHelper output)
     {
         _output = output;
+    }
+
+    [Fact]
+    public void BoundedPreviewConverterDoesNotDecodeOriginalPhotoDimensions()
+    {
+        RunInSta(() =>
+        {
+            var path = Path.Combine(
+                Path.GetTempPath(),
+                "desktop-bounded-preview-" + Guid.NewGuid().ToString("N") + ".png");
+            try
+            {
+                var source = new WriteableBitmap(
+                    2400,
+                    1200,
+                    96,
+                    96,
+                    PixelFormats.Bgra32,
+                    null);
+                var pixels = new byte[2400 * 1200 * 4];
+                source.WritePixels(
+                    new Int32Rect(0, 0, 2400, 1200),
+                    pixels,
+                    2400 * 4,
+                    0);
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(source));
+                using (var output = File.Create(path))
+                {
+                    encoder.Save(output);
+                }
+
+                var converted = new BoundedPreviewImageConverter().Convert(
+                    path,
+                    typeof(BitmapImage),
+                    null,
+                    CultureInfo.InvariantCulture);
+                var preview = Assert.IsType<BitmapImage>(converted);
+
+                Assert.Equal(320, preview.PixelWidth);
+                Assert.Equal(160, preview.PixelHeight);
+                Assert.True(preview.IsFrozen);
+            }
+            finally
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void WpfHostReusesSingleApplicationAcrossSequentialWindows()
+    {
+        Desktop.App.App? firstApplication = null;
+        System.Windows.Threading.Dispatcher? firstDispatcher = null;
+
+        RunInSta(() =>
+        {
+            (firstApplication, firstDispatcher) = OpenWindowAndReadApplicationResources();
+        });
+
+        RunInSta(() =>
+        {
+            var (secondApplication, secondDispatcher) = OpenWindowAndReadApplicationResources();
+
+            Assert.Same(firstApplication, secondApplication);
+            Assert.Same(firstDispatcher, secondDispatcher);
+        });
+    }
+
+    [Fact]
+    public void StartupDiagnosticsWritesRedactedFailureEvidence()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "desktop-startup-diagnostics-tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var written = StartupDiagnostics.TryLogFailure(
+                new Desktop.Infrastructure.Persistence.DesktopDataOptions(root),
+                "DESKTOP_STARTUP_FAILED",
+                "store_initialization",
+                new InvalidOperationException(@"Cannot open C:\Customers\secret\photo.psd"));
+
+            Assert.True(written);
+            var log = File.ReadAllText(Path.Combine(root, StartupDiagnostics.DisplayLogPath));
+            Assert.Contains("DESKTOP_STARTUP_FAILED", log, StringComparison.Ordinal);
+            Assert.Contains("store_initialization", log, StringComparison.Ordinal);
+            Assert.Contains("InvalidOperationException", log, StringComparison.Ordinal);
+            Assert.Contains("[PATH]", log, StringComparison.Ordinal);
+            Assert.DoesNotContain(@"C:\Customers", log, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("photo.psd", log, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -59,10 +169,6 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
 
             var samplePath = Path.GetFullPath(Path.Combine(
                 AppContext.BaseDirectory,
@@ -218,10 +324,6 @@ public sealed class WpfShellTests
             {
                 viewModel.Dispose();
                 window.Close();
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
     }
@@ -281,10 +383,8 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
+            var application = Assert.IsAssignableFrom<System.Windows.Application>(
+                System.Windows.Application.Current);
             var workflow = new RecordingBatchInputWorkflow();
             var viewModel = new MainWindowViewModel(
                 new AppLaunchOptions(true, null),
@@ -424,12 +524,177 @@ public sealed class WpfShellTests
             finally
             {
                 window.Close();
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
+    }
+
+    [Fact]
+    public void CalibrationFrameListRefreshesWhenLoadedPageChanges()
+    {
+        RunInSta(() =>
+        {
+            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            var setTemplateScreen = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateScreen",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var calibrationScreen = Enum.Parse(
+                setTemplateScreen.GetParameters()[0].ParameterType,
+                "Calibration");
+            setTemplateScreen.Invoke(viewModel, [calibrationScreen]);
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                var frameList = FindByAutomationId<ListBox>(window, "CalibrationFrameList");
+
+                ApplyCalibrationDraft(
+                    viewModel,
+                    CreateCalibrationDraft(
+                        "revision_page_one",
+                        "page_one",
+                        "frame_page_one",
+                        "第一页图片框"));
+                FlushLayout(window);
+
+                var firstFrame = Assert.Single(frameList.Items.Cast<TemplateFrameProjection>());
+                Assert.Equal("frame_page_one", firstFrame.FrameId);
+                Assert.Equal("第一页图片框", firstFrame.LayerName);
+                Assert.Equal("frame_page_one", frameList.SelectedValue);
+
+                ApplyCalibrationDraft(
+                    viewModel,
+                    CreateCalibrationDraft(
+                        "revision_page_two",
+                        "page_two",
+                        "frame_page_two",
+                        "第二页图片框"));
+                FlushLayout(window);
+
+                var secondFrame = Assert.Single(frameList.Items.Cast<TemplateFrameProjection>());
+                Assert.Equal("frame_page_two", secondFrame.FrameId);
+                Assert.Equal("第二页图片框", secondFrame.LayerName);
+                Assert.Equal("frame_page_two", frameList.SelectedValue);
+                Assert.DoesNotContain(
+                    frameList.Items.Cast<TemplateFrameProjection>(),
+                    frame => frame.FrameId == "frame_page_one");
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public void CalibrationFrameSelectionRestoresEachFramesOwnRuleAssetAndGeometry()
+    {
+        RunInSta(() =>
+        {
+            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            try
+            {
+                ApplyCalibrationDraft(viewModel, CreateMultiFrameCalibrationDraft());
+
+                viewModel.SelectCalibrationFrame("frame_sleeve");
+                Assert.Equal("asset_sleeve", viewModel.CalibrationAssetIdInput);
+                Assert.Equal("袖口细节图", viewModel.CalibrationRequirementInput);
+                Assert.Equal(1.45, viewModel.CalibrationScaleInput);
+                Assert.Equal(-9, viewModel.CalibrationOffsetXInput);
+                Assert.Equal(7, viewModel.CalibrationOffsetYInput);
+
+                viewModel.SelectCalibrationFrame("frame_front");
+                Assert.Equal("asset_front", viewModel.CalibrationAssetIdInput);
+                Assert.Equal("商品正面图", viewModel.CalibrationRequirementInput);
+                Assert.Equal(1.1, viewModel.CalibrationScaleInput);
+                Assert.Equal(3, viewModel.CalibrationOffsetXInput);
+                Assert.Equal(-2, viewModel.CalibrationOffsetYInput);
+
+                viewModel.SelectCalibrationFrame("frame_sleeve");
+                Assert.Equal("袖口细节图", viewModel.CalibrationRequirementInput);
+                Assert.Equal("asset_sleeve", viewModel.CalibrationDraft!.SelectedAssetId);
+            }
+            finally
+            {
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public async Task StaleCalibrationPageLoadCannotReplaceCurrentPage()
+    {
+        var calibration = new DeferredCalibrationService();
+        var viewModel = new MainWindowViewModel(
+            new AppLaunchOptions(true, null),
+            templateWorkspace: null,
+            templateCalibration: calibration);
+        var session = new TemplateDraftSession(
+            "group_calibration_race",
+            "校准切页竞态",
+            "revision_calibration_race",
+            1,
+            new HashSet<string>(StringComparer.Ordinal));
+        typeof(MainWindowViewModel).GetField(
+                "_templateDraft",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(viewModel, session);
+
+        var firstPage = CreateReferenceLearningPage("page_race_first");
+        var secondPage = CreateReferenceLearningPage("page_race_second");
+        viewModel.SelectedTemplatePage = secondPage;
+        var setTemplateScreen = typeof(MainWindowViewModel).GetMethod(
+            "SetTemplateScreen",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var calibrationScreen = Enum.Parse(
+            setTemplateScreen.GetParameters()[0].ParameterType,
+            "Calibration");
+        setTemplateScreen.Invoke(viewModel, [calibrationScreen]);
+
+        var loadMethod = typeof(MainWindowViewModel).GetMethod(
+            "LoadCalibrationPageAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var versionField = typeof(MainWindowViewModel).GetField(
+            "_calibrationPageLoadVersion",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        versionField.SetValue(viewModel, 2L);
+        var firstLoad = Assert.IsAssignableFrom<Task>(loadMethod.Invoke(
+            viewModel,
+            [firstPage, 1L]));
+        var secondLoad = Assert.IsAssignableFrom<Task>(loadMethod.Invoke(
+            viewModel,
+            [secondPage, 2L]));
+
+        try
+        {
+            calibration.Complete(
+                firstPage.PageId,
+                CreateCalibrationDraft(
+                    "revision_race_first",
+                    firstPage.PageId,
+                    "frame_race_first",
+                    "第一页图片框"));
+            await firstLoad;
+            Assert.Null(viewModel.CalibrationDraft);
+
+            calibration.Complete(
+                secondPage.PageId,
+                CreateCalibrationDraft(
+                    "revision_race_second",
+                    secondPage.PageId,
+                    "frame_race_second",
+                    "第二页图片框"));
+            await secondLoad;
+
+            Assert.Equal(secondPage.PageId, viewModel.CalibrationDraft?.PageId);
+            var frame = Assert.Single(viewModel.CalibrationFrameItems.Cast<TemplateFrameProjection>());
+            Assert.Equal("frame_race_second", frame.FrameId);
+        }
+        finally
+        {
+            viewModel.Dispose();
+        }
     }
 
     [Fact]
@@ -575,6 +840,7 @@ public sealed class WpfShellTests
             "未找到可用商品图片。请选择直接包含商品图片的单款目录，或包含款式子文件夹的批次目录。";
         viewModel.RetryBatchScanCommand.Execute(null);
         FlushLayout(window);
+        Assert.Null(workflow.Submissions[^1].BatchId);
         Assert.Contains("未找到可用商品图片", viewModel.BatchStatusMessage, StringComparison.Ordinal);
 
         workflow.NextStatusMessage = "扫描未能安全提交。请重试；如果问题持续，请导出诊断信息。";
@@ -587,6 +853,7 @@ public sealed class WpfShellTests
         workflow.NextStatusMessage = "扫描完成，共识别 1 款、3 张商品图片，可进入后续分析。";
         viewModel.RetryBatchScanCommand.Execute(null);
         FlushLayout(window);
+        Assert.Null(workflow.Submissions[^1].BatchId);
         Assert.True(viewModel.IsBatchScanReady);
         Assert.Equal("已识别为单款批次 · 1 款", viewModel.BatchRecognitionText);
         Assert.Equal("扫描完成", viewModel.BatchPrimaryActionText);
@@ -720,10 +987,6 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var sourceRoot = Path.Combine(
                 Path.GetTempPath(),
                 "tpl-learn-ui-" + Guid.NewGuid().ToString("N"));
@@ -775,27 +1038,53 @@ public sealed class WpfShellTests
                 Assert.True(viewModel.IsReferenceLearningReviewMode);
                 Assert.True(FindByAutomationId<Grid>(window, "TemplateCalibrationPage").IsVisible);
                 Assert.True(FindByAutomationId<StackPanel>(window, "ReferenceLearningEvidencePanel").IsVisible);
+                Assert.True(FindByAutomationId<Border>(window, "ReferenceLearningRuleSummaryPanel").IsVisible);
                 Assert.True(FindByAutomationId<ListBox>(window, "ReferenceLearningPhotoList").IsVisible);
                 Assert.True(FindByAutomationId<StackPanel>(window, "ReferenceLearningReviewActions").IsVisible);
-                Assert.Equal("待复核", viewModel.ReferenceLearningDecisionText);
+                Assert.Equal("未复核", viewModel.ReferenceLearningDecisionText);
                 Assert.Equal("front.png", viewModel.SelectedReferenceLearningPhoto!.DisplayName);
+                Assert.Null(viewModel.CalibrationPreviewImagePath);
+                Assert.Null(viewModel.CalibrationPreviewImageSource);
+                Assert.Equal(
+                    "左侧选择图片框；中间查看 PSD 位置；右侧确认或修改素材、用途和布局",
+                    viewModel.CalibrationCanvasInstruction);
+                Assert.Equal(
+                    Visibility.Visible,
+                    FindByAutomationId<Expander>(window, "AdvancedCalibrationExpander").Visibility);
+                Assert.Equal(
+                     Visibility.Collapsed,
+                     FindByAutomationId<Button>(window, "ReturnReferenceLearningToManualButton").Visibility);
+                Assert.True(FindByAutomationId<TextBox>(window, "CalibrationRequirementInput").IsEnabled);
                 Assert.False(FindByAutomationId<Button>(window, "SaveTemplateGroupButton").IsEnabled);
-                Assert.False(FindByAutomationId<Button>(window, "AcceptReferenceLearningFrameButton").IsEnabled);
+                Assert.False(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
                 Assert.True(FindByAutomationId<Button>(window, "RejectReferenceLearningFrameButton").IsEnabled);
                 Assert.True(FindByAutomationId<Button>(window, "CancelReferenceLearningButton").IsVisible);
 
-                viewModel.CalibrationRequirementInput = "完整正面图，主体完整";
+                viewModel.CalibrationRequirementInput = "商品完整正面图";
+                var firstFrameId = viewModel.SelectedReferenceLearningFrame!.FrameId;
+                var secondCandidate = viewModel.SelectedReferenceLearningFrame.Candidate with
+                {
+                    FrameId = "learn_frame_8",
+                    LayerId = 8,
+                    LayerName = "图层 8"
+                };
+                viewModel.ReferenceLearningFrames.Add(new ReferenceLearningFrameViewModel(secondCandidate));
+                viewModel.SelectCalibrationFrame("learn_frame_8");
+                viewModel.CalibrationRequirementInput = "商品完整背面图";
+                viewModel.SelectCalibrationFrame(firstFrameId);
+                Assert.Equal("商品完整正面图", viewModel.CalibrationRequirementInput);
+                Assert.Equal("front.png", viewModel.SelectedReferenceLearningPhoto!.DisplayName);
                 FlushLayout(window);
-                Assert.True(FindByAutomationId<Button>(window, "AcceptReferenceLearningFrameButton").IsEnabled);
+                Assert.True(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
                 var applyReview = typeof(MainWindowViewModel).GetMethod(
-                    "ApplyReferenceLearningReviewAsync",
+                    "ApplyAndConfirmCalibrationAsync",
                     BindingFlags.Instance | BindingFlags.NonPublic)!;
-                Assert.IsAssignableFrom<Task>(applyReview.Invoke(
-                    viewModel,
-                    [ReferenceReviewDecision.Accepted])).GetAwaiter().GetResult();
+                Assert.IsAssignableFrom<Task>(applyReview.Invoke(viewModel, null))
+                    .GetAwaiter()
+                    .GetResult();
                 FlushLayout(window);
 
-                Assert.Equal("已确认", viewModel.ReferenceLearningDecisionText);
+                Assert.Equal("已确认规则", viewModel.ReferenceLearningDecisionText);
                 Assert.True(viewModel.CanCommitReferenceLearning);
                 Assert.True(FindByAutomationId<Button>(window, "SaveTemplateGroupButton").IsEnabled);
 
@@ -821,12 +1110,546 @@ public sealed class WpfShellTests
                 {
                     Directory.Delete(sourceRoot, recursive: true);
                 }
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
+    }
+
+    [Fact]
+    public void TemplateLibraryRowOpensAndInlineActionsRenameOrDeleteWithoutAccidentalNavigation()
+    {
+        RunTemplateLibraryScenario((window, viewModel, workspace) =>
+        {
+            var list = FindByAutomationId<ItemsControl>(window, "TemplateGroupList");
+            var rowButton = FindByAutomationId<Button>(list, "OpenTemplateGroupRowButton");
+            var rowChrome = FindByAutomationId<Border>(list, "TemplateGroupRowChrome");
+            var renameButton = FindByAutomationId<Button>(list, "RenameTemplateGroupButton");
+            var deleteButton = FindByAutomationId<Button>(list, "DeleteTemplateGroupFromLibraryButton");
+            Assert.True(rowChrome.ActualHeight >= 70, $"Template row chrome collapsed to {rowChrome.ActualHeight}px.");
+            Assert.True(rowButton.Focusable);
+            Assert.True(renameButton.Focusable);
+            Assert.True(deleteButton.Focusable);
+            Assert.Same(viewModel.RenameTemplateCommand, renameButton.Command);
+            Assert.Same(viewModel.DeleteTemplateFromLibraryCommand, deleteButton.Command);
+            Assert.IsType<TemplateLibraryCardViewModel>(renameButton.CommandParameter);
+            Assert.IsType<TemplateLibraryCardViewModel>(deleteButton.CommandParameter);
+            Assert.Contains("打开模板组", AutomationProperties.GetName(rowButton), StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                EnumerateVisualDescendants<TextBlock>(list),
+                text => string.Equals(text.Text, "查看", StringComparison.Ordinal));
+
+            InvokeButton(deleteButton);
+            DrainDispatcher();
+            FlushLayout(window);
+            Assert.Equal("删除模板组？", viewModel.TemplateDialogTitle);
+            InvokeButton(FindByAutomationId<Button>(window, "TemplateDialogSecondaryButton"));
+            DrainDispatcher();
+            Assert.Equal(0, workspace.DeleteCount);
+            Assert.Equal(0, workspace.GetDetailsCount);
+
+            InvokeButton(rowButton);
+            DrainDispatcher();
+            FlushLayout(window);
+            Assert.Equal(1, workspace.GetDetailsCount);
+            Assert.True(viewModel.IsTemplateDetailsVisible);
+        });
+    }
+
+    [Fact]
+    public void TemplateLibraryInlineRenameValidatesAndUpdatesWithoutOpeningDetails()
+    {
+        RunTemplateLibraryScenario((window, viewModel, workspace) =>
+        {
+            var renameButton = FindByAutomationId<Button>(window, "RenameTemplateGroupButton");
+            InvokeButton(renameButton);
+            DrainDispatcher();
+            FlushLayout(window);
+
+            Assert.Equal(0, workspace.GetDetailsCount);
+            Assert.Equal("重命名模板组", viewModel.TemplateDialogTitle);
+            var renameInput = FindByAutomationId<TextBox>(window, "TemplateRenameInput");
+            var primaryButton = FindByAutomationId<Button>(window, "TemplateDialogPrimaryButton");
+            Assert.Equal("模板库交互测试", renameInput.Text);
+
+            renameInput.Text = "   ";
+            renameInput.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+            FlushLayout(window);
+            Assert.False(primaryButton.IsEnabled);
+
+            renameInput.Text = "  已重命名模板  ";
+            renameInput.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+            FlushLayout(window);
+            Assert.True(primaryButton.IsEnabled);
+            InvokeButton(primaryButton);
+            DrainDispatcher();
+            FlushLayout(window);
+
+            Assert.Equal(1, workspace.RenameCount);
+            Assert.Equal("已重命名模板", Assert.Single(viewModel.TemplateGroups).Name);
+            Assert.Equal(0, workspace.GetDetailsCount);
+            Assert.True(viewModel.IsTemplateLibraryVisible);
+            Assert.Contains("已重命名", viewModel.TemplateStatusMessage, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void TemplateLibraryInlineDeleteRemovesGroupWithoutOpeningDetails()
+    {
+        RunTemplateLibraryScenario((window, viewModel, workspace) =>
+        {
+            InvokeButton(FindByAutomationId<Button>(window, "DeleteTemplateGroupFromLibraryButton"));
+            DrainDispatcher();
+            FlushLayout(window);
+            Assert.Equal("删除模板组？", viewModel.TemplateDialogTitle);
+            Assert.True(viewModel.TemplateDialogIsDestructive);
+
+            InvokeButton(FindByAutomationId<Button>(window, "TemplateDialogPrimaryButton"));
+            DrainDispatcher();
+            FlushLayout(window);
+
+            Assert.Equal(1, workspace.DeleteCount);
+            Assert.Empty(viewModel.TemplateGroups);
+            Assert.Equal(0, workspace.GetDetailsCount);
+            Assert.Equal(
+                Visibility.Visible,
+                FindByAutomationId<Border>(window, "TemplateLibraryEmptyState").Visibility);
+            var deleteStatus = FindByAutomationId<TextBlock>(window, "TemplateLibraryStatus");
+            Assert.Equal(Visibility.Visible, deleteStatus.Visibility);
+            Assert.Contains("用户源 PSD", deleteStatus.Text, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void TemplateDetailsEditButtonsBindToPageEditCommand()
+    {
+        RunInSta(() =>
+        {
+            var workspace = new PageEditWorkspaceStub();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: workspace);
+            var details = new TemplateGroupDetails(
+                "group_edit_ui",
+                "编辑入口测试",
+                "revision_edit_ui",
+                2,
+                [
+                    new TemplatePageProjection(
+                        "page_edit_ui",
+                        0,
+                        "主图页",
+                        TemplatePageContentTypeOption.NormalComposition,
+                        TemplateGenerationModeOption.OncePerProduct,
+                        null,
+                        true,
+                        "resource_edit_ui")
+                ],
+                true,
+                DateTimeOffset.UtcNow);
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDetails",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, details);
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+            var setTemplateScreen = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateScreen",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var detailsScreen = Enum.Parse(
+                setTemplateScreen.GetParameters()[0].ParameterType,
+                "Details");
+            setTemplateScreen.Invoke(viewModel, [detailsScreen]);
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                var detailPage = FindByAutomationId<Grid>(window, "TemplateDetailsPage");
+                var editButtons = EnumerateVisualDescendants<Button>(detailPage)
+                    .Where(button => string.Equals(button.Content?.ToString(), "编辑", StringComparison.Ordinal))
+                    .ToArray();
+                var editButton = Assert.Single(editButtons);
+                Assert.Same(viewModel.EditTemplatePageCommand, editButton.Command);
+                var parameter = Assert.IsType<TemplatePageDetailsRowViewModel>(editButton.CommandParameter);
+                Assert.Equal("page_edit_ui", parameter.PageId);
+                Assert.True(editButton.Command!.CanExecute(editButton.CommandParameter));
+
+                editButton.Command.Execute(editButton.CommandParameter);
+                Assert.True(viewModel.IsTemplatePageSettingsVisible);
+                Assert.Equal("group_edit_ui", workspace.LastGroupId);
+                Assert.Equal("page_edit_ui", workspace.LastPageId);
+            }
+            finally
+            {
+                viewModel.Dispose();
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void TemplateDetailsEditGroupButtonStartsFullTemplateEdit()
+    {
+        RunInSta(() =>
+        {
+            var workspace = new PageEditWorkspaceStub();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: workspace);
+            var details = new TemplateGroupDetails(
+                "group_edit_ui",
+                "编辑入口测试",
+                "revision_edit_ui",
+                2,
+                [
+                    new TemplatePageProjection(
+                        "page_edit_ui",
+                        0,
+                        "主图页",
+                        TemplatePageContentTypeOption.NormalComposition,
+                        TemplateGenerationModeOption.OncePerProduct,
+                        null,
+                        true,
+                        "resource_edit_ui")
+                ],
+                true,
+                DateTimeOffset.UtcNow);
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDetails",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, details);
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+            var setTemplateScreen = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateScreen",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var detailsScreen = Enum.Parse(
+                setTemplateScreen.GetParameters()[0].ParameterType,
+                "Details");
+            setTemplateScreen.Invoke(viewModel, [detailsScreen]);
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                var editButton = FindByAutomationId<Button>(window, "EditTemplateGroupButton");
+                Assert.Same(viewModel.EditTemplateGroupCommand, editButton.Command);
+                Assert.True(editButton.Command!.CanExecute(null));
+
+                editButton.Command.Execute(null);
+
+                Assert.True(viewModel.IsTemplatePageSettingsVisible);
+                Assert.Equal("group_edit_ui", workspace.LastFullGroupId);
+            }
+            finally
+            {
+                viewModel.Dispose();
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void ManualCalibrationRuleFieldBecomesEditableAfterDraftLoads()
+    {
+        RunInSta(() =>
+        {
+            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            var session = new TemplateDraftSession(
+                "group_manual_rule_ui",
+                "人工规则编辑",
+                "revision_manual_rule_ui",
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDraft",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, session);
+            viewModel.TemplatePages.Add(CreateReferenceLearningPage());
+            viewModel.SelectedTemplatePage = viewModel.TemplatePages[0];
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+
+            var setTemplateScreen = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateScreen",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var calibrationScreen = Enum.Parse(
+                setTemplateScreen.GetParameters()[0].ParameterType,
+                "Calibration");
+            setTemplateScreen.Invoke(viewModel, [calibrationScreen]);
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                ApplyCalibrationDraft(viewModel, CreateCalibrationDraft("revision_manual_rule_ui"));
+                FlushLayout(window);
+
+                var ruleInput = FindByAutomationId<TextBox>(window, "CalibrationRequirementInput");
+                Assert.True(viewModel.CanEditCalibration);
+                Assert.True(viewModel.CanEditReferenceLearningRule);
+                Assert.True(ruleInput.IsEnabled);
+
+                ruleInput.Text = "侧面图";
+                FlushLayout(window);
+                Assert.Equal("侧面图", viewModel.CalibrationRequirementInput);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public void ReferenceLearningAiUnavailableIsVisibleAndRequiresUserOverride()
+    {
+        RunInSta(() =>
+        {
+            var sourceRoot = Path.Combine(
+                Path.GetTempPath(),
+                "tpl-learn-ai-unavailable-ui-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sourceRoot);
+            var photoPath = Path.Combine(sourceRoot, "front.png");
+            File.WriteAllBytes(photoPath, Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+
+            var baseDocument = CreateReferenceLearningDocument();
+            var candidate = baseDocument.Candidates[0] with
+            {
+                SemanticLabel = "商品展示图（与参考款保持同一视角，请确认）",
+                Confidence = 0.72,
+                SemanticMetadata = new ReferenceSemanticMetadata(
+                    ReferenceSemanticSource.AiUnavailable,
+                    "reference-learning-ai/v2",
+                    "reference-learning-ai-result/v2",
+                    "doubao-seed-2.1-pro-260628",
+                    ReferenceLearningAiProtocol.SemanticPromptVersion,
+                    "sha256:" + new string('e', 64),
+                    [],
+                    [])
+            };
+            var document = baseDocument.WithCandidates(
+                [candidate],
+                ReferenceLearningState.AwaitingReview,
+                "请求超时，结果状态未知，请查询或人工确认后再继续。",
+                baseDocument.UpdatedAt.AddSeconds(1));
+            var learning = new RecordingReferenceLearningService(document);
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                referenceLearningService: learning);
+            var session = new TemplateDraftSession(
+                "group_learning_ai_unavailable_ui",
+                "AI 未完成警示",
+                "revision_learning_ai_unavailable_ui",
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            var page = CreateReferenceLearningPage("page_learning_ai_unavailable_ui");
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDraft",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, session);
+            typeof(MainWindowViewModel).GetField(
+                    "_referenceLearningPhotoDirectory",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, sourceRoot);
+            viewModel.TemplatePages.Add(page);
+            viewModel.SelectedTemplatePage = page;
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+            typeof(MainWindowViewModel).GetMethod(
+                    "SetTemplateCalibrationMode",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, [TemplateCalibrationMode.ReferenceLearning]);
+            Assert.IsAssignableFrom<Task>(typeof(MainWindowViewModel).GetMethod(
+                    "StartReferenceLearningAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(viewModel, null))
+                .GetAwaiter()
+                .GetResult();
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsReferenceLearningAiUnavailable);
+                Assert.Contains("AI 语义识别未完成", viewModel.ReferenceLearningSemanticWarningText, StringComparison.Ordinal);
+                Assert.Contains("请求超时", viewModel.ReferenceLearningSemanticWarningText, StringComparison.Ordinal);
+                Assert.Equal(
+                    Visibility.Visible,
+                    FindByAutomationId<Border>(window, "ReferenceLearningAiUnavailableWarning").Visibility);
+                Assert.False(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+
+                viewModel.CalibrationRequirementInput = "商品展示图（与参考款保持同一视角，请确认）";
+                FlushLayout(window);
+                Assert.False(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+
+                viewModel.CalibrationRequirementInput = "人物正面全身图";
+                FlushLayout(window);
+                Assert.True(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+                if (Directory.Exists(sourceRoot))
+                {
+                    Directory.Delete(sourceRoot, recursive: true);
+                }
+
+            }
+        });
+    }
+
+    [Fact]
+    public void ReferenceLearningStartsWholeGroupSemanticAnalysisOnce()
+    {
+        RunInSta(() =>
+        {
+            var learning = new MultiPageReferenceLearningService(CreateReferenceLearningDocument());
+            var semantic = new RecordingReferenceLearningAiService();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                referenceLearningService: learning,
+                referenceLearningAiService: semantic);
+            typeof(MainWindowViewModel).GetField("_templateDraft", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, new TemplateDraftSession(
+                    "group_learning_batch_ai", "整组语义分析", "revision_learning_batch_ai", 1,
+                    new HashSet<string>(StringComparer.Ordinal)));
+            typeof(MainWindowViewModel).GetField("_referenceLearningPhotoDirectory", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, Path.GetTempPath());
+            viewModel.TemplatePages.Add(CreateReferenceLearningPage("page_batch_ai_01"));
+            viewModel.TemplatePages.Add(CreateReferenceLearningPage("page_batch_ai_02"));
+            viewModel.SelectedTemplatePage = viewModel.TemplatePages[0];
+            typeof(MainWindowViewModel).GetMethod("SetTemplateCalibrationMode", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, [TemplateCalibrationMode.ReferenceLearning]);
+
+            var start = typeof(MainWindowViewModel).GetMethod(
+                "StartReferenceLearningAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            Assert.IsAssignableFrom<Task>(start.Invoke(viewModel, null)).GetAwaiter().GetResult();
+
+            Assert.Equal(1, semantic.BatchCalls);
+            Assert.Equal(0, semantic.SingleCalls);
+            Assert.Equal(2, semantic.LastBatchSize);
+        });
+    }
+
+    [Fact]
+    public void ReferenceLearningRefreshDoesNotLetCapturedPlaceholderMaskAiV2Rule()
+    {
+        RunInSta(() =>
+        {
+
+            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            var session = new TemplateDraftSession(
+                "group_learning_refresh_ui",
+                "刷新规则",
+                "revision_learning_refresh_ui",
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            var page = CreateReferenceLearningPage();
+            typeof(MainWindowViewModel).GetField("_templateDraft", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, session);
+            viewModel.TemplatePages.Add(page);
+            viewModel.SelectedTemplatePage = page;
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+
+            var setScreen = typeof(MainWindowViewModel).GetMethod(
+                "SetTemplateScreen", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var referenceScreen = Enum.Parse(
+                setScreen.GetParameters()[0].ParameterType,
+                "ReferenceLearning");
+            setScreen.Invoke(viewModel, [referenceScreen]);
+
+            var documents = (Dictionary<string, ReferenceLearningDocument>)typeof(MainWindowViewModel)
+                .GetField("_referenceLearningDocuments", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(viewModel)!;
+            var localPlaceholder = CreateReferenceLearningDocument().WithCandidates(
+                [CreateReferenceLearningDocument().Candidates[0] with
+                {
+                    SemanticLabel = "商品展示图（与参考款保持同一视角，请确认）",
+                    Confidence = 0.72
+                }],
+                ReferenceLearningState.AwaitingReview,
+                null,
+                DateTimeOffset.UtcNow);
+            documents[page.PageId] = localPlaceholder;
+
+            var display = typeof(MainWindowViewModel).GetMethod(
+                "DisplayReferenceLearningPage", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            display.Invoke(viewModel, [page, null]);
+
+            viewModel.CalibrationRequirementInput = localPlaceholder.Candidates[0].SemanticLabel;
+            typeof(MainWindowViewModel).GetMethod(
+                "CaptureReferenceLearningInputs", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+
+            var aiCandidate = localPlaceholder.Candidates[0] with
+            {
+                SemanticLabel = "领口与尺码标细节图",
+                Confidence = 0.98,
+                SemanticMetadata = new ReferenceSemanticMetadata(
+                    ReferenceSemanticSource.AiV2,
+                    "reference-learning-ai/v2",
+                    "reference-learning-ai-result/v2",
+                    "doubao-seed-2.1-pro-260628",
+                    ReferenceLearningAiProtocol.SemanticPromptVersion,
+                    "sha256:" + new string('f', 64),
+                    ["领口内侧可见红色尺码标"],
+                    ["排除完整人物和室内场景"])
+            };
+            documents[page.PageId] = localPlaceholder.WithCandidates(
+                [aiCandidate],
+                ReferenceLearningState.AwaitingReview,
+                null,
+                DateTimeOffset.UtcNow.AddSeconds(1));
+
+            display.Invoke(viewModel, [page, null]);
+
+            Assert.Equal("领口与尺码标细节图", viewModel.CalibrationRequirementInput);
+            Assert.Equal("领口与尺码标细节图", viewModel.SelectedReferenceLearningFrame!.SemanticLabel);
+            Assert.False(viewModel.IsReferenceLearningSemanticWarningVisible);
+
+            viewModel.CalibrationRequirementInput = "领口尺码标特写图";
+            typeof(MainWindowViewModel).GetMethod(
+                "CaptureReferenceLearningInputs", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+            documents[page.PageId] = localPlaceholder.WithCandidates(
+                [aiCandidate with { SemanticLabel = "领口局部细节图" }],
+                ReferenceLearningState.AwaitingReview,
+                null,
+                DateTimeOffset.UtcNow.AddSeconds(2));
+            display.Invoke(viewModel, [page, null]);
+
+            Assert.Equal("领口尺码标特写图", viewModel.CalibrationRequirementInput);
+
+            viewModel.Dispose();
+        });
+    }
+
+    [Fact]
+    public void TemplateEditFailureExplainsUnreadableResourceInsteadOfShowingGenericRestartHint()
+    {
+        var formatter = typeof(MainWindowViewModel).GetMethod(
+            "ToTemplateOperationError",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+
+        var message = Assert.IsType<string>(formatter.Invoke(
+            null,
+            new object?[] { new System.Text.Json.JsonException("invalid inspection") }));
+
+        Assert.Contains("模板内部资源记录无法读取", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("必要时重新启动应用", message, StringComparison.Ordinal);
+
+        var unknown = Assert.IsType<string>(formatter.Invoke(
+            null,
+            new object?[] { new InvalidCastException("unexpected draft shape") }));
+        Assert.Contains("程序内部：InvalidCastException", unknown, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -834,10 +1657,6 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var sourceRoot = Path.Combine(
                 Path.GetTempPath(),
                 "tpl-learn-batch-ui-" + Guid.NewGuid().ToString("N"));
@@ -920,10 +1739,6 @@ public sealed class WpfShellTests
                 {
                     Directory.Delete(sourceRoot, recursive: true);
                 }
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
     }
@@ -954,10 +1769,6 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var batchWorkflow = new RecordingBatchInputWorkflow
             {
                 RestoreProjection = new BatchInputProjection(
@@ -1021,10 +1832,6 @@ public sealed class WpfShellTests
             {
                 viewModel.Dispose();
                 window.Close();
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
     }
@@ -1051,14 +1858,55 @@ public sealed class WpfShellTests
     }
 
     [Fact]
+    public void SettingsPageRendersAiCredentialCardAndKeepsKeyRedacted()
+    {
+        RunInSta(() =>
+        {
+            var credential = new RecordingAiCredentialManagement();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiCredentialManagement: credential);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "settings");
+                FlushLayout(window);
+
+                Assert.True(FindByAutomationId<Border>(window, "AiCredentialCard").IsVisible);
+                Assert.True(FindByAutomationId<PasswordBox>(window, "AiApiKeyInput").IsVisible);
+                Assert.Equal("尚未配置 Key", FindByAutomationId<TextBlock>(window, "AiCredentialStatus").Text);
+                Assert.False(FindByAutomationId<Button>(window, "RemoveAiCredentialButton").IsEnabled);
+
+                viewModel.SetAiCredentialInput("ark-test-secret-9876");
+                Assert.True(FindByAutomationId<Button>(window, "SaveAiCredentialButton").IsEnabled);
+                viewModel.SaveAiCredentialCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.Equal(1, credential.SaveCount);
+                Assert.Equal("••••9876", viewModel.AiCredentialMaskedSuffix);
+                Assert.DoesNotContain("ark-test-secret", FindByAutomationId<TextBlock>(window, "AiCredentialStatus").Text, StringComparison.Ordinal);
+                Assert.True(FindByAutomationId<Button>(window, "RemoveAiCredentialButton").IsEnabled);
+
+                viewModel.RemoveAiCredentialCommand.Execute(null);
+                FlushLayout(window);
+                Assert.Equal(1, credential.RemoveCount);
+                Assert.Equal(AiCredentialState.NotConfigured, viewModel.AiCredentialState);
+                Assert.Equal("未显示", viewModel.AiCredentialMaskedSuffix);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
     public void FirstScanRequiresExplicitUncheckedUploadConsentAndContinuesAfterGrant()
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var batchWorkflow = new RecordingBatchInputWorkflow
             {
                 NextStatus = BatchInputUiStatus.ScanBlocked,
@@ -1126,10 +1974,98 @@ public sealed class WpfShellTests
             finally
             {
                 window.Close();
-                if (ownsApplication)
+            }
+        });
+    }
+
+    [Fact]
+    public void ReferenceLearningRequiresExplicitUploadConsentBeforeSemanticAnalysis()
+    {
+        RunInSta(() =>
+        {
+            var sourceRoot = Path.Combine(
+                Path.GetTempPath(),
+                "tpl-learn-consent-ui-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sourceRoot);
+            File.WriteAllBytes(Path.Combine(sourceRoot, "front.png"), [1]);
+
+            var learning = new RecordingReferenceLearningService(CreateReferenceLearningDocument());
+            var semantic = new RecordingReferenceLearningAiService();
+            var workflow = new RecordingAiBatchAnalysisWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: workflow,
+                referenceLearningService: learning,
+                referenceLearningAiService: semantic);
+            var session = new TemplateDraftSession(
+                "group_learning_consent_ui",
+                "授权门模板",
+                "revision_learning_consent_ui",
+                1,
+                new HashSet<string>(StringComparer.Ordinal));
+            var page = CreateReferenceLearningPage();
+            typeof(MainWindowViewModel).GetField(
+                    "_templateDraft",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, session);
+            typeof(MainWindowViewModel).GetField(
+                    "_referenceLearningPhotoDirectory",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(viewModel, sourceRoot);
+            viewModel.TemplatePages.Add(page);
+            viewModel.SelectedTemplatePage = page;
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
+            typeof(MainWindowViewModel).GetMethod(
+                    "SetTemplateCalibrationMode",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, [TemplateCalibrationMode.ReferenceLearning]);
+
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                FlushLayout(window);
+
+                var start = typeof(MainWindowViewModel).GetMethod(
+                    "StartReferenceLearningAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(start.Invoke(viewModel, null))
+                    .GetAwaiter()
+                    .GetResult();
+                FlushLayout(window);
+
+                Assert.True(viewModel.IsAiUploadConsentDialogVisible);
+                Assert.Contains("参考学习", viewModel.ReferenceLearningStatusMessage, StringComparison.Ordinal);
+                Assert.Equal(0, learning.StrictResumeCount);
+                Assert.Equal(0, semantic.BatchCalls);
+                Assert.Equal(
+                    Visibility.Visible,
+                    FindByAutomationId<Grid>(window, "AiUploadConsentDialog").Visibility);
+
+                viewModel.AiUploadConsentAcknowledged = true;
+                var confirm = typeof(MainWindowViewModel).GetMethod(
+                    "ConfirmAiUploadConsentAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Assert.IsAssignableFrom<Task>(confirm.Invoke(viewModel, null))
+                    .GetAwaiter()
+                    .GetResult();
+                FlushLayout(window);
+
+                Assert.False(viewModel.IsAiUploadConsentDialogVisible);
+                Assert.Equal(1, workflow.GrantCount);
+                Assert.Equal(1, learning.StrictResumeCount);
+                Assert.Equal(1, semantic.BatchCalls);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+                if (Directory.Exists(sourceRoot))
                 {
-                    application.Shutdown();
+                    Directory.Delete(sourceRoot, recursive: true);
                 }
+
             }
         });
     }
@@ -1139,10 +2075,6 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
             var window = new MainWindow(viewModel);
             try
@@ -1204,6 +2136,7 @@ public sealed class WpfShellTests
                 Assert.Equal("生成前检查", FindByAutomationId<TextBlock>(window, "AiAnalysisTitle").Text);
                 Assert.Equal(40, viewModel.AiStyles.Count);
                 Assert.Contains("人工复核", FindByAutomationId<TextBlock>(window, "AiAnalysisStatus").Text, StringComparison.Ordinal);
+                Assert.Contains("已处理 40/40 页", viewModel.AiBatchProgressText, StringComparison.Ordinal);
                 var scroll = FindByAutomationId<ScrollViewer>(window, "AiAnalysisScrollViewer");
                 Assert.Equal(ScrollBarVisibility.Auto, scroll.VerticalScrollBarVisibility);
                 Assert.NotNull(FindByAutomationId<FrameworkElement>(window, "PauseAiAnalysisButton"));
@@ -1214,12 +2147,17 @@ public sealed class WpfShellTests
                 var firstStyle = viewModel.AiStyles[0];
                 firstStyle.IsExpanded = true;
                 FlushLayout(window);
+                Assert.Equal("3 张素材 · 已处理 1/1 页", firstStyle.MetaText);
+                var blockedStyle = viewModel.AiStyles[^1];
+                Assert.Equal("3 张素材 · 已处理 1/1 页", blockedStyle.MetaText);
                 var candidate = Assert.Single(firstStyle.Pages[0].Candidates);
                 viewModel.OpenAiCandidatePreviewCommand.Execute(candidate);
                 FlushLayout(window);
                 Assert.Equal(Visibility.Visible, FindByAutomationId<Grid>(window, "AiCandidatePreviewDialog").Visibility);
-                Assert.Equal("用于：中文主图页 · 图片框 1", viewModel.AiCandidatePreview!.UsageText);
-                Assert.Equal("选用这张", FindByAutomationId<Button>(window, "ConfirmAiCandidateSelectionButton").Content);
+                Assert.Equal("用于：PSD 页面 中文主图页 · 选择完整清晰的商品主体图。", viewModel.AiCandidatePreview!.UsageText);
+                Assert.DoesNotContain(
+                    EnumerateVisualDescendants<Button>(window).Select(button => button.Content?.ToString()),
+                    content => content is "选用这张" or "确认候选");
                 Assert.DoesNotContain(
                     EnumerateVisualDescendants<Button>(window).Select(button => button.Content?.ToString()),
                     content => content is "锁定此图" or "主体分析" or "当前首选");
@@ -1242,6 +2180,21 @@ public sealed class WpfShellTests
                 Assert.False(FindByAutomationId<Button>(window, "PauseAiAnalysisButton").IsEnabled);
                 Assert.True(FindByAutomationId<Button>(window, "CancelAiAnalysisButton").IsEnabled);
 
+                ApplyAiProjection(
+                    viewModel,
+                    projection with
+                    {
+                        Status = Desktop.Application.Ai.AiBatchUiStatus.RecoveryRequired,
+                        StatusText = "AI 请求体未完整上传，火山未受理。请检查网络后重试分析。",
+                        ActionText = "重试分析",
+                        ReadyPageCount = 0
+                    });
+                FlushLayout(window);
+                var retryButton = FindByAutomationId<Button>(window, "RetryAiAnalysisButton");
+                Assert.True(retryButton.IsVisible);
+                Assert.True(retryButton.IsEnabled);
+                Assert.Same(viewModel.RetryAiAnalysisCommand, retryButton.Command);
+
                 SetWindowSize(window, 1440, 900);
                 SetWindowSize(window, 1100, 760);
                 var bounds = page.TransformToAncestor(window).TransformBounds(new Rect(page.RenderSize));
@@ -1251,10 +2204,6 @@ public sealed class WpfShellTests
             finally
             {
                 window.Close();
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
     }
@@ -1264,10 +2213,6 @@ public sealed class WpfShellTests
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var workflow = new RecordingAiBatchAnalysisWorkflow();
             var viewModel = new MainWindowViewModel(
                 new AppLaunchOptions(true, null),
@@ -1284,41 +2229,51 @@ public sealed class WpfShellTests
                     "中文主图页",
                     "frame_01",
                     "图片框 1",
-                    "商品主体清晰完整，构图适合当前图片框。",
-                    Desktop.Application.Ai.AiRequirementSelectionUiStatus.AiSelected,
-                    "AI 推荐 · 已选用",
+                    "人物正面图",
+                    Desktop.Application.Ai.AiRequirementSelectionUiStatus.ReviewRequired,
+                    "AI 推荐 · 可生成，建议检查",
                     "asset_01",
-                    null);
+                    "old.jpg",
+                    "照片 01");
+                var secondRequirement = requirement with
+                {
+                    RequirementId = "frame_02",
+                    FrameDisplayName = "图片框 2",
+                    SelectionRequirement = "面料纹理特写图",
+                    SelectedAssetId = "asset_03",
+                    SelectedPreviewPath = "third.jpg",
+                    SelectedAssetDisplayName = "照片 03"
+                };
                 var initialPage = new Desktop.Application.Ai.AiPageAnalysisProjection(
                     "batch_ui",
                     "style_1",
                     "page_1",
                     "中文主图页",
-                    Desktop.Application.Ai.AiPageUiStatus.Ready,
-                    "可生成",
-                    "已通过",
+                    Desktop.Application.Ai.AiPageUiStatus.ReviewRequired,
+                    "可生成 · 建议检查",
+                    "可生成 · 建议检查",
                     [],
                     [],
-                    Requirements: [requirement]);
+                    Requirements: [requirement, secondRequirement]);
                 var assets = new Desktop.Application.Ai.AiStyleAssetProjection[]
                 {
-                    new("batch_ui", "style_1", "asset_01", null, 1),
-                    new("batch_ui", "style_1", "asset_02", null, 2),
-                    new("batch_ui", "style_1", "asset_03", null, 3)
+                    new("batch_ui", "style_1", "asset_01", "old.jpg", 1),
+                    new("batch_ui", "style_1", "asset_02", "new.jpg", 2),
+                    new("batch_ui", "style_1", "asset_03", "other.jpg", 3)
                 };
                 var initialStyle = new Desktop.Application.Ai.AiStyleAnalysisProjection(
                     "batch_ui",
                     "style_1",
                     "款式 01",
-                    Desktop.Application.Ai.AiStyleUiStatus.Ready,
-                    "可生成",
+                    Desktop.Application.Ai.AiStyleUiStatus.ReviewRequired,
+                    "可生成 · 建议检查",
                     [initialPage],
                     assets.Length,
                     assets);
                 var initial = new Desktop.Application.Ai.AiBatchAnalysisProjection(
                     "batch_ui",
-                    Desktop.Application.Ai.AiBatchUiStatus.Ready,
-                    "分析完成，所有已选页面均可生成。",
+                    Desktop.Application.Ai.AiBatchUiStatus.ReviewRequired,
+                    "分析完成；绿色和黄色页面均可直接生成。",
                     "进入生成",
                     1,
                     1,
@@ -1327,26 +2282,56 @@ public sealed class WpfShellTests
                     [initialStyle],
                     Desktop.Application.Ai.AiAnalysisSchedulingControlState.Running,
                     null);
-                var lockedRequirement = requirement with
+                workflow.LockProjectionFactory = lockCount =>
                 {
-                    Status = Desktop.Application.Ai.AiRequirementSelectionUiStatus.ManualLocked,
-                    StatusText = "人工选用 · 已锁定",
-                    SelectedAssetId = "asset_02"
-                };
-                workflow.LockProjection = initial with
-                {
-                    Styles =
-                    [
-                        initialStyle with
+                    var firstAssetId = lockCount >= 4 ? "asset_03" : lockCount >= 2 ? "asset_02" : "asset_01";
+                    var secondAssetId = lockCount >= 3 ? "asset_01" : "asset_03";
+                    var first = requirement with
+                    {
+                        Status = lockCount >= 2
+                            ? Desktop.Application.Ai.AiRequirementSelectionUiStatus.ManualLocked
+                            : requirement.Status,
+                        StatusText = lockCount >= 2 ? "人工选用 · 已锁定" : requirement.StatusText,
+                        SelectedAssetId = firstAssetId,
+                        SelectedPreviewPath = firstAssetId switch
                         {
-                            Pages = [initialPage with { Requirements = [lockedRequirement] }]
+                            "asset_01" => "old.jpg",
+                            "asset_02" => "new.jpg",
+                            _ => "third.jpg"
+                        },
+                        SelectedAssetDisplayName = firstAssetId switch
+                        {
+                            "asset_01" => "照片 01",
+                            "asset_02" => "照片 02",
+                            _ => "照片 03"
                         }
-                    ]
+                    };
+                    var second = secondRequirement with
+                    {
+                        Status = lockCount >= 3
+                            ? Desktop.Application.Ai.AiRequirementSelectionUiStatus.ManualLocked
+                            : secondRequirement.Status,
+                        StatusText = lockCount >= 3 ? "人工选用 · 已锁定" : secondRequirement.StatusText,
+                        SelectedAssetId = secondAssetId,
+                        SelectedPreviewPath = secondAssetId == "asset_01" ? "old.jpg" : "third.jpg",
+                        SelectedAssetDisplayName = secondAssetId == "asset_01" ? "照片 01" : "照片 03"
+                    };
+                    return initial with
+                    {
+                        Styles =
+                        [
+                            initialStyle with
+                            {
+                                Pages = [initialPage with { Requirements = [first, second] }]
+                            }
+                        ]
+                    };
                 };
 
                 ApplyAiProjection(viewModel, initial);
                 SetAiScreen(viewModel);
                 var style = Assert.Single(viewModel.AiStyles);
+                Assert.True(FindByAutomationId<Button>(window, "EnterGenerationButton").IsEnabled);
                 viewModel.OpenAiStyleReviewCommand.Execute(style);
                 FlushLayout(window);
 
@@ -1362,35 +2347,101 @@ public sealed class WpfShellTests
                 Assert.Equal(ScrollBarVisibility.Visible,
                     FindByAutomationId<ScrollViewer>(window, "AiStyleReviewAssetScrollViewer").VerticalScrollBarVisibility);
                 Assert.Equal(3, style.Assets.Count);
-                Assert.Single(style.Pages[0].Requirements);
+                Assert.Equal(2, style.Pages[0].Requirements.Count);
+                var reviewTexts = EnumerateVisualDescendants<TextBlock>(window)
+                    .Select(text => text.Text)
+                    .ToArray();
+                Assert.Contains("人物正面图", reviewTexts);
+                Assert.Contains("PSD 页面：中文主图页", reviewTexts);
+                Assert.Contains("模板组：当前已校准模板 · 当前款式：款式 01", reviewTexts);
+                Assert.DoesNotContain("图片框 1", reviewTexts);
 
                 var target = style.Pages[0].Requirements[0];
+                Assert.False(viewModel.ConfirmAiReplacementCommand.CanExecute(null));
                 viewModel.BeginAiReplacementCommand.Execute(target);
+                Assert.True(viewModel.SelectAiReplacementAssetCommand.CanExecute(style.Assets[1]));
+                Assert.False(viewModel.ConfirmAiReplacementCommand.CanExecute(null));
                 viewModel.SelectAiReplacementAssetCommand.Execute(style.Assets[1]);
                 Assert.True(viewModel.CanConfirmAiReplacement);
+                Assert.True(viewModel.ConfirmAiReplacementCommand.CanExecute(null));
+                Assert.Equal("确认", viewModel.ConfirmAiReplacementText);
+                Assert.Equal(
+                    "确认",
+                    FindByAutomationId<Button>(window, "ConfirmAiStyleReplacementButton").Content);
+                Assert.Contains("当前用图：照片 01", viewModel.AiReplacementInstructionText, StringComparison.Ordinal);
+                Assert.Contains("已选择 照片 02", viewModel.AiReplacementInstructionText, StringComparison.Ordinal);
+                Assert.DoesNotContain("待保存", viewModel.AiReplacementInstructionText, StringComparison.Ordinal);
+                workflow.LockException = new IOException("simulated local persistence failure");
                 viewModel.ConfirmAiReplacementCommand.Execute(null);
                 FlushLayout(window);
 
                 Assert.Equal(1, workflow.LockCount);
+                Assert.Contains("本地选图保存失败", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                Assert.Equal(
+                    viewModel.AiStatusMessage,
+                    FindByAutomationId<TextBlock>(window, "AiStyleReviewStatus").Text);
+                Assert.True(viewModel.IsAiReplacementActive);
+
+                workflow.LockException = null;
+                viewModel.ConfirmAiReplacementCommand.Execute(null);
+                FlushLayout(window);
+
+                Assert.Equal(2, workflow.LockCount);
                 Assert.Equal(("batch_ui", "style_1", "frame_01", "asset_02"), workflow.LastLock);
-                var locked = Assert.Single(Assert.Single(viewModel.AiStyles).Pages[0].Requirements);
+                var locked = Assert.Single(Assert.Single(viewModel.AiStyles).Pages[0].Requirements.Take(1));
                 Assert.Equal("asset_02", locked.SelectedAssetId);
                 Assert.Equal("人工选用 · 已锁定", locked.StatusText);
+                Assert.Equal("new.jpg", locked.PreviewPath);
+                Assert.Same(viewModel.AiStyles[0], viewModel.SelectedAiStyle);
                 Assert.False(viewModel.IsAiReplacementActive);
+                Assert.Equal(
+                    viewModel.AiStatusMessage,
+                    FindByAutomationId<TextBlock>(window, "AiStyleReviewStatus").Text);
                 Assert.DoesNotContain(
                     EnumerateVisualDescendants<TextBlock>(window).Select(text => text.Text),
                     text => text.Contains("asset_", StringComparison.Ordinal)
                         || text.Contains(".jpg", StringComparison.OrdinalIgnoreCase)
                         || text.Contains(@"C:\", StringComparison.OrdinalIgnoreCase));
+
+                // A second frame can be replaced immediately after the first
+                // commit, and the first frame can be replaced again. Every
+                // confirmation must reach the durable lock path and rebuild
+                // the left preview and usage counters.
+                style = Assert.Single(viewModel.AiStyles);
+                var secondTarget = style.Pages[0].Requirements[1];
+                viewModel.BeginAiReplacementCommand.Execute(secondTarget);
+                viewModel.SelectAiReplacementAssetCommand.Execute(style.Assets[0]);
+                Assert.True(viewModel.ConfirmAiReplacementCommand.CanExecute(null));
+                viewModel.ConfirmAiReplacementCommand.Execute(null);
+                DrainDispatcher();
+                Assert.Equal(3, workflow.LockCount);
+                Assert.Equal(("batch_ui", "style_1", "frame_02", "asset_01"), workflow.LastLock);
+                style = Assert.Single(viewModel.AiStyles);
+                Assert.Equal("asset_02", style.Pages[0].Requirements[0].SelectedAssetId);
+                Assert.Equal("asset_01", style.Pages[0].Requirements[1].SelectedAssetId);
+                Assert.True(style.Assets[0].IsCurrentlyUsed);
+                Assert.True(style.Assets[1].IsCurrentlyUsed);
+                Assert.False(style.Assets[2].IsCurrentlyUsed);
+
+                var firstTargetAgain = style.Pages[0].Requirements[0];
+                viewModel.BeginAiReplacementCommand.Execute(firstTargetAgain);
+                viewModel.SelectAiReplacementAssetCommand.Execute(style.Assets[2]);
+                Assert.True(viewModel.ConfirmAiReplacementCommand.CanExecute(null));
+                viewModel.ConfirmAiReplacementCommand.Execute(null);
+                DrainDispatcher();
+                Assert.Equal(4, workflow.LockCount);
+                Assert.Equal(("batch_ui", "style_1", "frame_01", "asset_03"), workflow.LastLock);
+                style = Assert.Single(viewModel.AiStyles);
+                Assert.Equal("asset_03", style.Pages[0].Requirements[0].SelectedAssetId);
+                Assert.Equal("asset_01", style.Pages[0].Requirements[1].SelectedAssetId);
+                Assert.True(style.Assets[0].IsCurrentlyUsed);
+                Assert.False(style.Assets[1].IsCurrentlyUsed);
+                Assert.True(style.Assets[2].IsCurrentlyUsed);
             }
             finally
             {
                 window.Close();
                 viewModel.Dispose();
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
     }
@@ -1449,14 +2500,220 @@ public sealed class WpfShellTests
     }
 
     [Fact]
+    public void AiAnalysisAutoRefreshContinuesInStyleReviewWhileSiblingPagesArePending()
+    {
+        RunInSta(() =>
+        {
+            var workflow = new RecordingAiBatchAnalysisWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: workflow);
+            try
+            {
+                var readyPage = new AiPageAnalysisProjection(
+                    "batch_review_refresh",
+                    "style_review_refresh",
+                    "page_ready",
+                    "主图页",
+                    AiPageUiStatus.Ready,
+                    "可生成",
+                    "已通过",
+                    [],
+                    []);
+                var analysingPage = readyPage with
+                {
+                    PageId = "page_pending",
+                    PageName = "细节页",
+                    Status = AiPageUiStatus.Analysing,
+                    StatusText = "分析中",
+                    ActionText = "分析中"
+                };
+                var partialStyle = new AiStyleAnalysisProjection(
+                    "batch_review_refresh",
+                    "style_review_refresh",
+                    "款式 01",
+                    AiStyleUiStatus.ReviewRequired,
+                    "待人工复核",
+                    [readyPage, analysingPage],
+                    2);
+                var partial = new AiBatchAnalysisProjection(
+                    "batch_review_refresh",
+                    AiBatchUiStatus.ReviewRequired,
+                    "部分页面已完成，仍有页面分析中。",
+                    "继续处理",
+                    1,
+                    0,
+                    1,
+                    2,
+                    [partialStyle],
+                    AiAnalysisSchedulingControlState.Running,
+                    null);
+                SetCurrentBatchId(viewModel, partial.BatchId);
+                ApplyAiProjection(viewModel, partial);
+                SetAiScreen(viewModel);
+
+                var style = Assert.Single(viewModel.AiStyles);
+                viewModel.OpenAiStyleReviewCommand.Execute(style);
+                var timer = GetAiRefreshTimer(viewModel);
+                Assert.True(viewModel.IsAiStyleReviewVisible);
+                Assert.True(timer.IsEnabled);
+                Assert.Equal("2 张素材 · 已处理 1/2 页", style.MetaText);
+
+                var settledStyle = partialStyle with
+                {
+                    Status = AiStyleUiStatus.Ready,
+                    StatusText = "可生成",
+                    Pages = [readyPage, analysingPage with
+                    {
+                        Status = AiPageUiStatus.Ready,
+                        StatusText = "可生成",
+                        ActionText = "已通过"
+                    }]
+                };
+                workflow.RefreshProjection = partial with
+                {
+                    Status = AiBatchUiStatus.Ready,
+                    StatusText = "分析完成，所有页面均可生成。",
+                    ActionText = "进入生成",
+                    CompletedStyleCount = 1,
+                    ReadyPageCount = 2,
+                    Styles = [settledStyle]
+                };
+
+                RunAiAutoRefreshOnce(viewModel);
+
+                Assert.Equal(1, workflow.RefreshCount);
+                Assert.Equal("已完成 1/1 款 · 已处理 2/2 页 · 可生成 2/2 页", viewModel.AiBatchProgressText);
+                Assert.Equal("2 张素材 · 已处理 2/2 页", Assert.Single(viewModel.AiStyles).MetaText);
+                Assert.False(timer.IsEnabled);
+            }
+            finally
+            {
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public void AiRequestTooLargeProjectionShowsBoundedBodyAndRebuildAction()
+    {
+        RunInSta(() =>
+        {
+            var page = new AiPageAnalysisProjection(
+                "batch_request_too_large",
+                "style_01",
+                "page_01",
+                "主图页",
+                AiPageUiStatus.SystemError,
+                "请求体过大，需要重新建立批次",
+                "重新建立批次",
+                [],
+                ["最终 UTF-8 JSON 请求体超过 16 MiB；未发送 AI 请求。请减少本款照片后重新建立批次"]);
+            var projection = new AiBatchAnalysisProjection(
+                "batch_request_too_large",
+                AiBatchUiStatus.RecoveryRequired,
+                "本款最终 JSON 请求体超过 16 MiB；未发送 AI 请求。请减少本款照片后重新建立批次。",
+                "重新建立批次",
+                1,
+                1,
+                0,
+                1,
+                [new AiStyleAnalysisProjection(
+                    "batch_request_too_large",
+                    "style_01",
+                    "款式 01",
+                    AiStyleUiStatus.SystemError,
+                    "需要恢复",
+                    [page],
+                    24)],
+                AiAnalysisSchedulingControlState.Running,
+                null);
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: new RecordingAiBatchAnalysisWorkflow());
+            try
+            {
+                ApplyAiProjection(viewModel, projection);
+
+                Assert.Contains("16 MiB", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                Assert.Contains("未发送 AI 请求", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                Assert.Contains("重新建立批次", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                var projectedPage = Assert.Single(Assert.Single(viewModel.AiStyles).Pages);
+                Assert.Equal("请求体过大，需要重新建立批次", projectedPage.StatusText);
+                Assert.Equal("重新建立批次", projectedPage.ActionText);
+                Assert.Contains("16 MiB", Assert.Single(projectedPage.WarningTexts), StringComparison.Ordinal);
+            }
+            finally
+            {
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public void AiReferenceMismatchProjectionShowsReasonAndRebuildAction()
+    {
+        RunInSta(() =>
+        {
+            var page = new AiPageAnalysisProjection(
+                "batch_reference_mismatch",
+                "style_01",
+                "page_01",
+                "主图页",
+                AiPageUiStatus.SystemError,
+                "AI 返回引用不匹配，需要重新建立批次",
+                "重新建立批次",
+                [],
+                ["AI 已返回，但结果中的请求、图片或图片框标识无法与本批次安全对应，已阻止选图和生成。请使用修复版本重新建立批次"]);
+            var projection = new AiBatchAnalysisProjection(
+                "batch_reference_mismatch",
+                AiBatchUiStatus.RecoveryRequired,
+                "AI 已返回，但结果引用无法与本批次安全对应，已阻止选图和生成。请使用修复版本重新建立批次。",
+                "重新建立批次",
+                1,
+                1,
+                0,
+                1,
+                [new AiStyleAnalysisProjection(
+                    "batch_reference_mismatch",
+                    "style_01",
+                    "款式 01",
+                    AiStyleUiStatus.SystemError,
+                    "需要恢复",
+                    [page],
+                    24)],
+                AiAnalysisSchedulingControlState.Running,
+                null);
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: new RecordingAiBatchAnalysisWorkflow());
+            try
+            {
+                ApplyAiProjection(viewModel, projection);
+
+                Assert.Contains("结果引用", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                Assert.Contains("修复版本", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                Assert.Contains("重新建立批次", viewModel.AiStatusMessage, StringComparison.Ordinal);
+                var projectedPage = Assert.Single(Assert.Single(viewModel.AiStyles).Pages);
+                Assert.Equal("AI 返回引用不匹配，需要重新建立批次", projectedPage.StatusText);
+                Assert.Equal("重新建立批次", projectedPage.ActionText);
+                Assert.Contains("阻止选图和生成", Assert.Single(projectedPage.WarningTexts), StringComparison.Ordinal);
+            }
+            finally
+            {
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
     public void ResultOverviewAndDetailUsePreparedPlansWithoutInventingFormalOutput()
     {
         RunInSta(() =>
         {
-            var application = System.Windows.Application.Current as Desktop.App.App;
-            var ownsApplication = application is null;
-            application ??= new Desktop.App.App();
-            application.InitializeComponent();
             var requirement = new AiRequirementSelectionProjection(
                 "batch_results",
                 "style_01",
@@ -1585,17 +2842,17 @@ public sealed class WpfShellTests
             {
                 viewModel.Dispose();
                 window.Close();
-                if (ownsApplication)
-                {
-                    application.Shutdown();
-                }
             }
         });
     }
 
-    private static TemplateCalibrationDraftView CreateCalibrationDraft(string revisionId) => new(
+    private static TemplateCalibrationDraftView CreateCalibrationDraft(
+        string revisionId,
+        string pageId = "page_1",
+        string frameId = "frame_257",
+        string layerName = "back_main") => new(
         revisionId,
-        "page_1",
+        pageId,
         790,
         1252,
         TemplatePreviewSourceReference: null,
@@ -1603,11 +2860,11 @@ public sealed class WpfShellTests
         Frames:
         [
             new TemplateFrameProjection(
-                "frame_257",
-                "page_1",
+                frameId,
+                pageId,
                 [0, 1],
                 257,
-                "back_main",
+                layerName,
                 new string('a', 64),
                 10,
                 20,
@@ -1621,10 +2878,14 @@ public sealed class WpfShellTests
                 BlendMode: "norm",
                 IsPreviewSupported: true,
                 IsRegistered: true)
+            {
+                Scale = 1,
+                SelectionRequirement = "只使用用户素材"
+            }
         ],
         Assets: [],
         SelectedAssetId: null,
-        SelectedFrameId: "frame_257",
+         SelectedFrameId: frameId,
         SelectedScale: 1,
         SelectedOffsetX: 0,
         SelectedOffsetY: 0,
@@ -1634,7 +2895,76 @@ public sealed class WpfShellTests
         CanRedo: false,
         IsBlocked: false);
 
-    private static TemplatePageRowViewModel CreateReferenceLearningPage()
+    private static TemplateCalibrationDraftView CreateMultiFrameCalibrationDraft()
+    {
+        var front = new TemplateFrameProjection(
+            "frame_front",
+            "page_multi",
+            [2],
+            257,
+            "左上主图",
+            new string('a', 64),
+            0,
+            0,
+            300,
+            400,
+            HasMask: false,
+            HasVectorMask: false,
+            IsVisible: true,
+            IsClipping: false,
+            Opacity: 255,
+            BlendMode: "normal",
+            IsPreviewSupported: true,
+            IsRegistered: true)
+        {
+            IsSelected = true,
+            HasPersistedBinding = true,
+            BoundAssetId = "asset_front",
+            Scale = 1.1,
+            OffsetX = 3,
+            OffsetY = -2,
+            SelectionRequirement = "商品正面图"
+        };
+        var sleeve = front with
+        {
+            FrameId = "frame_sleeve",
+            LayerPath = [3],
+            LayerId = 258,
+            LayerName = "右上细节",
+            IsSelected = false,
+            BoundAssetId = "asset_sleeve",
+            Scale = 1.45,
+            OffsetX = -9,
+            OffsetY = 7,
+            SelectionRequirement = "袖口细节图"
+        };
+        return new TemplateCalibrationDraftView(
+            "revision_multi",
+            "page_multi",
+            790,
+            1252,
+            TemplatePreviewSourceReference: null,
+            IsReadOnly: false,
+            Frames: [front, sleeve],
+            Assets:
+            [
+                new TemplateCalibrationAsset("asset_front", "front.jpg", "front.jpg", 100, 100),
+                new TemplateCalibrationAsset("asset_sleeve", "sleeve.jpg", "sleeve.jpg", 100, 100)
+            ],
+            SelectedAssetId: front.BoundAssetId,
+            SelectedFrameId: front.FrameId,
+            SelectedScale: front.Scale,
+            SelectedOffsetX: front.OffsetX,
+            SelectedOffsetY: front.OffsetY,
+            SelectionRequirement: front.SelectionRequirement,
+            StatusMessage: "已保存",
+            CanUndo: false,
+            CanRedo: false,
+            IsBlocked: false);
+    }
+
+    private static TemplatePageRowViewModel CreateReferenceLearningPage(
+        string pageId = "page_learning_ui")
     {
         var inspection = new PsdInspectionDocument(
             new string('b', 64),
@@ -1652,7 +2982,7 @@ public sealed class WpfShellTests
             []);
         var page = new TemplateDraftPage(
             new TemplatePageProjection(
-                "page_learning_ui",
+                pageId,
                 0,
                 "详情页",
                 TemplatePageContentTypeOption.NormalComposition,
@@ -1709,10 +3039,15 @@ public sealed class WpfShellTests
             1,
             Desktop.Domain.Templates.LayoutIntent.Create(
                 "subject_cover",
-                1,
-                0,
-                0,
-                Desktop.Domain.Templates.TemplateRect.Create(0, 0, 790, 1252)));
+                 1,
+                 0,
+                 0,
+                 Desktop.Domain.Templates.TemplateRect.Create(0, 0, 790, 1252)),
+            PixelEvidence: new PsdLayerPixelEvidence(
+                true,
+                790 * 1252,
+                790 * 1252,
+                new PsdLayerBounds(0, 0, 790, 1252)));
         var candidates = new[] { candidate };
         var photos = new[] { photo };
         return new ReferenceLearningDocument(
@@ -1901,47 +3236,230 @@ public sealed class WpfShellTests
 
     private static void FlushLayout(Window window) => window.UpdateLayout();
 
+    private static void DrainDispatcher()
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Background,
+            new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    private static void InvokeButton(Button button)
+    {
+        var peer = new ButtonAutomationPeer(button);
+        var provider = Assert.IsAssignableFrom<IInvokeProvider>(
+            peer.GetPattern(PatternInterface.Invoke));
+        provider.Invoke();
+    }
+
+    private static void RunTemplateLibraryScenario(
+        Action<MainWindow, MainWindowViewModel, TemplateLibraryWorkspaceStub> scenario)
+    {
+        RunInSta(() =>
+        {
+            var workspace = new TemplateLibraryWorkspaceStub();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: workspace);
+            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(
+                item => item.Key == "templates");
+            var window = new MainWindow(viewModel);
+
+            try
+            {
+                window.Show();
+                DrainDispatcher();
+                FlushLayout(window);
+                scenario(window, viewModel, workspace);
+            }
+            finally
+            {
+                viewModel.Dispose();
+                window.Close();
+            }
+        });
+    }
+
+    private static (Desktop.App.App Application, System.Windows.Threading.Dispatcher Dispatcher)
+        OpenWindowAndReadApplicationResources()
+    {
+        var application = Assert.IsAssignableFrom<Desktop.App.App>(System.Windows.Application.Current);
+        Assert.IsType<SolidColorBrush>(application.TryFindResource("SurfaceBrush"));
+
+        var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+        var window = new MainWindow(viewModel);
+        try
+        {
+            window.Show();
+            DrainDispatcher();
+            FlushLayout(window);
+            Assert.NotNull(window.Content);
+            return (application, System.Windows.Threading.Dispatcher.CurrentDispatcher);
+        }
+        finally
+        {
+            Assert.Equal(ShutdownMode.OnExplicitShutdown, application.ShutdownMode);
+            window.Close();
+            Assert.Same(application, System.Windows.Application.Current);
+            viewModel.Dispose();
+        }
+    }
+
     private static void RunInSta(Action action)
     {
-        ResetWpfApplicationState();
-        Exception? failure = null;
-        var thread = new Thread(() =>
+        WpfApplicationHost.Value.Invoke(action);
+    }
+
+    private static readonly Lazy<WpfApplicationTestHost> WpfApplicationHost = new(
+        static () => new WpfApplicationTestHost(),
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private sealed class WpfApplicationTestHost
+    {
+        private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(30);
+
+        private readonly TaskCompletionSource<System.Windows.Threading.Dispatcher> _started = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly System.Windows.Threading.Dispatcher _dispatcher;
+
+        public WpfApplicationTestHost()
         {
+            var thread = new Thread(RunDispatcher)
+            {
+                IsBackground = true,
+                Name = "Desktop.App.UiTests.WpfHost"
+            };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+
+            try
+            {
+                _dispatcher = _started.Task
+                    .WaitAsync(OperationTimeout)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (TimeoutException exception)
+            {
+                throw new TimeoutException(
+                    "The shared WPF application host did not start within 30 seconds.",
+                    exception);
+            }
+        }
+
+        public void Invoke(Action action)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+            if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished)
+            {
+                throw new InvalidOperationException("The shared WPF application host has stopped.");
+            }
+
+            var operation = _dispatcher.InvokeAsync(
+                () => ExecuteIsolated(action),
+                System.Windows.Threading.DispatcherPriority.Send);
+            try
+            {
+                operation.Task
+                    .WaitAsync(OperationTimeout)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (TimeoutException exception)
+            {
+                throw new TimeoutException(
+                    "WPF shell test did not complete within 30 seconds.",
+                    exception);
+            }
+        }
+
+        private void RunDispatcher()
+        {
+            try
+            {
+                var application = new WpfTestApplication();
+                application.InitializeResources();
+                application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                _started.TrySetResult(dispatcher);
+                System.Windows.Threading.Dispatcher.Run();
+            }
+            catch (Exception exception)
+            {
+                _started.TrySetException(exception);
+            }
+        }
+
+        private static void ExecuteIsolated(Action action)
+        {
+            ExceptionDispatchInfo? failure = null;
+            var previousContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
             try
             {
                 action();
             }
             catch (Exception exception)
             {
-                failure = exception;
+                failure = ExceptionDispatchInfo.Capture(exception);
             }
             finally
             {
-                System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+                try
+                {
+                    CloseRemainingWindows();
+                    DrainDispatcher();
+                }
+                catch (Exception exception)
+                {
+                    failure ??= ExceptionDispatchInfo.Capture(exception);
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(previousContext);
+                }
             }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(30)))
-        {
-            throw new TimeoutException("WPF shell test did not complete within 30 seconds.");
+
+            failure?.Throw();
         }
 
-        if (failure is not null)
+        private static void CloseRemainingWindows()
         {
-            ExceptionDispatchInfo.Capture(failure).Throw();
+            var application = Assert.IsAssignableFrom<Desktop.App.App>(System.Windows.Application.Current);
+            foreach (Window window in application.Windows.Cast<Window>().ToArray())
+            {
+                window.Close();
+            }
+
+            application.MainWindow = null;
+            application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         }
 
-        ResetWpfApplicationState();
-    }
+        private sealed class WpfTestApplication : Desktop.App.App
+        {
+            public void InitializeResources()
+            {
+                Resources.MergedDictionaries.Add(new ResourceDictionary
+                {
+                    Source = new Uri(
+                        "/Desktop.App;component/Styles/DesignSystem.xaml",
+                        UriKind.Relative)
+                });
+                Resources["BooleanToVisibilityConverter"] = new BooleanToVisibilityConverter();
+                Resources["BoundedPreviewImageConverter"] = new BoundedPreviewImageConverter();
+            }
 
-    private static void ResetWpfApplicationState()
-    {
-        var applicationType = typeof(System.Windows.Application);
-        const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Static;
-        applicationType.GetField("_appInstance", flags)?.SetValue(null, null);
-        applicationType.GetField("_appCreatedInThisAppDomain", flags)?.SetValue(null, false);
-        applicationType.GetField("_isShuttingDown", flags)?.SetValue(null, false);
+            protected override void OnStartup(StartupEventArgs e)
+            {
+                // The test host owns the dispatcher and must not run the production composition root.
+            }
+
+            protected override void OnExit(ExitEventArgs e)
+            {
+                // The process owns this single test application for the full test assembly lifetime.
+            }
+        }
     }
 
     private sealed class QueueFolderPicker(params string[] paths) : IFolderPicker
@@ -1958,9 +3476,240 @@ public sealed class WpfShellTests
         }
     }
 
+    private sealed class DeferredCalibrationService : ITemplateCalibrationService
+    {
+        private readonly ConcurrentDictionary<
+            string,
+            TaskCompletionSource<TemplateCalibrationDraftView>> _pending = new(StringComparer.Ordinal);
+
+        public Task<TemplateCalibrationDraftView> LoadAsync(
+            TemplateDraftSession session,
+            string pageId,
+            CancellationToken cancellationToken) => _pending.GetOrAdd(
+            pageId,
+            _ => new TaskCompletionSource<TemplateCalibrationDraftView>(
+                TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+
+        public void Complete(string pageId, TemplateCalibrationDraftView draft)
+        {
+            if (!_pending.TryGetValue(pageId, out var completion))
+            {
+                throw new InvalidOperationException($"No deferred calibration load for {pageId}.");
+            }
+
+            completion.TrySetResult(draft);
+        }
+
+        public Task<TemplateCalibrationDraftView> BindAssetAsync(
+            TemplateDraftSession session,
+            string pageId,
+            string frameId,
+            string assetId,
+            CancellationToken cancellationToken) => Unsupported<TemplateCalibrationDraftView>();
+
+        public Task<TemplateCalibrationDraftView> BindReadOnlyAssetAsync(
+            TemplateDraftSession session,
+            string pageId,
+            string frameId,
+            string sourcePath,
+            CancellationToken cancellationToken) => Unsupported<TemplateCalibrationDraftView>();
+
+        public Task<TemplateCalibrationDraftView> ClearAssetAsync(
+            TemplateDraftSession session,
+            string pageId,
+            string frameId,
+            CancellationToken cancellationToken) => Unsupported<TemplateCalibrationDraftView>();
+
+        public Task<TemplateCalibrationDraftView> SetGeometryAsync(
+            TemplateDraftSession session,
+            string pageId,
+            string frameId,
+            double scale,
+            double offsetX,
+            double offsetY,
+            CancellationToken cancellationToken) => Unsupported<TemplateCalibrationDraftView>();
+
+        public Task<TemplateCalibrationDraftView> SetSelectionRequirementAsync(
+            TemplateDraftSession session,
+            string pageId,
+            string frameId,
+            string selectionRequirement,
+            CancellationToken cancellationToken) => Unsupported<TemplateCalibrationDraftView>();
+
+        public Task<TemplateCalibrationDraftView> ApplyHistoryAsync(
+            TemplateDraftSession session,
+            string pageId,
+            CalibrationUndoAction action,
+            CancellationToken cancellationToken) => Unsupported<TemplateCalibrationDraftView>();
+
+        private static Task<T> Unsupported<T>() => Task.FromException<T>(
+            new NotSupportedException("Only deferred calibration loading is supported by this test."));
+    }
+
+    private sealed class PageEditWorkspaceStub : ITemplateWorkspaceService
+    {
+        public string? LastGroupId { get; private set; }
+        public string? LastPageId { get; private set; }
+        public string? LastFullGroupId { get; private set; }
+
+        public Task<TemplateDraftSession> BeginPageEditAsync(
+            string groupId,
+            string pageId,
+            CancellationToken cancellationToken)
+        {
+            LastGroupId = groupId;
+            LastPageId = pageId;
+            return Task.FromResult(new TemplateDraftSession(
+                groupId,
+                "编辑入口测试",
+                "revision_edit_ui_draft",
+                3,
+                new HashSet<string>([pageId], StringComparer.Ordinal))
+            {
+                EditablePageIds = new HashSet<string>([pageId], StringComparer.Ordinal)
+            });
+        }
+
+        public Task<TemplateDraftView> GetDraftAsync(
+            TemplateDraftSession session,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new TemplateDraftView(session, []));
+
+        public Task<TemplateDraftSession> BeginFullEditAsync(
+            string groupId,
+            CancellationToken cancellationToken)
+        {
+            LastFullGroupId = groupId;
+            return Task.FromResult(new TemplateDraftSession(
+                groupId,
+                "编辑入口测试",
+                "revision_edit_ui_full_draft",
+                3,
+                new HashSet<string>(["page_edit_ui"], StringComparer.Ordinal))
+            {
+                EditablePageIds = new HashSet<string>(["page_edit_ui"], StringComparer.Ordinal)
+            });
+        }
+
+        public Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails?> GetDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails?> GetCommittedDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task RenameTemplateGroupAsync(string groupId, string newName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginCreateAsync(string groupName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginIncrementAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> ResumeDraftAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateWorkspaceImportResult> ImportPageAsync(TemplateDraftSession session, string commandId, string resourceId, string sourcePsdPath, string pageName, TemplateDuplicateDecision duplicateDecision, string? selectedDuplicateResourceId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task ConfigurePageAsync(TemplateDraftSession session, string pageId, string name, TemplatePageContentTypeOption contentType, TemplateGenerationModeOption generationMode, int? variantCapacity, bool enabled, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task ReorderPagesAsync(TemplateDraftSession session, IReadOnlyList<string> orderedPageIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task RemovePageAsync(TemplateDraftSession session, string pageId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails> CommitDraftAsync(TemplateDraftSession session, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails> CommitDraftAsNewGroupAsync(TemplateDraftSession session, string newGroupName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateBatchSnapshotView> CreateBatchSnapshotAsync(string groupId, string batchId, IReadOnlyList<string> selectedPageIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateBatchSnapshotView> UpdateDraftBatchSnapshotAsync(string groupId, string batchId, IReadOnlyList<string> selectedPageIds, bool analysisStarted, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<string>> DeleteTemplateGroupAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class TemplateLibraryWorkspaceStub : ITemplateWorkspaceService
+    {
+        private const string GroupId = "group_template_library_ui";
+        private const string RevisionId = "revision_template_library_ui";
+        private string _name = "模板库交互测试";
+        private bool _deleted;
+
+        public int GetDetailsCount { get; private set; }
+
+        public int RenameCount { get; private set; }
+
+        public int DeleteCount { get; private set; }
+
+        public Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken)
+        {
+            IReadOnlyList<TemplateLibraryItem> items = _deleted
+                ? []
+                :
+                [
+                    new TemplateLibraryItem(
+                        GroupId,
+                        _name,
+                        RevisionId,
+                        1,
+                        "可用",
+                        new DateTimeOffset(2026, 9, 12, 2, 0, 0, TimeSpan.Zero))
+                ];
+            return Task.FromResult(items);
+        }
+
+        public Task<TemplateGroupDetails?> GetDetailsAsync(
+            string groupId,
+            CancellationToken cancellationToken)
+        {
+            GetDetailsCount++;
+            TemplateGroupDetails? details = _deleted
+                ? null
+                : new TemplateGroupDetails(
+                    GroupId,
+                    _name,
+                    RevisionId,
+                    1,
+                    [
+                        new TemplatePageProjection(
+                            "page_template_library_ui",
+                            0,
+                            "主图页",
+                            TemplatePageContentTypeOption.NormalComposition,
+                            TemplateGenerationModeOption.OncePerProduct,
+                            null,
+                            true,
+                            "resource_template_library_ui")
+                    ],
+                    true,
+                    new DateTimeOffset(2026, 9, 12, 2, 0, 0, TimeSpan.Zero));
+            return Task.FromResult(details);
+        }
+
+        public Task RenameTemplateGroupAsync(
+            string groupId,
+            string newName,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal(GroupId, groupId);
+            RenameCount++;
+            _name = newName;
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<string>> DeleteTemplateGroupAsync(
+            string groupId,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal(GroupId, groupId);
+            DeleteCount++;
+            _deleted = true;
+            return Task.FromResult<IReadOnlyList<string>>([]);
+        }
+
+        public Task<TemplateGroupDetails?> GetCommittedDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginCreateAsync(string groupName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginIncrementAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginPageEditAsync(string groupId, string pageId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginFullEditAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> ResumeDraftAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateWorkspaceImportResult> ImportPageAsync(TemplateDraftSession session, string commandId, string resourceId, string sourcePsdPath, string pageName, TemplateDuplicateDecision duplicateDecision, string? selectedDuplicateResourceId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftView> GetDraftAsync(TemplateDraftSession session, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task ConfigurePageAsync(TemplateDraftSession session, string pageId, string name, TemplatePageContentTypeOption contentType, TemplateGenerationModeOption generationMode, int? variantCapacity, bool enabled, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task ReorderPagesAsync(TemplateDraftSession session, IReadOnlyList<string> orderedPageIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task RemovePageAsync(TemplateDraftSession session, string pageId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails> CommitDraftAsync(TemplateDraftSession session, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails> CommitDraftAsNewGroupAsync(TemplateDraftSession session, string newGroupName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateBatchSnapshotView> CreateBatchSnapshotAsync(string groupId, string batchId, IReadOnlyList<string> selectedPageIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateBatchSnapshotView> UpdateDraftBatchSnapshotAsync(string groupId, string batchId, IReadOnlyList<string> selectedPageIds, bool analysisStarted, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
     private sealed class RecordingBatchInputWorkflow : IBatchInputWorkflow
     {
         public BatchInputSubmission? Submission { get; private set; }
+
+        public List<BatchInputSubmission> Submissions { get; } = [];
 
         public int RestoreCount { get; private set; }
 
@@ -1985,6 +3734,7 @@ public sealed class WpfShellTests
             CancellationToken cancellationToken)
         {
             Submission = submission;
+            Submissions.Add(submission);
             if (ScanGate is { } gate)
             {
                 await gate.Task.WaitAsync(cancellationToken);
@@ -2019,6 +3769,39 @@ public sealed class WpfShellTests
                 "草稿已自动保存。"));
     }
 
+    private sealed class RecordingAiCredentialManagement : IAiCredentialManagementPort
+    {
+        private string? _value;
+
+        public int SaveCount { get; private set; }
+
+        public int RemoveCount { get; private set; }
+
+        public Task<AiCredentialStatusSnapshot> GetStatusAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_value is null
+                ? new AiCredentialStatusSnapshot(AiCredentialState.NotConfigured, null)
+                : new AiCredentialStatusSnapshot(AiCredentialState.Configured, AiCredentialRules.MaskSuffix(_value)));
+        }
+
+        public Task SaveAsync(string apiKey, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _value = AiCredentialRules.NormalizeAndValidate(apiKey);
+            SaveCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _value = null;
+            RemoveCount++;
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class RecordingAiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow
     {
         private AiUploadConsentRecord? _consent;
@@ -2036,6 +3819,10 @@ public sealed class WpfShellTests
         public AiBatchAnalysisProjection? RefreshProjection { get; set; }
 
         public AiBatchAnalysisProjection? LockProjection { get; set; }
+
+        public Func<int, AiBatchAnalysisProjection>? LockProjectionFactory { get; set; }
+
+        public Exception? LockException { get; set; }
 
         public AiRenderPlanPreparation? RenderPreparation { get; set; }
 
@@ -2095,7 +3882,14 @@ public sealed class WpfShellTests
         {
             LockCount++;
             LastLock = (batchId, styleId, requirementId, assetId);
-            return Task.FromResult(LockProjection ?? throw new InvalidOperationException("TEST_LOCK_PROJECTION_MISSING"));
+            if (LockException is not null)
+            {
+                return Task.FromException<AiBatchAnalysisProjection>(LockException);
+            }
+            return Task.FromResult(
+                LockProjectionFactory?.Invoke(LockCount)
+                ?? LockProjection
+                ?? throw new InvalidOperationException("TEST_LOCK_PROJECTION_MISSING"));
         }
 
         public Task<AiBatchAnalysisProjection> AnalyzeSelectedAssetAsync(
@@ -2191,6 +3985,74 @@ public sealed class WpfShellTests
             };
             return Task.FromResult(ReferenceLearningResult.Success(_document));
         }
+    }
+
+    private sealed class MultiPageReferenceLearningService(ReferenceLearningDocument template)
+        : IReferenceLearningService
+    {
+        public Task<ReferenceLearningResult> AnalyzeAsync(ReferenceLearningRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(ReferenceLearningResult.Success(ForRequest(request)));
+
+        public Task<ReferenceLearningResult> ResumeAsync(ReferenceLearningRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(ReferenceLearningResult.Success(ForRequest(request)));
+
+        public Task<ReferenceLearningResult> ResumeAsync(string learningId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ReferenceLearningResult> ApplyReviewAsync(ReferenceLearningDocument document, IReadOnlyList<ReferenceFrameReview> reviews, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ReferenceLearningResult> CancelAsync(ReferenceLearningDocument document, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        private ReferenceLearningDocument ForRequest(ReferenceLearningRequest request)
+        {
+            var candidates = template.Candidates.Select(candidate => candidate with
+            {
+                FrameId = "frame_" + request.PageId,
+                PageId = request.PageId
+            }).ToArray();
+            return template with
+            {
+                LearningId = request.LearningId,
+                PageId = request.PageId,
+                Candidates = candidates,
+                RulesDigest = ReferenceLearningDigest.Compute(
+                    template.PsdSha256,
+                    template.StructureSignature,
+                    template.ReferenceFolderDigest,
+                    template.ReferencePhotos,
+                    candidates)
+            };
+        }
+    }
+
+    private sealed class RecordingReferenceLearningAiService : IReferenceLearningAiService
+    {
+        public int BatchCalls { get; private set; }
+        public int SingleCalls { get; private set; }
+        public int LastBatchSize { get; private set; }
+
+        public Task<ReferenceSemanticGenerationResult> GenerateSelectionRequirementsAsync(
+            ReferenceSemanticGenerationCommand command,
+            CancellationToken cancellationToken = default)
+        {
+            SingleCalls++;
+            return Task.FromResult(new ReferenceSemanticGenerationResult(command.Document, "cache", false, null));
+        }
+
+        public Task<ReferenceSemanticBatchGenerationResult> GenerateSelectionRequirementsAsync(
+            IReadOnlyList<ReferenceSemanticGenerationCommand> commands,
+            CancellationToken cancellationToken = default)
+        {
+            BatchCalls++;
+            LastBatchSize = commands.Count;
+            return Task.FromResult(new ReferenceSemanticBatchGenerationResult(
+                commands.Select(command => command.Document).ToArray(), "cache", false, null));
+        }
+
+        public Task<ReferenceLearningDocument> ApplyUserOverrideAsync(ReferenceLearningDocument document, string frameId, string selectionRequirement, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class RecordingReferenceLearningCommitService : IReferenceLearningCommitService

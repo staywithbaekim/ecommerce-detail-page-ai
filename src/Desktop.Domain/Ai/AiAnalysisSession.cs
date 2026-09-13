@@ -161,8 +161,7 @@ public sealed record AiAnalysisSession
 
         if (status is (AiAnalysisSessionStatus.Queued or AiAnalysisSessionStatus.Uploading
                 or AiAnalysisSessionStatus.Analysing or AiAnalysisSessionStatus.RetryableError
-                or AiAnalysisSessionStatus.TerminalError or AiAnalysisSessionStatus.Cancelled
-                or AiAnalysisSessionStatus.AiResultUnknown)
+                or AiAnalysisSessionStatus.TerminalError or AiAnalysisSessionStatus.Cancelled)
             && (hasVerifiedResult || lockList.Length != 0))
         {
             throw new InvalidOperationException("AI_UNVERIFIED_STATE_INVARIANT_INVALID");
@@ -219,7 +218,9 @@ public sealed record AiAnalysisSession
             throw new AiSelectionConcurrencyException("AI_SELECTION_REVISION_CONFLICT");
         }
 
-        if (Status is not (AiAnalysisSessionStatus.Validated or AiAnalysisSessionStatus.ManualReview))
+        if (Status is not (AiAnalysisSessionStatus.Validated
+                or AiAnalysisSessionStatus.ManualReview
+                or AiAnalysisSessionStatus.AiResultUnknown))
         {
             throw new InvalidOperationException("AI_SELECTION_NOT_AVAILABLE");
         }
@@ -240,7 +241,9 @@ public sealed record AiAnalysisSession
             Identifier(assetId, "AI_ASSET_ID_INVALID"),
             nextRevision);
         return Copy(
-            AiAnalysisSessionStatus.ManualReview,
+            Status == AiAnalysisSessionStatus.AiResultUnknown
+                ? AiAnalysisSessionStatus.AiResultUnknown
+                : AiAnalysisSessionStatus.ManualReview,
             nextRevision,
             LockedSelections.ToImmutableDictionary(StringComparer.Ordinal)
                 .SetItem(selection.RequirementId, selection),

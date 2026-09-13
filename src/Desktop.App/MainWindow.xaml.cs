@@ -22,12 +22,28 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
+        viewModel.AiCredentialInputCleared += ViewModel_AiCredentialInputCleared;
         Loaded += (_, _) => PrimaryNavigationList.SelectedItem = viewModel.SelectedNavigationItem;
         SourceInitialized += (_, _) => ApplyStartupBounds();
         SizeChanged += (_, _) => viewModel.SetWindowWidth(ActualWidth);
         PreviewKeyDown += MainWindow_PreviewKeyDown;
-        Closed += (_, _) => viewModel.Dispose();
+        Closed += (_, _) =>
+        {
+            viewModel.AiCredentialInputCleared -= ViewModel_AiCredentialInputCleared;
+            viewModel.Dispose();
+        };
     }
+
+    private void AiApiKeyInput_PasswordChanged(object sender, RoutedEventArgs e)
+    {
+        if (sender is PasswordBox passwordBox && DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.SetAiCredentialInput(passwordBox.Password);
+        }
+    }
+
+    private void ViewModel_AiCredentialInputCleared(object? sender, EventArgs e) =>
+        AiApiKeyInputBox.Clear();
 
     private void ApplyStartupBounds()
     {

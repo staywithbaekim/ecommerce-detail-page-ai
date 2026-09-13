@@ -36,14 +36,11 @@ public sealed class TemplateCalibrationService(
                 pageId,
                 resource.Inspection,
                 GetTemplatePreviewSource(resource));
-            if (calibrationStates is not null)
-            {
-                var persisted = await calibrationStates.GetCalibrationStateAsync(
-                    DraftId(session, pageId),
-                    pageId,
-                    cancellationToken).ConfigureAwait(false);
-                state.Apply(persisted);
-            }
+            var persisted = await LoadPersistedStateAsync(
+                session,
+                pageId,
+                cancellationToken).ConfigureAwait(false);
+            state.Apply(persisted);
             foreach (var binding in revision.FrameBindings.Where(binding => string.Equals(
                          binding.PageId,
                          pageId,
@@ -52,12 +49,36 @@ public sealed class TemplateCalibrationService(
                 state.ApplyBinding(binding);
             }
 
+            // Older page-edit drafts stored their calibration checkpoint under
+            // the committed revision id.  Once the rule has been projected
+            // onto the current page graph, copy the normalized snapshot to the
+            // active draft so a later restart does not depend on the legacy
+            // lookup path.
+            if (persisted is not null
+                && !string.Equals(persisted.DraftId, DraftId(session, pageId), StringComparison.Ordinal)
+                && calibrationStates is not null
+                && session.CanEditPage(pageId))
+            {
+                var activeDraftId = DraftId(session, pageId);
+                await templates.SaveCalibrationDraftAsync(
+                    CalibrationDraft.Create(
+                        activeDraftId,
+                        session.DraftRevisionId,
+                        [pageId],
+                        TemplateRevisionState.Calibrating,
+                        persisted.Sequence),
+                    cancellationToken).ConfigureAwait(false);
+                await calibrationStates.SaveCalibrationStateAsync(
+                    state.ToSnapshot(activeDraftId, pageId),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             _states.TryAdd(key, state);
         }
         return state.ToView(
             revision.RevisionId,
             pageId,
-            session.IsIncremental && session.BasePageIds.Contains(pageId));
+            !session.CanEditPage(pageId));
     }
 
     public async Task<TemplateCalibrationDraftView> BindAssetAsync(
@@ -110,18 +131,23 @@ public sealed class TemplateCalibrationService(
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
         state.SelectionRequirements.TryAdd(frameId, DefaultSelectionRequirement);
-        if (!revision.FrameBindings.Any(binding => string.Equals(binding.FrameId, frameId, StringComparison.Ordinal)))
+        var existingBinding = FindPersistedBinding(revision, state, frameId);
+        if (existingBinding is null)
         {
+            state.PersistedBindingIds[frameId] = frameId;
             await templates.SaveDraftRevisionAsync(
                 revision.AddFrameBinding(state.BuildFrameBinding(pageId, frameId)),
                 cancellationToken).ConfigureAwait(false);
         }
         else
         {
+            state.PersistedBindingIds[frameId] = existingBinding.FrameId;
             await templates.SaveDraftRevisionAsync(
                 revision.UpdateFrameBinding(
-                    frameId,
-                    selectionRequirement: state.BuildSelectionRequirement(frameId),
+                    existingBinding.FrameId,
+                    selectionRequirement: state.BuildSelectionRequirement(
+                        frameId,
+                        existingBinding.SelectionRequirement.Criteria),
                     layoutIntent: state.BuildLayoutIntent(frameId)),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -186,15 +212,14 @@ public sealed class TemplateCalibrationService(
             state.SelectedFrameId = frameId;
             state.SelectedAssetId = null;
             state.RegisteredFrames.Remove(frameId);
-            if (revision.FrameBindings.Any(binding => string.Equals(
-                    binding.FrameId,
-                    frameId,
-                    StringComparison.Ordinal)))
+            var existingBinding = FindPersistedBinding(revision, state, frameId);
+            if (existingBinding is not null)
             {
                 await templates.SaveDraftRevisionAsync(
-                    revision.RemoveFrameBinding(frameId),
+                    revision.RemoveFrameBinding(existingBinding.FrameId),
                     cancellationToken).ConfigureAwait(false);
             }
+            state.PersistedBindingIds.Remove(frameId);
             await PersistDraftAsync(session, pageId, state, cancellationToken).ConfigureAwait(false);
             return state.ToView(view.RevisionId, pageId, isReadOnly: false);
         }
@@ -266,10 +291,13 @@ public sealed class TemplateCalibrationService(
         var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
-        if (revision.FrameBindings.Any(binding => string.Equals(binding.FrameId, frameId, StringComparison.Ordinal)))
+        var existingBinding = FindPersistedBinding(revision, state, frameId);
+        if (existingBinding is not null)
         {
             await templates.SaveDraftRevisionAsync(
-                revision.UpdateFrameBinding(frameId, layoutIntent: state.BuildLayoutIntent(frameId)),
+                revision.UpdateFrameBinding(
+                    existingBinding.FrameId,
+                    layoutIntent: state.BuildLayoutIntent(frameId)),
                 cancellationToken).ConfigureAwait(false);
         }
         await PersistDraftAsync(session, pageId, state, cancellationToken).ConfigureAwait(false);
@@ -308,21 +336,22 @@ public sealed class TemplateCalibrationService(
                 .ConfigureAwait(false)
                 ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
             var frameId = state.SelectedFrameId;
-            var hasBinding = revision.FrameBindings.Any(binding => string.Equals(
-                binding.FrameId,
-                frameId,
-                StringComparison.Ordinal));
+            var existingBinding = FindPersistedBinding(revision, state, frameId);
+            var hasBinding = existingBinding is not null;
             if (state.FrameAssets.ContainsKey(frameId))
             {
                 state.RegisteredFrames.Add(frameId);
                 await templates.SaveDraftRevisionAsync(
                     hasBinding
                         ? revision.UpdateFrameBinding(
-                            frameId,
-                            selectionRequirement: state.BuildSelectionRequirement(frameId),
+                            existingBinding!.FrameId,
+                            selectionRequirement: state.BuildSelectionRequirement(
+                                frameId,
+                                existingBinding.SelectionRequirement.Criteria),
                             layoutIntent: state.BuildLayoutIntent(frameId))
                         : revision.AddFrameBinding(state.BuildFrameBinding(pageId, frameId)),
                     cancellationToken).ConfigureAwait(false);
+                state.PersistedBindingIds[frameId] = existingBinding?.FrameId ?? frameId;
             }
             else
             {
@@ -330,9 +359,10 @@ public sealed class TemplateCalibrationService(
                 if (hasBinding)
                 {
                     await templates.SaveDraftRevisionAsync(
-                        revision.RemoveFrameBinding(frameId),
+                        revision.RemoveFrameBinding(existingBinding!.FrameId),
                         cancellationToken).ConfigureAwait(false);
                 }
+                state.PersistedBindingIds.Remove(frameId);
             }
         }
 
@@ -357,14 +387,11 @@ public sealed class TemplateCalibrationService(
         var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
-        var binding = revision.FrameBindings.SingleOrDefault(item => string.Equals(
-            item.FrameId,
-            frameId,
-            StringComparison.Ordinal))
+        var binding = FindPersistedBinding(revision, state, frameId)
             ?? throw new InvalidOperationException("TPL_FRAME_NOT_FOUND");
         await templates.SaveDraftRevisionAsync(
             revision.UpdateFrameBinding(
-                frameId,
+                binding.FrameId,
                 selectionRequirement: SelectionRequirement.Create(
                     normalized,
                     binding.SelectionRequirement.Criteria)),
@@ -397,9 +424,57 @@ public sealed class TemplateCalibrationService(
         }
     }
 
+    private async Task<CalibrationStateSnapshot?> LoadPersistedStateAsync(
+        TemplateDraftSession session,
+        string pageId,
+        CancellationToken cancellationToken)
+    {
+        if (calibrationStates is null)
+        {
+            return null;
+        }
+
+        var currentDraft = await calibrationStates.GetCalibrationStateAsync(
+            DraftId(session, pageId),
+            pageId,
+            cancellationToken).ConfigureAwait(false);
+        if (currentDraft is not null)
+        {
+            return currentDraft;
+        }
+
+        // Page-edit drafts inherit a committed page but historically kept the
+        // calibration checkpoint under that committed revision id.  Resolve
+        // the committed revision through the group rather than guessing a
+        // revision number, then use it only as a read-compatible fallback.
+        var group = await templates.GetGroupAsync(session.GroupId, cancellationToken)
+            .ConfigureAwait(false);
+        var committedRevisionId = group?.CurrentRevisionId;
+        if (string.IsNullOrWhiteSpace(committedRevisionId)
+            || string.Equals(committedRevisionId, session.DraftRevisionId, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return await calibrationStates.GetCalibrationStateAsync(
+            DraftId(committedRevisionId, pageId),
+            pageId,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static FrameBinding? FindPersistedBinding(
+        TemplateRevision revision,
+        CalibrationState state,
+        string frameId)
+    {
+        var persistedFrameId = state.ResolvePersistedBindingId(frameId);
+        return revision.FrameBindings.SingleOrDefault(binding =>
+            string.Equals(binding.FrameId, persistedFrameId, StringComparison.Ordinal));
+    }
+
     private static void EnsurePageEditable(TemplateDraftSession session, string pageId)
     {
-        if (session.IsIncremental && session.BasePageIds.Contains(pageId))
+        if (!session.CanEditPage(pageId))
         {
             throw new InvalidOperationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
         }
@@ -494,6 +569,9 @@ public sealed class TemplateCalibrationService(
     private static string DraftId(TemplateDraftSession session, string pageId) =>
         $"calibration_{session.DraftRevisionId}_{pageId}";
 
+    private static string DraftId(string revisionId, string pageId) =>
+        $"calibration_{revisionId}_{pageId}";
+
     private sealed class CalibrationState(
         IReadOnlyList<TemplateFrameProjection> frames,
         int canvasWidth,
@@ -508,6 +586,7 @@ public sealed class TemplateCalibrationService(
         public Dictionary<string, string> FrameAssets { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, Geometry> FrameGeometry { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, string> SelectionRequirements { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, string> PersistedBindingIds { get; } = new(StringComparer.Ordinal);
         public HashSet<string> RegisteredFrames { get; } = new(StringComparer.Ordinal);
         public Stack<TemplateCalibrationOperation> Undo { get; } = new();
         public Stack<TemplateCalibrationOperation> Redo { get; } = new();
@@ -516,6 +595,9 @@ public sealed class TemplateCalibrationService(
         public string? SelectedFrameId { get; set; }
 
         public Geometry GetGeometry(string frameId) => FrameGeometry.GetValueOrDefault(frameId, new Geometry(1, 0, 0));
+
+        public string ResolvePersistedBindingId(string frameId) =>
+            PersistedBindingIds.GetValueOrDefault(frameId, frameId);
 
         public LayoutIntent BuildLayoutIntent(string frameId)
         {
@@ -529,16 +611,29 @@ public sealed class TemplateCalibrationService(
                 TemplateRect.Create(0, 0, frame.Width, frame.Height));
         }
 
-        public SelectionRequirement BuildSelectionRequirement(string frameId)
+        public SelectionRequirement BuildSelectionRequirement(
+            string frameId,
+            IEnumerable<SelectionCriterion>? existingCriteria = null)
         {
             var description = SelectionRequirements.GetValueOrDefault(
                 frameId,
                 DefaultSelectionRequirement);
             description = NormalizeSelectionRequirement(description);
             var assetId = FrameAssets.GetValueOrDefault(frameId);
+            var criteria = existingCriteria is null
+                ? []
+                : existingCriteria
+                    .Where(item => !string.Equals(item.Key, "asset_id", StringComparison.Ordinal))
+                    .ToArray();
+            if (assetId is not null)
+            {
+                criteria = criteria
+                    .Append(SelectionCriterion.Create("asset_id", assetId))
+                    .ToArray();
+            }
             return SelectionRequirement.Create(
                 description,
-                assetId is null ? [] : [SelectionCriterion.Create("asset_id", assetId)]);
+                criteria);
         }
 
         public FrameBinding BuildFrameBinding(string pageId, string frameId)
@@ -616,15 +711,18 @@ public sealed class TemplateCalibrationService(
 
         public void ApplyBinding(FrameBinding binding)
         {
-            if (!Frames.Any(frame => string.Equals(frame.FrameId, binding.FrameId, StringComparison.Ordinal)))
+            var frame = ResolveFrame(binding);
+            if (frame is null)
             {
                 return;
             }
 
-            SelectionRequirements[binding.FrameId] = NormalizeSelectionRequirement(
+            var frameId = frame.FrameId;
+            PersistedBindingIds[frameId] = binding.FrameId;
+            SelectionRequirements[frameId] = NormalizeSelectionRequirement(
                 binding.SelectionRequirement.Description);
-            RegisteredFrames.Add(binding.FrameId);
-            FrameGeometry[binding.FrameId] = new Geometry(
+            RegisteredFrames.Add(frameId);
+            FrameGeometry[frameId] = new Geometry(
                 binding.LayoutIntent.Scale,
                 binding.LayoutIntent.OffsetX,
                 binding.LayoutIntent.OffsetY);
@@ -632,10 +730,59 @@ public sealed class TemplateCalibrationService(
                 string.Equals(item.Key, "asset_id", StringComparison.Ordinal))?.Value;
             if (asset is not null)
             {
-                FrameAssets[binding.FrameId] = asset;
+                EnsureAsset(asset, binding, frame);
+                FrameAssets[frameId] = asset;
                 SelectedAssetId ??= asset;
-                SelectedFrameId ??= binding.FrameId;
+                SelectedFrameId ??= frameId;
             }
+        }
+
+        private TemplateFrameProjection? ResolveFrame(FrameBinding binding)
+        {
+            var exact = Frames.SingleOrDefault(frame => string.Equals(
+                frame.FrameId,
+                binding.FrameId,
+                StringComparison.Ordinal));
+            if (exact is not null)
+            {
+                return exact;
+            }
+
+            var byEvidence = Frames.Where(frame =>
+                    frame.LayerId == binding.ExpectedLayer.LayerId
+                    && string.Equals(
+                        NormalizeStructureSignature(frame.StructureSignature),
+                        NormalizeStructureSignature(binding.ExpectedLayer.StructureSignature.Value),
+                        StringComparison.OrdinalIgnoreCase)
+                    && frame.LayerPath.SequenceEqual(binding.LayerPath.Segments))
+                .ToArray();
+            if (byEvidence.Length == 1)
+            {
+                return byEvidence[0];
+            }
+
+            var byLayer = Frames.Where(frame => frame.LayerId == binding.ExpectedLayer.LayerId).ToArray();
+            return byLayer.Length == 1 ? byLayer[0] : null;
+        }
+
+        private void EnsureAsset(
+            string assetId,
+            FrameBinding binding,
+            TemplateFrameProjection frame)
+        {
+            if (Assets.ContainsKey(assetId))
+            {
+                return;
+            }
+
+            var displayName = binding.SelectionRequirement.Criteria.SingleOrDefault(item =>
+                string.Equals(item.Key, "reference_file_name", StringComparison.Ordinal))?.Value;
+            Assets[assetId] = new TemplateCalibrationAsset(
+                assetId,
+                string.IsNullOrWhiteSpace(displayName) ? assetId : displayName,
+                string.Empty,
+                frame.Width,
+                frame.Height);
         }
 
         private static string NormalizeSelectionRequirement(string value)
@@ -661,14 +808,34 @@ public sealed class TemplateCalibrationService(
 
         public TemplateCalibrationDraftView ToView(string revisionId, string pageId, bool isReadOnly)
         {
-            var geometry = SelectedFrameId is null ? new Geometry(1, 0, 0) : GetGeometry(SelectedFrameId);
+            // Prefer a frame that already has a persisted rule when an edit
+            // draft is first opened. A stale selection can otherwise point at
+            // an unregistered smart object and make the saved rule appear to
+            // have disappeared in the inspector.
+            var selectedFrameId = SelectedFrameId;
+            if (RegisteredFrames.Count > 0
+                && (selectedFrameId is null || !RegisteredFrames.Contains(selectedFrameId)))
+            {
+                selectedFrameId = RegisteredFrames
+                    .OrderBy(frameId => frameId, StringComparer.Ordinal)
+                    .First();
+            }
+
             var projectedFrames = Frames.Select(frame => frame with
             {
+                BoundAssetId = FrameAssets.GetValueOrDefault(frame.FrameId),
+                Scale = GetGeometry(frame.FrameId).Scale,
+                OffsetX = GetGeometry(frame.FrameId).OffsetX,
+                OffsetY = GetGeometry(frame.FrameId).OffsetY,
+                SelectionRequirement = SelectionRequirements.GetValueOrDefault(
+                    frame.FrameId,
+                    string.Empty),
                 IsRegistered = RegisteredFrames.Contains(frame.FrameId)
                     && FrameAssets.ContainsKey(frame.FrameId),
                 HasPersistedBinding = RegisteredFrames.Contains(frame.FrameId),
-                IsSelected = string.Equals(frame.FrameId, SelectedFrameId, StringComparison.Ordinal)
+                IsSelected = string.Equals(frame.FrameId, selectedFrameId, StringComparison.Ordinal)
             }).ToArray();
+            var selectedFrame = projectedFrames.SingleOrDefault(frame => frame.IsSelected);
             return new TemplateCalibrationDraftView(
                 revisionId,
                 pageId,
@@ -678,14 +845,12 @@ public sealed class TemplateCalibrationService(
                 isReadOnly,
                 projectedFrames,
                 Assets.Values.OrderBy(asset => asset.DisplayName, StringComparer.Ordinal).ToArray(),
-                SelectedAssetId,
-                SelectedFrameId,
-                geometry.Scale,
-                geometry.OffsetX,
-                geometry.OffsetY,
-                SelectedFrameId is null
-                    ? string.Empty
-                    : SelectionRequirements.GetValueOrDefault(SelectedFrameId, string.Empty),
+                selectedFrame?.BoundAssetId,
+                selectedFrameId,
+                selectedFrame?.Scale ?? 1,
+                selectedFrame?.OffsetX ?? 0,
+                selectedFrame?.OffsetY ?? 0,
+                selectedFrame?.SelectionRequirement ?? string.Empty,
                 Frames.Count == 0
                     ? "当前 PSD 没有带完整结构证据的候选框，已阻断校准。"
                     : Frames.All(frame => !frame.IsPreviewSupported)

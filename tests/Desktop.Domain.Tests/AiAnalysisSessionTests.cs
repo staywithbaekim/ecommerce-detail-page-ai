@@ -31,6 +31,31 @@ public sealed class AiAnalysisSessionTests
 
         Assert.Throws<InvalidOperationException>(() => unknown.AdvanceTo(AiAnalysisSessionStatus.ManualReview));
         Assert.Throws<InvalidOperationException>(() => unknown.AdvanceTo(AiAnalysisSessionStatus.PlanClosed));
+        var locked = unknown.LockSelection("frame_01", "asset_01", 0);
+        Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, locked.Status);
+        Assert.False(locked.HasVerifiedResult);
+        Assert.Equal(1, locked.SelectionRevision);
+        Assert.Equal("asset_01", locked.LockedSelections["frame_01"].AssetId);
+        var restored = AiAnalysisSession.Restore(
+            locked.SessionId,
+            locked.BatchId,
+            locked.StyleId,
+            locked.TemplateSnapshotId,
+            locked.AnalysisKey,
+            locked.Status,
+            locked.SelectionRevision,
+            locked.LockedSelections.Values,
+            locked.AllowedRequirementIds,
+            locked.AllowedAssetIds,
+            locked.HasVerifiedResult);
+        Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown, restored.Status);
+        Assert.Equal("asset_01", restored.LockedSelections["frame_01"].AssetId);
+        Assert.Throws<AiSelectionConcurrencyException>(() =>
+            locked.LockSelection("frame_01", "asset_01", 0));
+        Assert.Throws<InvalidOperationException>(() =>
+            unknown.LockSelection("frame_02", "asset_01", 0));
+        Assert.Throws<InvalidOperationException>(() =>
+            unknown.LockSelection("frame_01", "asset_02", 0));
         var cancelled = AiAnalysisSession.Create("session_02", "batch_01", "style_01", "snapshot_01", "key_02", ["frame_01"], ["asset_01"])
             .AdvanceTo(AiAnalysisSessionStatus.Cancelled);
         Assert.Throws<InvalidOperationException>(() => cancelled.AdvanceTo(AiAnalysisSessionStatus.Queued));

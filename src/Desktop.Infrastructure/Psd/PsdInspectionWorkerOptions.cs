@@ -13,6 +13,6 @@ public sealed record PsdInspectionWorkerOptions(
             AppContext.BaseDirectory,
             "psd-inspection-worker",
             "psd-inspection-worker.exe"),
-        TimeSpan.FromSeconds(30),
+        TimeSpan.FromMinutes(2),
         DefaultMaxResponseBytes);
 }

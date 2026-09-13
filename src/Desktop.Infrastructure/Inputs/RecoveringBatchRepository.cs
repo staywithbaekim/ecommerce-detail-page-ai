@@ -1,14 +1,15 @@
+using System.Data.Common;
 using Desktop.Application.Inputs;
 using Desktop.Domain.Inputs;
 using Desktop.Infrastructure.Persistence;
-using System.Data.Common;
 
 namespace Desktop.Infrastructure.Inputs;
 
 public sealed class RecoveringBatchRepository(
     SqliteDesktopStore store,
     IAssetManifestStore manifests,
-    TimeProvider timeProvider) : IBatchRepository
+    TimeProvider timeProvider,
+    IInputCommitJournalStore? journals = null) : IBatchRepository
 {
     public async Task SaveAsync(BatchDraft draft, CancellationToken cancellationToken)
     {
@@ -22,12 +23,45 @@ public sealed class RecoveringBatchRepository(
         }
     }
 
-    public async Task<BatchDraft?> GetAsync(string batchId, CancellationToken cancellationToken)
+    public async Task<BatchDraft?> GetAsync(
+        string batchId,
+        CancellationToken cancellationToken)
     {
         try
         {
             var draft = await store.GetAsync(batchId, cancellationToken).ConfigureAwait(false);
-            return draft is null ? null : await RecoverAsync(draft, cancellationToken).ConfigureAwait(false);
+            var journal = journals is null
+                ? null
+                : await journals.GetAsync(batchId, cancellationToken).ConfigureAwait(false);
+            if (draft is null)
+            {
+                if (journal is not null)
+                {
+                    return await RecoverJournalOnlyAsync(journal, cancellationToken).ConfigureAwait(false);
+                }
+
+                // This branch is important for old broken batches: a
+                // committed manifest without a SQLite row is not “no batch”
+                // and must not be presented as a product/image mismatch.
+                var orphanManifest = await manifests.InspectAsync(batchId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (orphanManifest is not null)
+                {
+                    throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+                }
+
+                return null;
+            }
+
+            if (journal is not null)
+            {
+                draft = await ReconcileJournalAsync(
+                    draft,
+                    journal,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return await RecoverAsync(draft, cancellationToken).ConfigureAwait(false);
         }
         catch (DbException exception)
         {
@@ -35,17 +69,39 @@ public sealed class RecoveringBatchRepository(
         }
     }
 
-    public async Task<IReadOnlyList<BatchDraft>> ListRecoverableAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<BatchDraft>> ListRecoverableAsync(
+        CancellationToken cancellationToken)
     {
         try
         {
-            var stored = await store.ListRecoverableAsync(cancellationToken).ConfigureAwait(false);
-            var recovered = new List<BatchDraft>(stored.Count);
-            foreach (var draft in stored)
+            var batchIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var draft in await store.ListRecoverableAsync(cancellationToken).ConfigureAwait(false))
             {
-                recovered.Add(await RecoverAsync(draft, cancellationToken).ConfigureAwait(false));
+                batchIds.Add(draft.BatchId);
             }
-            return recovered;
+
+            if (journals is not null)
+            {
+                foreach (var batchId in await journals.ListBatchIdsAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    batchIds.Add(batchId);
+                }
+            }
+
+            var recovered = new List<BatchDraft>(batchIds.Count);
+            foreach (var batchId in batchIds.Order(StringComparer.Ordinal))
+            {
+                var draft = await GetAsync(batchId, cancellationToken).ConfigureAwait(false);
+                if (draft is not null)
+                {
+                    recovered.Add(draft);
+                }
+            }
+
+            return recovered
+                .OrderByDescending(draft => draft.UpdatedAt)
+                .ThenBy(draft => draft.BatchId, StringComparer.Ordinal)
+                .ToArray();
         }
         catch (DbException exception)
         {
@@ -65,7 +121,129 @@ public sealed class RecoveringBatchRepository(
         }
     }
 
-    private async Task<BatchDraft> RecoverAsync(BatchDraft draft, CancellationToken cancellationToken)
+    private async Task<BatchDraft?> RecoverJournalOnlyAsync(
+        InputCommitJournal journal,
+        CancellationToken cancellationToken)
+    {
+        var inspection = await manifests.InspectAsync(
+            journal.BatchId,
+            cancellationToken).ConfigureAwait(false);
+        if (inspection is null)
+        {
+            if (journal.State == InputCommitJournalState.RecoveryRequired)
+            {
+                // The staged files may already have been rolled back after a
+                // pre-commit failure.  There is no evidence from which to
+                // rebuild a batch, so leave the orphan journal inert instead
+                // of turning a normal retryable draft into a false success.
+                return null;
+            }
+
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+        }
+
+        if (!inspection.IsCommitted)
+        {
+            // A staged manifest alone is not enough evidence to create a
+            // ScanReady batch.  Never guess that SQLite committed.
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+        }
+
+        EnsureManifestMatchesJournal(inspection, journal);
+        await store.SaveAsync(journal.ReadyDraft, CancellationToken.None).ConfigureAwait(false);
+        var restored = await store.GetAsync(journal.BatchId, CancellationToken.None).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("INPUT_PERSISTENCE_FAILURE");
+        if (!InputCommitJournalConsistency.BatchDraftMatches(journal.ReadyDraft, restored))
+        {
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+        }
+
+        await MarkCommittedAsync(journal).ConfigureAwait(false);
+        return restored;
+    }
+
+    private async Task<BatchDraft> ReconcileJournalAsync(
+        BatchDraft draft,
+        InputCommitJournal journal,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(draft.BatchId, journal.BatchId, StringComparison.Ordinal)
+            || !string.Equals(journal.ReadyDraft.BatchId, journal.BatchId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+        }
+
+        AssetManifestInspection? inspection;
+        try
+        {
+            inspection = await manifests.InspectAsync(
+                journal.BatchId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException)
+        {
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH", exception);
+        }
+
+        if (inspection is null)
+        {
+            if (journal.State == InputCommitJournalState.RecoveryRequired
+                && draft.ScanStatus != BatchScanStatus.ScanReady)
+            {
+                return draft;
+            }
+
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+        }
+
+        if (!inspection.IsCommitted)
+        {
+            // The journal contains the staged token, so completing the
+            // manifest commit is safe and idempotent.  It is only attempted
+            // after the file store has validated the staged bytes/marker.
+            await manifests.CommitAsync(
+                journal.StagedManifest,
+                CancellationToken.None).ConfigureAwait(false);
+            inspection = await manifests.InspectAsync(
+                journal.BatchId,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        EnsureManifestMatchesJournal(inspection, journal);
+        if (draft.ScanStatus == BatchScanStatus.ScanReady)
+        {
+            if (!InputCommitJournalConsistency.BatchDraftMatches(journal.ReadyDraft, draft))
+            {
+                throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+            }
+        }
+        else
+        {
+            // Draft/Scanning/blocked rows may be the last SQLite image before
+            // the durable commit.  The journal is the complete, validated
+            // source for rebuilding that graph.
+            await store.SaveAsync(journal.ReadyDraft, CancellationToken.None).ConfigureAwait(false);
+            draft = await store.GetAsync(journal.BatchId, CancellationToken.None).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("INPUT_PERSISTENCE_FAILURE");
+            if (!InputCommitJournalConsistency.BatchDraftMatches(journal.ReadyDraft, draft))
+            {
+                throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+            }
+        }
+
+        if (journals is not null && journal.State != InputCommitJournalState.Committed)
+        {
+            await MarkCommittedAsync(journal).ConfigureAwait(false);
+        }
+
+        return draft;
+    }
+
+    private async Task<BatchDraft> RecoverAsync(
+        BatchDraft draft,
+        CancellationToken cancellationToken)
     {
         if (draft.ScanStatus == BatchScanStatus.Scanning)
         {
@@ -89,7 +267,9 @@ public sealed class RecoveringBatchRepository(
                 return draft;
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException)
         {
             // Fall through to a persisted, retryable blocked state.
         }
@@ -107,10 +287,37 @@ public sealed class RecoveringBatchRepository(
             [],
             null,
             null,
-            ScanBlockReason.Interrupted(),
+            ScanBlockReason.ManifestDatabaseMismatch(),
             draft.CreatedAt,
             timeProvider.GetUtcNow());
         await store.SaveAsync(blocked, cancellationToken).ConfigureAwait(false);
         return blocked;
+    }
+
+    private async Task MarkCommittedAsync(InputCommitJournal journal)
+    {
+        if (journals is null)
+        {
+            return;
+        }
+
+        await journals.SaveAsync(
+            journal.WithState(
+                InputCommitJournalState.Committed,
+                timeProvider.GetUtcNow()),
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private static void EnsureManifestMatchesJournal(
+        AssetManifestInspection? inspection,
+        InputCommitJournal journal)
+    {
+        if (inspection is null
+            || !inspection.IsCommitted
+            || !string.Equals(inspection.ManifestReference, journal.StagedManifest.ManifestReference, StringComparison.Ordinal)
+            || !string.Equals(inspection.ManifestDigest, journal.StagedManifest.ManifestDigest, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+        }
     }
 }

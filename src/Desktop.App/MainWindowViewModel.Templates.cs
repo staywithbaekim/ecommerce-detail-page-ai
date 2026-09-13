@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using Desktop.Application.Templates;
@@ -35,9 +36,12 @@ public sealed partial class MainWindowViewModel
     private bool _templateDialogHasSecondaryAction = true;
     private bool _templateDialogHasTertiaryAction;
     private bool _templateDialogIsDestructive;
+    private bool _templateDialogHasTextInput;
+    private string _templateDialogInputText = "";
     private bool _isTemplatePageSettingsCompactLayout;
     private bool _isCalibrationNarrowLayout;
     private CalibrationNarrowPanel _calibrationNarrowPanel = CalibrationNarrowPanel.Canvas;
+    private long _calibrationPageLoadVersion;
 
     public ObservableCollection<TemplateLibraryCardViewModel> TemplateGroups { get; } = [];
 
@@ -55,9 +59,17 @@ public sealed partial class MainWindowViewModel
 
     public ICommand OpenTemplateCommand { get; private set; } = null!;
 
+    public ICommand RenameTemplateCommand { get; private set; } = null!;
+
+    public ICommand DeleteTemplateFromLibraryCommand { get; private set; } = null!;
+
     public ICommand BackToTemplateLibraryCommand { get; private set; } = null!;
 
     public ICommand AddTemplatePagesCommand { get; private set; } = null!;
+
+    public ICommand EditTemplatePageCommand { get; private set; } = null!;
+
+    public ICommand EditTemplateGroupCommand { get; private set; } = null!;
 
     public ICommand ContinuePageSettingsCommand { get; private set; } = null!;
 
@@ -96,6 +108,8 @@ public sealed partial class MainWindowViewModel
     public ICommand RedoCalibrationCommand { get; private set; } = null!;
 
     public ICommand ApplyCalibrationGeometryCommand { get; private set; } = null!;
+
+    public ICommand ApplyAndConfirmCalibrationCommand { get; private set; } = null!;
 
     public ICommand SaveTemplateCommand { get; private set; } = null!;
 
@@ -186,6 +200,30 @@ public sealed partial class MainWindowViewModel
         private set => SetTemplateField(ref _templateDialogIsDestructive, value);
     }
 
+    public bool TemplateDialogHasTextInput
+    {
+        get => _templateDialogHasTextInput;
+        private set
+        {
+            if (SetTemplateField(ref _templateDialogHasTextInput, value))
+            {
+                (ConfirmTemplateDialogCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string TemplateDialogInputText
+    {
+        get => _templateDialogInputText;
+        set
+        {
+            if (SetTemplateField(ref _templateDialogInputText, value))
+            {
+                (ConfirmTemplateDialogCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
     public bool IsTemplatePageSettingsCompactLayout => _isTemplatePageSettingsCompactLayout;
 
     public GridLength TemplatePageSettingsPageColumnWidth => new(
@@ -223,14 +261,25 @@ public sealed partial class MainWindowViewModel
 
     public TemplateCalibrationDraftView? CalibrationDraft { get; private set; }
 
-    public string? CalibrationPreviewImagePath => IsReferenceLearningReviewMode
-        ? SelectedReferenceLearningPhoto?.SourcePath
-        : CalibrationDraft?.SelectedAssetId is { } assetId
-            ? CalibrationDraft.Assets.FirstOrDefault(asset => string.Equals(
+    public string? CalibrationPreviewImagePath
+    {
+        get
+        {
+            if (IsReferenceLearningReviewMode
+                || CalibrationDraft?.SelectedAssetId is not { } assetId)
+            {
+                return null;
+            }
+
+            var source = CalibrationDraft.Assets.FirstOrDefault(asset => string.Equals(
                 asset.AssetId,
                 assetId,
-                StringComparison.Ordinal))?.SourceReference
-            : null;
+                StringComparison.Ordinal))?.SourceReference;
+            return !string.IsNullOrWhiteSpace(source) && File.Exists(source)
+                ? source
+                : null;
+        }
+    }
 
     public string? CalibrationTemplatePreviewImagePath => IsReferenceLearningReviewMode
         ? SelectedTemplatePage?.PreviewSourceReference
@@ -245,8 +294,7 @@ public sealed partial class MainWindowViewModel
         get
         {
             var index = SelectedTemplatePage is null ? -1 : TemplatePages.IndexOf(SelectedTemplatePage);
-            var prefix = IsReferenceLearningReviewMode ? "学习复核" : "校准";
-            return index < 0 ? prefix : $"{prefix} {index + 1}/{TemplatePages.Count}";
+            return index < 0 ? "模板校准" : $"模板校准 {index + 1}/{TemplatePages.Count}";
         }
     }
 
@@ -260,6 +308,12 @@ public sealed partial class MainWindowViewModel
     public bool CanClearCalibrationAsset => !IsReferenceLearningReviewMode && CanEditCalibration
         && SelectedCalibrationFrame is { } frame
         && (frame.IsRegistered || frame.HasPersistedBinding);
+
+    public bool CanApplyAndConfirmCalibration => IsReferenceLearningReviewMode
+        ? CanAcceptReferenceLearningFrame
+        : CanEditCalibration
+            && SelectedCalibrationFrame is { IsPreviewSupported: true, IsRegistered: true }
+            && !string.IsNullOrWhiteSpace(CalibrationRequirementInput);
 
     public double CalibrationCanvasWidth => IsReferenceLearningReviewMode
         ? CurrentReferenceLearningDocument?.Canvas.Width ?? 790
@@ -329,19 +383,37 @@ public sealed partial class MainWindowViewModel
     public double CalibrationScaleInput
     {
         get => _calibrationScaleInput;
-        set => SetTemplateField(ref _calibrationScaleInput, value);
+        set
+        {
+            if (SetTemplateField(ref _calibrationScaleInput, value))
+            {
+                OnPropertyChanged(nameof(ReferenceLearningRuleSummary));
+            }
+        }
     }
 
     public double CalibrationOffsetXInput
     {
         get => _calibrationOffsetXInput;
-        set => SetTemplateField(ref _calibrationOffsetXInput, value);
+        set
+        {
+            if (SetTemplateField(ref _calibrationOffsetXInput, value))
+            {
+                OnPropertyChanged(nameof(ReferenceLearningRuleSummary));
+            }
+        }
     }
 
     public double CalibrationOffsetYInput
     {
         get => _calibrationOffsetYInput;
-        set => SetTemplateField(ref _calibrationOffsetYInput, value);
+        set
+        {
+            if (SetTemplateField(ref _calibrationOffsetYInput, value))
+            {
+                OnPropertyChanged(nameof(ReferenceLearningRuleSummary));
+            }
+        }
     }
 
     public string CalibrationRequirementInput
@@ -351,7 +423,9 @@ public sealed partial class MainWindowViewModel
         {
             if (SetTemplateField(ref _calibrationRequirementInput, value))
             {
+                OnPropertyChanged(nameof(ReferenceLearningRuleSummary));
                 OnPropertyChanged(nameof(CanAcceptReferenceLearningFrame));
+                OnPropertyChanged(nameof(CanApplyAndConfirmCalibration));
                 RaiseReferenceLearningCommands();
             }
         }
@@ -411,6 +485,8 @@ public sealed partial class MainWindowViewModel
             {
                 OnPropertyChanged(nameof(IsTemplateLibraryEmpty));
                 OnPropertyChanged(nameof(CanContinuePageSettings));
+                OnPropertyChanged(nameof(CanEditTemplateGroup));
+                OnPropertyChanged(nameof(CanSaveAsTemplate));
                 RaiseTemplateCommandCanExecuteChanged();
             }
         }
@@ -425,20 +501,40 @@ public sealed partial class MainWindowViewModel
     public string TemplateStatusMessage
     {
         get => _templateStatusMessage;
-        private set => SetTemplateField(ref _templateStatusMessage, value);
+        private set
+        {
+            if (SetTemplateField(ref _templateStatusMessage, value))
+            {
+                OnPropertyChanged(nameof(HasTemplateStatusMessage));
+            }
+        }
     }
 
-    public string TemplateFlowTitle => IsIncrementalTemplateDraft ? "添加模板页面" : "新建模板组";
+    public bool HasTemplateStatusMessage => !string.IsNullOrWhiteSpace(TemplateStatusMessage);
 
-    public string TemplateFlowSubtitle => IsIncrementalTemplateDraft
-        ? $"{TemplateGroupName} · 只设置和校准新增页面"
-        : "导入一个或多个 PSD，并选择首次校准方式";
+    public string TemplateFlowTitle => IsTemplatePageEditDraft
+        ? IsFullTemplateEdit ? "编辑模板组" : "编辑模板页面"
+        : IsIncrementalTemplateDraft ? "添加模板页面" : "新建模板组";
 
-    public string TemplateSettingsSubtitle => IsIncrementalTemplateDraft
-        ? $"{TemplateGroupName} · 原页面规则保持"
-        : $"{TemplateGroupName} · 新建模板组";
+    public string TemplateFlowSubtitle => IsTemplatePageEditDraft
+        ? IsFullTemplateEdit
+            ? $"{TemplateGroupName} · 全部页面可编辑，保存后生成新修订"
+            : $"{TemplateGroupName} · 仅编辑当前页面，其他页面保持只读"
+        : IsIncrementalTemplateDraft
+            ? $"{TemplateGroupName} · 只设置和校准新增页面"
+            : "导入一个或多个 PSD，并选择首次校准方式";
 
-    public string TemplateSettingsScope => IsIncrementalTemplateDraft ? "仅设置新增页面" : "当前选中页面";
+    public string TemplateSettingsSubtitle => IsTemplatePageEditDraft
+        ? IsFullTemplateEdit
+            ? $"{TemplateGroupName} · 全部页面可编辑"
+            : $"{TemplateGroupName} · 仅当前页面可编辑"
+        : IsIncrementalTemplateDraft
+            ? $"{TemplateGroupName} · 原页面规则保持"
+            : $"{TemplateGroupName} · 新建模板组";
+
+    public string TemplateSettingsScope => IsTemplatePageEditDraft
+        ? IsFullTemplateEdit ? "编辑全部页面" : "仅编辑当前页面"
+        : IsIncrementalTemplateDraft ? "仅设置新增页面" : "当前选中页面";
 
     public string DuplicateExistingLabel => _pendingTemplateImport?.DuplicateResourceId is null
         ? "保留已有页面"
@@ -457,6 +553,19 @@ public sealed partial class MainWindowViewModel
 
     public bool CanIncrementTemplate => _templateDetails?.IsCommitted == true;
 
+    public bool IsTemplatePageEditDraft => _templateDraft?.IsPageEdit == true;
+
+    public bool IsFullTemplateEdit => _templateDraft?.IsFullTemplateEdit == true;
+
+    public bool CanEditTemplateGroup => _templateDetails?.IsCommitted == true && !TemplateBusy;
+
+    public bool CanSaveAsTemplate => IsFullTemplateEdit
+        && IsManualCalibrationReviewMode
+        && _templateDraft is not null
+        && !TemplateBusy;
+
+    public bool CanAddTemplatePages => !IsTemplatePageEditDraft;
+
     public IReadOnlyList<TemplatePageDetailsRowViewModel> TemplateDetailPages => _templateDetails?.Pages
         .OrderBy(page => page.Order)
         .Select(page => new TemplatePageDetailsRowViewModel(page))
@@ -467,13 +576,19 @@ public sealed partial class MainWindowViewModel
         get => _selectedTemplatePage;
         set
         {
+            if (!ReferenceEquals(_selectedTemplatePage, value))
+            {
+                CaptureReferenceLearningInputs();
+            }
+
             if (SetTemplateField(ref _selectedTemplatePage, value))
             {
+                var pageLoadVersion = Interlocked.Increment(ref _calibrationPageLoadVersion);
                 OnPropertyChanged(nameof(CalibrationHeaderTitle));
                 OnPropertyChanged(nameof(CalibrationFrameDisplayName));
                 if (_templateScreen == TemplateScreen.Calibration && value is not null)
                 {
-                    _ = LoadCalibrationPageAsync(value);
+                    _ = LoadCalibrationPageAsync(value, pageLoadVersion);
                 }
                 else if (_templateScreen == TemplateScreen.ReferenceLearning && value is not null)
                 {
@@ -512,7 +627,7 @@ public sealed partial class MainWindowViewModel
                     path,
                     Path.GetFileNameWithoutExtension(path),
                     DuplicateResourceId: null);
-                if (!await ImportPendingAsync(pending, TemplateDuplicateDecision.NotSpecified).ConfigureAwait(true))
+                if (!await ImportPendingAsync(pending, TemplateDuplicateDecision.AutoReuseDraftDuplicates).ConfigureAwait(true))
                 {
                     break;
                 }
@@ -643,18 +758,25 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        CalibrationFrameIdInput = frameId;
         var frame = CalibrationDraft.Frames.First(candidate => string.Equals(
             candidate.FrameId,
             frameId,
             StringComparison.Ordinal));
-        CalibrationAssetIdInput = frame.IsRegistered
-            ? CalibrationDraft.Assets.FirstOrDefault(asset => string.Equals(
-                asset.AssetId,
-                CalibrationDraft.SelectedAssetId,
-                StringComparison.Ordinal))?.AssetId ?? CalibrationAssetIdInput
-            : CalibrationAssetIdInput;
-        UpdateCalibrationInputs(CalibrationDraft with { SelectedFrameId = frameId });
+        CalibrationDraft = CalibrationDraft with
+        {
+            Frames = CalibrationDraft.Frames.Select(candidate => candidate with
+            {
+                IsSelected = string.Equals(candidate.FrameId, frameId, StringComparison.Ordinal)
+            }).ToArray(),
+            SelectedFrameId = frameId,
+            SelectedAssetId = frame.BoundAssetId,
+            SelectedScale = frame.Scale,
+            SelectedOffsetX = frame.OffsetX,
+            SelectedOffsetY = frame.OffsetY,
+            SelectionRequirement = frame.SelectionRequirement
+        };
+        CalibrationAssetIdInput = frame.BoundAssetId ?? string.Empty;
+        UpdateCalibrationInputs(CalibrationDraft);
     }
 
     public void SetWindowWidth(double width)
@@ -696,6 +818,18 @@ public sealed partial class MainWindowViewModel
         RefreshTemplatesCommand = new AsyncRelayCommand(LoadTemplateLibraryAsync, () => !TemplateBusy);
         NewTemplateCommand = new RelayCommand(BeginNewTemplate);
         OpenTemplateCommand = new AsyncRelayCommand<TemplateLibraryCardViewModel>(OpenTemplateAsync);
+        RenameTemplateCommand = new AsyncRelayCommand<TemplateLibraryCardViewModel>(
+            RenameTemplateAsync,
+            HandleTemplateCommandException);
+        DeleteTemplateFromLibraryCommand = new AsyncRelayCommand<TemplateLibraryCardViewModel>(
+            DeleteTemplateFromLibraryAsync,
+            HandleTemplateCommandException);
+        EditTemplateGroupCommand = new AsyncRelayCommand(
+            BeginTemplateGroupEditAsync,
+            onError: HandleTemplateCommandException);
+        EditTemplatePageCommand = new AsyncRelayCommand<TemplatePageDetailsRowViewModel>(
+            BeginTemplatePageEditAsync,
+            HandleTemplateCommandException);
         BackToTemplateLibraryCommand = new AsyncRelayCommand(BackToLibraryAsync);
         AddTemplatePagesCommand = new AsyncRelayCommand(BeginIncrementAsync, () => _templateDetails is not null);
         ContinuePageSettingsCommand = new AsyncRelayCommand(ContinuePageSettingsAsync, () => CanContinuePageSettings);
@@ -704,7 +838,9 @@ public sealed partial class MainWindowViewModel
         ExitCalibrationCommand = new AsyncRelayCommand(ExitCalibrationAsync);
         RemoveTemplatePageCommand = new AsyncRelayCommand<TemplatePageRowViewModel>(RemoveTemplatePageAsync);
         RemoveImportedPsdCommand = new AsyncRelayCommand<ImportedPsdRowViewModel>(RemoveImportedPsdAsync);
-        AbandonTemplateDraftCommand = new AsyncRelayCommand(AbandonTemplateDraftAsync);
+        AbandonTemplateDraftCommand = new AsyncRelayCommand(
+            AbandonTemplateDraftAsync,
+            onError: HandleTemplateCommandException);
         KeepExistingDuplicateCommand = new AsyncRelayCommand(
             () => ResolveDuplicateAsync(TemplateDuplicateDecision.ReuseExisting));
         KeepImportedDuplicateCommand = new AsyncRelayCommand(
@@ -712,7 +848,8 @@ public sealed partial class MainWindowViewModel
         CancelDuplicateCommand = new AsyncRelayCommand(
             () => ResolveDuplicateAsync(TemplateDuplicateDecision.Cancel));
         ConfirmTemplateDialogCommand = new RelayCommand(
-            () => CompleteTemplateDialog(TemplateDialogChoice.Primary));
+            () => CompleteTemplateDialog(TemplateDialogChoice.Primary),
+            () => !TemplateDialogHasTextInput || !string.IsNullOrWhiteSpace(TemplateDialogInputText));
         SecondaryTemplateDialogCommand = new RelayCommand(
             () => CompleteTemplateDialog(TemplateDialogChoice.Secondary));
         TertiaryTemplateDialogCommand = new RelayCommand(
@@ -723,11 +860,16 @@ public sealed partial class MainWindowViewModel
         UndoCalibrationCommand = new AsyncRelayCommand(() => ApplyCalibrationHistoryAsync(CalibrationUndoAction.Undo));
         RedoCalibrationCommand = new AsyncRelayCommand(() => ApplyCalibrationHistoryAsync(CalibrationUndoAction.Redo));
         ApplyCalibrationGeometryCommand = new AsyncRelayCommand(ApplyCalibrationGeometryAsync);
+        ApplyAndConfirmCalibrationCommand = new AsyncRelayCommand(
+            ApplyAndConfirmCalibrationAsync,
+            () => CanApplyAndConfirmCalibration);
         SaveTemplateCommand = new AsyncRelayCommand(SaveTemplateAsync, () => CanSaveCurrentCalibration);
         ExportTemplateCommand = new AsyncRelayCommand(ExportTemplateAsync);
         ImportTemplatePackageCommand = new AsyncRelayCommand(ImportTemplatePackageAsync);
         SaveTemplateAsCommand = new AsyncRelayCommand(SaveTemplateAsAsync);
-        DeleteTemplateCommand = new AsyncRelayCommand(DeleteTemplateAsync);
+        DeleteTemplateCommand = new AsyncRelayCommand(
+            DeleteTemplateAsync,
+            onError: HandleTemplateCommandException);
         ShowCalibrationPagesCommand = new RelayCommand(() => SetCalibrationNarrowPanel(CalibrationNarrowPanel.Pages));
         ShowCalibrationCanvasCommand = new RelayCommand(() => SetCalibrationNarrowPanel(CalibrationNarrowPanel.Canvas));
         ShowCalibrationInspectorCommand = new RelayCommand(() => SetCalibrationNarrowPanel(CalibrationNarrowPanel.Inspector));
@@ -770,9 +912,9 @@ public sealed partial class MainWindowViewModel
             OnPropertyChanged(nameof(HasTemplateGroups));
             OnPropertyChanged(nameof(IsTemplateLibraryEmpty));
         }
-        catch (IOException)
+        catch (Exception exception)
         {
-            TemplateStatusMessage = "模板库暂时不可访问，请检查本地存储后重试。";
+            TemplateStatusMessage = ToTemplateOperationError(exception);
         }
         finally
         {
@@ -837,10 +979,61 @@ public sealed partial class MainWindowViewModel
         }
     }
 
+    private async Task RenameTemplateAsync(TemplateLibraryCardViewModel? item)
+    {
+        if (_templateWorkspace is null || item is null || TemplateBusy)
+        {
+            return;
+        }
+
+        var confirmation = await ShowTemplateRenameDialogAsync(item.Name).ConfigureAwait(true);
+        if (confirmation != TemplateDialogChoice.Primary)
+        {
+            return;
+        }
+
+        var newName = TemplateDialogInputText.Trim();
+        if (string.Equals(newName, item.Name, StringComparison.Ordinal))
+        {
+            TemplateStatusMessage = "模板组名称未改变。";
+            return;
+        }
+
+        TemplateBusy = true;
+        try
+        {
+            await _templateWorkspace.RenameTemplateGroupAsync(
+                item.GroupId,
+                newName,
+                CancellationToken.None).ConfigureAwait(true);
+        }
+        finally
+        {
+            TemplateBusy = false;
+        }
+
+        await LoadTemplateLibraryAsync().ConfigureAwait(true);
+        TemplateStatusMessage = $"模板组已重命名为“{newName}”。";
+    }
+
+    private Task DeleteTemplateFromLibraryAsync(TemplateLibraryCardViewModel? item) =>
+        item is null
+            ? Task.CompletedTask
+            : DeleteTemplateGroupAsync(item.GroupId, item.Name);
+
     private async Task BackToLibraryAsync()
     {
         SetTemplateScreen(TemplateScreen.Library);
-        await LoadTemplateLibraryAsync().ConfigureAwait(true);
+        try
+        {
+            await LoadTemplateLibraryAsync().ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            // Navigation commands are async-void ICommand boundaries. A local
+            // store/cleanup failure must not close the WPF main window.
+            TemplateStatusMessage = ToTemplateOperationError(exception);
+        }
     }
 
     private async Task BeginIncrementAsync()
@@ -915,7 +1108,7 @@ public sealed partial class MainWindowViewModel
         {
             TemplateStatusMessage = result.Import.Error is null
                 ? "PSD 导入未完成，请重试。"
-                : $"{result.Import.Error.Code}：{result.Import.Error.UserAction}";
+                : ToUserMessage(result.Import.Error.Code);
             return false;
         }
 
@@ -1014,6 +1207,10 @@ public sealed partial class MainWindowViewModel
         catch (InvalidOperationException exception)
         {
             TemplateStatusMessage = ToUserMessage(exception.Message);
+        }
+        catch (Exception exception)
+        {
+            TemplateStatusMessage = ToTemplateOperationError(exception);
         }
         finally
         {
@@ -1141,7 +1338,9 @@ public sealed partial class MainWindowViewModel
             await SavePageAsync(page).ConfigureAwait(true);
         }
 
-        TemplateStatusMessage = IsIncrementalTemplateDraft
+        TemplateStatusMessage = IsFullTemplateEdit
+            ? "模板组页面设置已保存；下一步进入统一校准编辑器。"
+            : IsIncrementalTemplateDraft
             ? "新增页面设置已保存；下一步只校准新增页。"
             : "页面设置已保存；下一步进入统一校准编辑器。";
         if (IsReferenceLearningModeSelected)
@@ -1158,7 +1357,8 @@ public sealed partial class MainWindowViewModel
         try
         {
             SetTemplateScreen(TemplateScreen.Calibration);
-            await LoadCalibrationPageAsync(SelectedTemplatePage).ConfigureAwait(true);
+            var pageLoadVersion = Interlocked.Increment(ref _calibrationPageLoadVersion);
+            await LoadCalibrationPageAsync(SelectedTemplatePage, pageLoadVersion).ConfigureAwait(true);
         }
         catch (InvalidOperationException exception)
         {
@@ -1282,21 +1482,21 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var confirmation = await ShowTemplateDialogAsync(
-            "放弃当前模板组？",
-            "将删除当前模板草稿，以及软件内部为这个草稿保存的 PSD 副本和校准输入。此操作无法在应用内撤销。",
-            "不会删除用户源 PSD、源照片、正式输出或其他模板组。",
-            "放弃模板组",
-            "取消",
-            isDestructive: true).ConfigureAwait(true);
-        if (confirmation != TemplateDialogChoice.Primary)
-        {
-            return;
-        }
-
-        TemplateBusy = true;
         try
         {
+            var confirmation = await ShowTemplateDialogAsync(
+                "放弃当前模板组？",
+                "将删除当前模板草稿，以及软件内部为这个草稿保存的 PSD 副本和校准输入。此操作无法在应用内撤销。",
+                "不会删除用户源 PSD、源照片、正式输出或其他模板组。",
+                "放弃模板组",
+                "取消",
+                isDestructive: true).ConfigureAwait(true);
+            if (confirmation != TemplateDialogChoice.Primary)
+            {
+                return;
+            }
+
+            TemplateBusy = true;
             var blockers = await _templateWorkspace.DeleteTemplateGroupAsync(
                 _templateDraft.GroupId,
                 CancellationToken.None).ConfigureAwait(true);
@@ -1318,24 +1518,118 @@ public sealed partial class MainWindowViewModel
         {
             TemplateStatusMessage = ToUserMessage(exception.Message);
         }
+        catch (Exception exception)
+        {
+            TemplateStatusMessage = ToTemplateOperationError(exception);
+        }
         finally
         {
             TemplateBusy = false;
         }
     }
 
-    private async Task LoadCalibrationPageAsync(TemplatePageRowViewModel page)
+    private async Task BeginTemplatePageEditAsync(TemplatePageDetailsRowViewModel? page)
     {
-        if (_templateCalibration is null || _templateDraft is null)
+        if (_templateWorkspace is null || _templateDetails is null || page is null)
         {
             return;
         }
 
-        CalibrationDraft = await _templateCalibration.LoadAsync(
-            _templateDraft,
+        TemplateBusy = true;
+        try
+        {
+            _templateDraft = await _templateWorkspace.BeginPageEditAsync(
+                _templateDetails.GroupId,
+                page.PageId,
+                CancellationToken.None).ConfigureAwait(true);
+            TemplateGroupName = _templateDraft.GroupName;
+            ImportedTemplateFiles.Clear();
+            TemplatePages.Clear();
+            SetTemplateCalibrationMode(TemplateCalibrationMode.DragAndDrop);
+            ResetReferenceLearningDraft();
+            await LoadDraftPagesAsync(populateImportedFiles: true).ConfigureAwait(true);
+            TemplateStatusMessage = $"已进入“{page.Name}”编辑草稿；其他页面保持只读，保存后才生成新修订。";
+            NotifyTemplateDraftChanged();
+            SetTemplateScreen(TemplateScreen.PageSettings);
+        }
+        catch (Exception exception)
+        {
+            TemplateStatusMessage = ToTemplateOperationError(exception);
+        }
+        finally
+        {
+            TemplateBusy = false;
+        }
+    }
+
+    private async Task BeginTemplateGroupEditAsync()
+    {
+        if (_templateWorkspace is null || _templateDetails is null)
+        {
+            return;
+        }
+
+        TemplateBusy = true;
+        try
+        {
+            _templateDraft = await _templateWorkspace.BeginFullEditAsync(
+                _templateDetails.GroupId,
+                CancellationToken.None).ConfigureAwait(true);
+            TemplateGroupName = _templateDraft.GroupName;
+            ImportedTemplateFiles.Clear();
+            TemplatePages.Clear();
+            SetTemplateCalibrationMode(TemplateCalibrationMode.DragAndDrop);
+            ResetReferenceLearningDraft();
+            await LoadDraftPagesAsync(populateImportedFiles: true).ConfigureAwait(true);
+            TemplateStatusMessage = "已进入模板组全量编辑草稿；全部页面均可修改，原模板修订仍保持不变。";
+            NotifyTemplateDraftChanged();
+            SetTemplateScreen(TemplateScreen.PageSettings);
+        }
+        catch (Exception exception)
+        {
+            TemplateStatusMessage = ToTemplateOperationError(exception);
+        }
+        finally
+        {
+            TemplateBusy = false;
+        }
+    }
+
+    private void HandleTemplateCommandException(Exception exception)
+    {
+        TemplateBusy = false;
+        TemplateStatusMessage = ToTemplateOperationError(exception);
+        if (IsReferenceLearningReviewMode)
+        {
+            ReferenceLearningStatusMessage = "模板操作未完成，但主窗口仍保持打开；请重试或返回页面设置。";
+        }
+    }
+
+    private async Task LoadCalibrationPageAsync(
+        TemplatePageRowViewModel page,
+        long pageLoadVersion)
+    {
+        var calibration = _templateCalibration;
+        var draftSession = _templateDraft;
+        if (calibration is null || draftSession is null)
+        {
+            return;
+        }
+
+        var draft = await calibration.LoadAsync(
+            draftSession,
             page.PageId,
             CancellationToken.None).ConfigureAwait(true);
-        UpdateCalibrationInputs(CalibrationDraft);
+        if (pageLoadVersion != Volatile.Read(ref _calibrationPageLoadVersion)
+            || _templateScreen != TemplateScreen.Calibration
+            || !ReferenceEquals(SelectedTemplatePage, page)
+            || !ReferenceEquals(_templateDraft, draftSession))
+        {
+            return;
+        }
+
+        CalibrationDraft = draft;
+        UpdateCalibrationInputs(draft);
     }
 
     private async Task SelectCalibrationAssetAsync()
@@ -1438,6 +1732,10 @@ public sealed partial class MainWindowViewModel
             TemplateStatusMessage = ToUserMessage(exception.Message);
         }
     }
+
+    private Task ApplyAndConfirmCalibrationAsync() => IsReferenceLearningReviewMode
+        ? ApplyReferenceLearningReviewAsync(ReferenceReviewDecision.Accepted)
+        : ApplyCalibrationGeometryAsync();
 
     private async Task SaveTemplateAsync()
     {
@@ -1546,6 +1844,41 @@ public sealed partial class MainWindowViewModel
 
     private async Task SaveTemplateAsAsync()
     {
+        if (_templateWorkspace is not null
+            && _templateDraft is not null
+            && _templateDetails is not null
+            && IsFullTemplateEdit
+            && IsManualCalibrationReviewMode)
+        {
+            TemplateBusy = true;
+            try
+            {
+                _templateDetails = await _templateWorkspace.CommitDraftAsNewGroupAsync(
+                    _templateDraft,
+                    _templateDetails.Name + " 副本",
+                    CancellationToken.None).ConfigureAwait(true);
+                _templateDraft = null;
+                TemplatePages.Clear();
+                ImportedTemplateFiles.Clear();
+                TemplateStatusMessage = "已将本次全量规则修改另存为独立模板组；原模板组保持不变。";
+                OnPropertyChanged(nameof(TemplateDetailsTitle));
+                OnPropertyChanged(nameof(TemplateDetailsMeta));
+                OnPropertyChanged(nameof(CanIncrementTemplate));
+                NotifyTemplateDraftChanged();
+                SetTemplateScreen(TemplateScreen.Details);
+            }
+            catch (InvalidOperationException exception)
+            {
+                TemplateStatusMessage = ToUserMessage(exception.Message);
+            }
+            finally
+            {
+                TemplateBusy = false;
+            }
+
+            return;
+        }
+
         if (_templatePackages is null || _templateDetails is null)
         {
             return;
@@ -1570,16 +1903,21 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    private async Task DeleteTemplateAsync()
+    private Task DeleteTemplateAsync() =>
+        _templateDetails is null
+            ? Task.CompletedTask
+            : DeleteTemplateGroupAsync(_templateDetails.GroupId, _templateDetails.Name);
+
+    private async Task DeleteTemplateGroupAsync(string groupId, string groupName)
     {
-        if (_templateWorkspace is null || _templateDetails is null)
+        if (_templateWorkspace is null || TemplateBusy)
         {
             return;
         }
 
         var confirmation = await ShowTemplateDialogAsync(
             "删除模板组？",
-            $"将删除“{_templateDetails.Name}”在软件内部保存的 PSD 副本、页面规则和校准结果。此操作无法在应用内撤销。",
+            $"将删除“{groupName}”在软件内部保存的 PSD 副本、页面规则和校准结果。此操作无法在应用内撤销。",
             "不会删除最初导入的 PSD、已生成结果或其他模板组。",
             "删除模板组",
             "取消",
@@ -1589,9 +1927,19 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var blockers = await _templateWorkspace.DeleteTemplateGroupAsync(
-            _templateDetails.GroupId,
-            CancellationToken.None).ConfigureAwait(true);
+        TemplateBusy = true;
+        IReadOnlyList<string> blockers;
+        try
+        {
+            blockers = await _templateWorkspace.DeleteTemplateGroupAsync(
+                groupId,
+                CancellationToken.None).ConfigureAwait(true);
+        }
+        finally
+        {
+            TemplateBusy = false;
+        }
+
         if (blockers.Count > 0)
         {
             TemplateStatusMessage = "存在未完成引用任务，不能删除：" + string.Join("、", blockers);
@@ -1605,9 +1953,9 @@ public sealed partial class MainWindowViewModel
         }
 
         _templateDetails = null;
-        TemplateStatusMessage = "模板组已删除；用户源 PSD 和正式输出未受影响。";
         SetTemplateScreen(TemplateScreen.Library);
         await LoadTemplateLibraryAsync().ConfigureAwait(true);
+        TemplateStatusMessage = "模板组已删除；用户源 PSD 和正式输出未受影响。";
     }
 
     private Task<TemplateDialogChoice> ShowTemplateDialogAsync(
@@ -1617,7 +1965,40 @@ public sealed partial class MainWindowViewModel
         string primaryText,
         string? secondaryText,
         string? tertiaryText = null,
-        bool isDestructive = false)
+        bool isDestructive = false) =>
+        ShowTemplateDialogCoreAsync(
+            title,
+            body,
+            safetyNote,
+            primaryText,
+            secondaryText,
+            tertiaryText,
+            isDestructive,
+            hasTextInput: false,
+            inputText: "");
+
+    private Task<TemplateDialogChoice> ShowTemplateRenameDialogAsync(string currentName) =>
+        ShowTemplateDialogCoreAsync(
+            "重命名模板组",
+            $"为“{currentName}”输入新的模板组名称。",
+            "只修改模板库中的显示名称；页面规则、内部 PSD 副本和既有批次快照保持不变。",
+            "保存名称",
+            "取消",
+            tertiaryText: null,
+            isDestructive: false,
+            hasTextInput: true,
+            inputText: currentName);
+
+    private Task<TemplateDialogChoice> ShowTemplateDialogCoreAsync(
+        string title,
+        string body,
+        string safetyNote,
+        string primaryText,
+        string? secondaryText,
+        string? tertiaryText,
+        bool isDestructive,
+        bool hasTextInput,
+        string inputText)
     {
         if (_templateDialogCompletion is not null)
         {
@@ -1633,6 +2014,8 @@ public sealed partial class MainWindowViewModel
         TemplateDialogHasSecondaryAction = !string.IsNullOrWhiteSpace(secondaryText);
         TemplateDialogHasTertiaryAction = !string.IsNullOrWhiteSpace(tertiaryText);
         TemplateDialogIsDestructive = isDestructive;
+        TemplateDialogInputText = inputText;
+        TemplateDialogHasTextInput = hasTextInput;
         IsTemplateDialogVisible = true;
 
         _templateDialogCompletion = new TaskCompletionSource<TemplateDialogChoice>(
@@ -1663,6 +2046,7 @@ public sealed partial class MainWindowViewModel
     private void UpdateCalibrationInputs(TemplateCalibrationDraftView draft)
     {
         OnPropertyChanged(nameof(CalibrationDraft));
+        OnPropertyChanged(nameof(CalibrationFrameItems));
         var selectedFrameId = draft.SelectedFrameId;
         if (string.IsNullOrWhiteSpace(selectedFrameId)
             || !draft.Frames.Any(frame => string.Equals(
@@ -1691,6 +2075,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(CalibrationCanvasHeight));
         OnPropertyChanged(nameof(CalibrationHeaderTitle));
         OnPropertyChanged(nameof(CanEditCalibration));
+        OnPropertyChanged(nameof(CanEditReferenceLearningRule));
         NotifyCalibrationFrameChanged();
     }
 
@@ -1703,6 +2088,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(CalibrationFrameDisplayName));
         OnPropertyChanged(nameof(CalibrationAssetActionText));
         OnPropertyChanged(nameof(CanClearCalibrationAsset));
+        OnPropertyChanged(nameof(CanApplyAndConfirmCalibration));
         RaiseTemplateCommandCanExecuteChanged();
     }
 
@@ -1738,7 +2124,16 @@ public sealed partial class MainWindowViewModel
 
     private void SetTemplateScreen(TemplateScreen screen)
     {
+        if (screen != TemplateScreen.ReferenceLearning)
+        {
+            CaptureReferenceLearningInputs();
+        }
+
         _templateScreen = screen;
+        if (screen != TemplateScreen.Calibration)
+        {
+            Interlocked.Increment(ref _calibrationPageLoadVersion);
+        }
         OnPropertyChanged(nameof(IsTemplateLibraryVisible));
         OnPropertyChanged(nameof(IsTemplateDetailsVisible));
         OnPropertyChanged(nameof(IsTemplateImportVisible));
@@ -1747,14 +2142,28 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(IsTemplateCalibrationVisible));
         OnPropertyChanged(nameof(IsReferenceLearningReviewMode));
         OnPropertyChanged(nameof(IsManualCalibrationReviewMode));
+        OnPropertyChanged(nameof(IsReferenceLearningSemanticPending));
+        OnPropertyChanged(nameof(IsReferenceLearningSemanticWarningVisible));
         OnPropertyChanged(nameof(CalibrationFrameItems));
         OnPropertyChanged(nameof(CalibrationWorkflowStatusMessage));
+        OnPropertyChanged(nameof(CalibrationFlowStepText));
         OnPropertyChanged(nameof(CanSaveCurrentCalibration));
+        OnPropertyChanged(nameof(CanEditCalibration));
+        OnPropertyChanged(nameof(CanEditReferenceLearningRule));
+        OnPropertyChanged(nameof(CalibrationPreviewImagePath));
+        OnPropertyChanged(nameof(CalibrationPreviewImageSource));
+        OnPropertyChanged(nameof(CalibrationEditorHintText));
+        OnPropertyChanged(nameof(CanApplyAndConfirmCalibration));
     }
 
     private void NotifyTemplateDraftChanged()
     {
         OnPropertyChanged(nameof(IsIncrementalTemplateDraft));
+        OnPropertyChanged(nameof(IsTemplatePageEditDraft));
+        OnPropertyChanged(nameof(IsFullTemplateEdit));
+        OnPropertyChanged(nameof(CanEditTemplateGroup));
+        OnPropertyChanged(nameof(CanSaveAsTemplate));
+        OnPropertyChanged(nameof(CanAddTemplatePages));
         OnPropertyChanged(nameof(TemplateFlowTitle));
         OnPropertyChanged(nameof(TemplateFlowSubtitle));
         OnPropertyChanged(nameof(TemplateSettingsSubtitle));
@@ -1770,6 +2179,8 @@ public sealed partial class MainWindowViewModel
         (StartCalibrationCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (ClearCalibrationAssetCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (SaveTemplateCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        (EditTemplateGroupCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        (SaveTemplateAsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
     }
 
     private bool SetTemplateField<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
@@ -1794,8 +2205,51 @@ public sealed partial class MainWindowViewModel
         "TPL_CALIBRATION_ASSET_REF_INVALID" => "请选择可读取的 JPG、PNG、WebP、TIFF 或 BMP 代表款素材。",
         "TPL_CALIBRATION_ASSET_SOURCE_UNAVAILABLE" => "本机代表款素材只读检查服务不可用。",
         "TPL_FRAME_STRUCTURE_EVIDENCE_INCOMPLETE" => "PSD 图片框的结构证据不完整，已阻止注册；请重新检查模板。",
+        "TPL_SOURCE_UNREADABLE" => "应用内部 PSD 副本不可读取；请重新导入对应 PSD。",
+        "TPL_PSD_UNSUPPORTED_STRUCTURE" => "这个 PSD 的结构暂不支持自动学习；请确认保留了可读的智能对象，或改用拖拽校准。",
+        "TPL_PSD_RESOURCE_LIMIT" => "这个 PSD 过大或结构复杂，检查器已安全停止；请改用较小的副本或 Photoshop 兼容性检查。",
+        "TPL_PSD_WORKER_UNAVAILABLE" => "PSD 检查组件不可用；请使用带 psd-inspection-worker 的完整运行目录重试。",
+        "TPL_PSD_WORKER_TIMEOUT" => "PSD 检查超时但源文件未被修改；请重试或改用 Photoshop 兼容性检查。",
+        "TPL_PSD_WORKER_RESPONSE_TOO_LARGE" => "PSD 检查结果过大，已安全停止；请改用 Photoshop 兼容性检查。",
+        "TPL_PSD_WORKER_FAILED" => "PSD 检查组件异常退出；请确认应用目录中的检查组件完整后重试。",
+        "TPL_PSD_WORKER_INVALID_RESPONSE" or "TPL_PSD_INVALID_RESPONSE" => "PSD 检查组件返回了无效结果；请重启完整运行目录后重试。",
+        "TPL_LEARN_SOURCE_MISSING" => "当前学习会话引用的应用内部 PSD 副本已不存在；请重新导入对应 PSD 后重新开始学习。",
+        "TPL_DRAFT_IN_PROGRESS" => "已有未完成的模板编辑草稿；请先打开模板组恢复草稿，或放弃该草稿后再编辑。",
+        "TPL_DELETE_FILES_FAILED" => "模板文件删除失败，文件可能被其他程序占用；请关闭相关程序后重试。",
+        "TPL_DELETE_ACCESS_DENIED" => "没有权限删除模板文件；请检查文件权限或以管理员身份运行。",
+        "TPL_DELETE_FILES_LOCKED" => "模板文件被占用无法删除；请关闭正在访问这些文件的程序后重试。",
         _ => $"操作未完成（{code}），请检查后重试。"
     };
+
+    private static string ToTemplateOperationError(Exception exception)
+    {
+        var root = UnwrapTemplateOperationException(exception);
+        return root switch
+        {
+            IOException or UnauthorizedAccessException =>
+                "模板库或内部副本暂时不可访问；请关闭占用文件的程序后重试。",
+            InvalidOperationException invalidOperation => ToUserMessage(invalidOperation.Message),
+            JsonException or InvalidDataException =>
+                "模板内部资源记录无法读取；模板组未被删除，请重新导入对应 PSD 后再试。",
+            FormatException =>
+                "模板修订记录格式异常；模板组未被删除，请重新打开模板组后再试。",
+            ArgumentException or NullReferenceException =>
+                "模板页面的内部资源信息不完整；模板组未被删除，请重新导入对应 PSD 后再试。",
+            _ =>
+                $"模板编辑草稿加载失败（程序内部：{root.GetType().Name}）；模板组未被删除，请将此提示截图交给技术处理。"
+        };
+    }
+
+    private static Exception UnwrapTemplateOperationException(Exception exception)
+    {
+        while (exception is AggregateException aggregate
+               && aggregate.InnerExceptions.Count == 1)
+        {
+            exception = aggregate.InnerExceptions[0];
+        }
+
+        return exception;
+    }
 
     private enum TemplateScreen
     {
@@ -1844,6 +2298,7 @@ public sealed record TemplateLibraryCardViewModel(
 }
 
 public sealed record TemplatePageDetailsRowViewModel(
+    string PageId,
     string OrderText,
     string Name,
     string Meta,
@@ -1852,6 +2307,7 @@ public sealed record TemplatePageDetailsRowViewModel(
 {
     public TemplatePageDetailsRowViewModel(TemplatePageProjection page)
         : this(
+            page.PageId,
             (page.Order + 1).ToString("D2", System.Globalization.CultureInfo.InvariantCulture),
             page.Name,
             $"{TemplatePageRowViewModel.ContentTypeLabel(page.ContentType)} · {TemplatePageRowViewModel.GenerationModeLabel(page.GenerationMode)}",
@@ -2056,7 +2512,10 @@ internal sealed class RelayCommand(Action execute, Func<bool>? canExecute = null
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }
 
-internal sealed class AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecute = null) : ICommand
+internal sealed class AsyncRelayCommand(
+    Func<Task> execute,
+    Func<bool>? canExecute = null,
+    Action<Exception>? onError = null) : ICommand
 {
     private bool _running;
 
@@ -2079,6 +2538,10 @@ internal sealed class AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecu
         {
             await execute().ConfigureAwait(true);
         }
+        catch (Exception exception)
+        {
+            onError?.Invoke(exception);
+        }
         finally
         {
             _running = false;
@@ -2087,7 +2550,9 @@ internal sealed class AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecu
     }
 }
 
-internal sealed class AsyncRelayCommand<T>(Func<T?, Task> execute) : ICommand
+internal sealed class AsyncRelayCommand<T>(
+    Func<T?, Task> execute,
+    Action<Exception>? onError = null) : ICommand
     where T : class
 {
     private bool _running;
@@ -2108,6 +2573,10 @@ internal sealed class AsyncRelayCommand<T>(Func<T?, Task> execute) : ICommand
         try
         {
             await execute((T)parameter!).ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            onError?.Invoke(exception);
         }
         finally
         {

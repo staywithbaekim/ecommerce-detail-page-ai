@@ -7,7 +7,8 @@ public enum TemplateDuplicateDecision
     NotSpecified = 0,
     ReuseExisting,
     ContinueAsSeparate,
-    Cancel
+    Cancel,
+    AutoReuseDraftDuplicates
 }
 
 public enum TemplatePageImportStatus

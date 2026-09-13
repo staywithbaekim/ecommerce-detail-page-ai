@@ -61,6 +61,7 @@ public static class DesktopServices
         services.AddSingleton<IFileInventory, ReadOnlyFileInventory>();
         services.AddSingleton<IAssetMetadataReader, StreamingAssetMetadataReader>();
         services.AddSingleton<IAssetManifestStore, AssetManifestFileStore>();
+        services.AddSingleton<IInputCommitJournalStore, JsonInputCommitJournalStore>();
         services.AddSingleton<IBatchRepository, RecoveringBatchRepository>();
         services.AddSingleton<IBatchScanCommitter, SqliteBatchScanCommitter>();
         services.AddSingleton(new BatchScanOptions());
@@ -80,6 +81,8 @@ public static class DesktopServices
 
         services.AddSingleton<IReferencePhotoFingerprintPort, ReferencePhotoFingerprintPort>();
         services.AddSingleton<IReferenceLearningSessionStore, JsonReferenceLearningSessionStore>();
+        services.AddSingleton<IReferenceLearningAiCacheStore, JsonReferenceLearningAiCacheStore>();
+        services.AddSingleton<IReferenceLearningAiService, ReferenceLearningAiService>();
         services.AddSingleton<IReferenceLearningService, ReferenceLearningService>();
         services.AddSingleton<IReferenceLearningCommitService, ReferenceLearningCommitService>();
 
@@ -95,7 +98,11 @@ public static class DesktopServices
 
         services.AddSingleton<IBridgeClient, MockBridgeClient>();
         services.AddSingleton<IAiAnalyzer, MockAiAnalyzer>();
-        services.AddSingleton<IAiCredentialSource, WindowsCredentialSource>();
+        services.AddSingleton<WindowsCredentialSource>();
+        services.AddSingleton<IAiCredentialSource>(provider =>
+            provider.GetRequiredService<WindowsCredentialSource>());
+        services.AddSingleton<IAiCredentialManagementPort>(provider =>
+            provider.GetRequiredService<WindowsCredentialSource>());
         services.AddSingleton<IAiUsageRecorder, InMemoryAiUsageRecorder>();
         services.AddSingleton(new AiAnalysisCopyEncodingOptions());
         services.AddSingleton<IAiAnalysisCopySource>(provider =>
@@ -113,13 +120,16 @@ public static class DesktopServices
                 provider.GetRequiredService<IJsonContractValidator>()));
         services.AddSingleton<IConsentPort>(provider =>
             provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<IAiUploadAdmissionPort>(provider =>
+            provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<VolcArkAiOptions>();
         services.AddSingleton<IAiServicePort>(provider => new VolcArkAiAdapter(
             new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
             provider.GetRequiredService<IAiCredentialSource>(),
             provider.GetRequiredService<IAiAnalysisCopySource>(),
             provider.GetRequiredService<IJsonContractValidator>(),
-            provider.GetRequiredService<VolcArkAiOptions>()));
+            provider.GetRequiredService<VolcArkAiOptions>(),
+            provider.GetService<IRedactedLogger>()));
         services.AddSingleton<IAiAnalysisSchedulerFactory, AiAnalysisSchedulerFactory>();
         services.AddSingleton<IAiBatchAnalysisWorkflow, AiBatchAnalysisWorkflow>();
         return services;

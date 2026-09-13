@@ -294,20 +294,12 @@ public sealed class AiRenderPlanFactory(
                     throw new InvalidOperationException("AI_RENDER_SELECTION_ASSET_MISMATCH");
                 }
 
-                if (selected.Any(selection => selection.SubjectGeometry is null))
-                {
-                    pages.Add(new AiRenderPagePreparation(
-                        style.StyleId,
-                        page.PageId,
-                        AiRenderPagePreparationStatus.AwaitingSubjectAnalysis,
-                        "AI_RENDER_SUBJECT_GEOMETRY_PENDING"));
-                    continue;
-                }
-
+                var usesLayoutFallback = selected.Any(selection => selection.SubjectGeometry is null);
                 var explicitSelections = selected.Select(selection =>
                 {
-                    var geometry = selection.SubjectGeometry!;
-                    if (!string.Equals(geometry.AssetId, selection.AssetId, StringComparison.Ordinal))
+                    var geometry = selection.SubjectGeometry;
+                    if (geometry is not null
+                        && !string.Equals(geometry.AssetId, selection.AssetId, StringComparison.Ordinal))
                     {
                         throw new InvalidOperationException("AI_RENDER_GEOMETRY_ASSET_MISMATCH");
                     }
@@ -315,13 +307,15 @@ public sealed class AiRenderPlanFactory(
                     return new TemplateRenderSelection(
                         selection.FrameId,
                         selection.AssetId,
-                        new TemplateRenderSubjectGeometry(
-                            selection.AssetId,
-                            geometry.Left,
-                            geometry.Top,
-                            geometry.Right,
-                            geometry.Bottom,
-                            geometry.Confidence));
+                        geometry is null
+                            ? null
+                            : new TemplateRenderSubjectGeometry(
+                                selection.AssetId,
+                                geometry.Left,
+                                geometry.Top,
+                                geometry.Right,
+                                geometry.Bottom,
+                                geometry.Confidence));
                 }).ToArray();
 
                 var selectedAssets = selected.Select(selection => assets[selection.AssetId])
@@ -361,7 +355,9 @@ public sealed class AiRenderPlanFactory(
                     style.StyleId,
                     page.PageId,
                     AiRenderPagePreparationStatus.ReadyToRender,
-                    "AI_RENDER_PLAN_VALID",
+                    usesLayoutFallback
+                        ? "AI_RENDER_PLAN_VALID_LAYOUT_FALLBACK"
+                        : "AI_RENDER_PLAN_VALID",
                     json,
                     document.RootElement.GetProperty("plan_digest").GetString()));
             }
@@ -575,11 +571,16 @@ public sealed class AiRenderPlanFactory(
                     selection.FrameId,
                     selection.AssetId,
                     selection.SelectionRevision,
-                    selection.SubjectGeometry!.Left,
-                    selection.SubjectGeometry.Top,
-                    selection.SubjectGeometry.Right,
-                    selection.SubjectGeometry.Bottom,
-                    selection.SubjectGeometry.Confidence
+                    geometry = selection.SubjectGeometry is null
+                        ? null
+                        : new
+                        {
+                            selection.SubjectGeometry.Left,
+                            selection.SubjectGeometry.Top,
+                            selection.SubjectGeometry.Right,
+                            selection.SubjectGeometry.Bottom,
+                            selection.SubjectGeometry.Confidence
+                        }
                 }),
             created_at = createdAt
         });

@@ -23,6 +23,12 @@ public sealed class AiAnalysisSchedulerTests
         Assert.NotEqual(
             AiAnalysisCacheKeyFactory.Create(request),
             AiAnalysisCacheKeyFactory.Create(request with { PromptContractVersion = "prompt/v2" }));
+        Assert.NotEqual(
+            AiAnalysisCacheKeyFactory.Create(request),
+            AiAnalysisCacheKeyFactory.Create(request with
+            {
+                CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV4
+            }));
     }
 
     [Fact]
@@ -52,8 +58,9 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Equal(32, queue.Capacity);
         Assert.Equal(2, queue.MaxAttempts);
         Assert.Equal(8, queue.MaxConcurrentRequests);
-        Assert.Equal(24, queue.MaxAssetsPerRequest);
+        Assert.Equal(AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest, queue.MaxAssetsPerRequest);
         Assert.Equal(3, queue.MaxLogicalRequestsPerStyle);
+        Assert.Equal(2, queue.MaxConcurrentCopyPreparations);
         Assert.Equal(200, AiAnalysisProductionPolicy.MaxStylesPerBatch);
         Assert.Equal(3, AiAnalysisProductionPolicy.MaxLogicalRequestsPerStyle);
         Assert.Equal(1_200, budget.MaxRequests);
@@ -78,7 +85,9 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             (AiAnalysisProductionPolicy.QueueV1 with { MaxConcurrentRequests = 9 }).Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            (AiAnalysisProductionPolicy.QueueV1 with { MaxAssetsPerRequest = 25 }).Validate());
+            (AiAnalysisProductionPolicy.QueueV1 with { MaxAssetsPerRequest = AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest + 1 }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            (AiAnalysisProductionPolicy.QueueV1 with { MaxConcurrentCopyPreparations = 3 }).Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             (AiAnalysisProductionPolicy.QueueV1 with { MaxLogicalRequestsPerStyle = 4 }).Validate());
 
@@ -237,7 +246,7 @@ public sealed class AiAnalysisSchedulerTests
             queueOptions: AiAnalysisProductionPolicy.QueueV1);
         var request = Request() with
         {
-            Assets = Enumerable.Range(1, 25)
+            Assets = Enumerable.Range(1, AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest + 1)
                 .Select(index => new AiAssetInputV1(
                     $"asset_{index:D2}",
                     "sha256:" + new string('b', 64),
@@ -256,6 +265,130 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Equal(AiAnalysisWorkDisposition.TerminalError, result.Disposition);
         Assert.Equal("AI_ANALYSIS_ASSET_LIMIT_EXCEEDED", result.ErrorCode);
         Assert.Equal(0, provider.Calls);
+    }
+
+    [Fact]
+    public async Task RequestAtApprovedAssetLimitIsAcceptedAndCanReachProvider()
+    {
+        var provider = new SequenceProvider(request => AiAnalysisExecutionResult.Completed(
+            Result(request.RequestId),
+            new AiProviderUsage(1, 1, 2, false),
+            TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(AiAnalysisProductionPolicy.QueueV1);
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            new MemoryStore(),
+            queue,
+            AiAnalysisProductionPolicy.BudgetV1,
+            queueOptions: AiAnalysisProductionPolicy.QueueV1);
+        var request = Request() with
+        {
+            Assets = Enumerable.Range(1, AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest)
+                .Select(index => new AiAssetInputV1(
+                    $"asset_{index:D2}",
+                    $"sha256:{index:x2}".PadRight(71, '0'),
+                    "image/jpeg",
+                    10,
+                    10,
+                    $"copy_{index:D2}"))
+                .ToArray()
+        };
+
+        var enqueued = await scheduler.EnqueueAsync(
+            request,
+            AiAnalysisWorkStage.ProductJointUnderstanding,
+            CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.Enqueued, enqueued.Disposition);
+        Assert.Equal(1, queue.Count);
+        Assert.Equal(
+            AiAnalysisWorkDisposition.Completed,
+            (await scheduler.ProcessNextAsync(CancellationToken.None)).Disposition);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task HundredRequestsStayInBoundedReadyBufferAndRefillFromDurablePending()
+    {
+        var provider = new SequenceProvider(request => AiAnalysisExecutionResult.Completed(
+            Result(request.RequestId),
+            new AiProviderUsage(1, 1, 2, false),
+            TimeSpan.Zero));
+        var options = AiAnalysisProductionPolicy.QueueV1;
+        using var queue = new BoundedAiAnalysisWorkBuffer(options);
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            new MemoryStore(),
+            queue,
+            AiAnalysisProductionPolicy.BudgetV1,
+            queueOptions: options);
+
+        for (var index = 1; index <= 100; index++)
+        {
+            var result = await scheduler.EnqueueAsync(
+                BacklogRequest(index),
+                AiAnalysisWorkStage.ProductJointUnderstanding,
+                CancellationToken.None);
+            Assert.Equal(AiAnalysisWorkDisposition.Enqueued, result.Disposition);
+            Assert.InRange(scheduler.ReadyCount, 0, options.Capacity);
+        }
+
+        Assert.Equal(100, scheduler.PendingCount);
+        Assert.Equal(options.Capacity, scheduler.ReadyCount);
+
+        while (scheduler.PendingCount > 0)
+        {
+            var processed = await scheduler.ProcessNextAsync(CancellationToken.None);
+            Assert.Equal(AiAnalysisWorkDisposition.Completed, processed.Disposition);
+            Assert.InRange(scheduler.ReadyCount, 0, options.Capacity);
+        }
+
+        Assert.Equal(0, scheduler.ReadyCount);
+        Assert.Equal(100, provider.Calls);
+    }
+
+    [Fact]
+    public async Task CopyPreparationNeverExceedsApprovedParallelism()
+    {
+        var store = new MemoryStore();
+        var preparer = new ConcurrencyCopyPreparer();
+        using var queue = new BoundedAiAnalysisWorkBuffer(AiAnalysisProductionPolicy.QueueV1);
+        using var scheduler = new AiAnalysisScheduler(
+            new SequenceProvider(_ => throw new InvalidOperationException("PROVIDER_NOT_EXPECTED")),
+            store,
+            queue,
+            AiAnalysisProductionPolicy.BudgetV1,
+            queueOptions: AiAnalysisProductionPolicy.QueueV1,
+            copyPreparer: preparer);
+        var now = DateTimeOffset.UtcNow;
+        var assets = Enumerable.Range(1, 4)
+            .Select(index => SourceAssetMetadata.CreateReadable(
+                $"asset_{index:D2}",
+                "style_a",
+                $"{index}.jpg",
+                $"{index}.jpg",
+                10,
+                $"{index:x2}".PadRight(64, '0'),
+                100,
+                100,
+                SourceImageFormat.Jpeg,
+                "image/jpeg"))
+            .ToArray();
+        var (batch, revision) = ReadyBatch(now, assets);
+
+        var admission = scheduler.EnqueueBatchAsync(
+            batch,
+            revision,
+            new AiAnalysisProjectionOptions("corr_batch", "consent_batch", "model/proposed", "prompt/v1", "copy/v1"),
+            CancellationToken.None);
+        await preparer.WaitUntilTwoEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, preparer.MaxObservedConcurrency);
+        preparer.Release();
+
+        var result = await admission;
+        Assert.Equal(1, result.EnqueuedCount);
+        Assert.Equal(4, preparer.PrepareCalls);
+        Assert.InRange(preparer.MaxObservedConcurrency, 1, AiAnalysisProductionPolicy.MaxConcurrentCopyPreparations);
     }
 
     [Fact]
@@ -509,6 +642,56 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Equal(2, scheduler.Budget.RequestCount);
         Assert.Equal(2, (await stateStore.LoadSchedulingStateAsync(
             "ai-s3-default", CancellationToken.None))!.Budget.RequestCount);
+        Assert.Equal(0, queue.Count);
+    }
+
+    [Fact]
+    public async Task SubmissionFailureRetriesOnceAndPreservesSpecificCodeAfterExhaustion()
+    {
+        var store = new MemoryStore();
+        var provider = new SequenceProvider(
+            _ => AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.RetryableError,
+                new ContractError(
+                    "AI_PROVIDER_SUBMISSION_TIMEOUT",
+                    true,
+                    "provider",
+                    "完整请求体未上传"),
+                TimeSpan.Zero),
+            _ => AiAnalysisExecutionResult.Failure(
+                AiProviderOutcome.RetryableError,
+                new ContractError(
+                    "AI_PROVIDER_SUBMISSION_TIMEOUT",
+                    true,
+                    "provider",
+                    "完整请求体未上传"),
+                TimeSpan.Zero));
+        using var queue = new BoundedAiAnalysisWorkBuffer(new AiAnalysisQueueOptions(2, 2));
+        using var scheduler = new AiAnalysisScheduler(
+            provider,
+            store,
+            queue,
+            new AiAnalysisBudgetPolicy(
+                4,
+                1000,
+                1000,
+                10m,
+                1m,
+                new AiAnalysisPricing(0.01m, 0.03m)));
+
+        await scheduler.EnqueueAsync(
+            Request(),
+            AiAnalysisWorkStage.ProductJointUnderstanding,
+            CancellationToken.None);
+        var retry = await scheduler.ProcessNextAsync(CancellationToken.None);
+        var exhausted = await scheduler.ProcessNextAsync(CancellationToken.None);
+        var session = await store.LoadSessionAsync("session-request_01", CancellationToken.None);
+
+        Assert.Equal(AiAnalysisWorkDisposition.RetryScheduled, retry.Disposition);
+        Assert.Equal(AiAnalysisWorkDisposition.TerminalError, exhausted.Disposition);
+        Assert.Equal("AI_PROVIDER_SUBMISSION_TIMEOUT", exhausted.ErrorCode);
+        Assert.Equal(AiAnalysisSessionStatus.TerminalError, session!.Status);
+        Assert.Equal(2, provider.Calls);
         Assert.Equal(0, queue.Count);
     }
 
@@ -2152,6 +2335,7 @@ public sealed class AiAnalysisSchedulerTests
     public async Task ProviderNetworkUnknownIsNotConvertedToWaitingOrRetried()
     {
         var store = new MemoryStore();
+        var stateStore = new MemorySchedulingStateStore();
         var provider = new SequenceProvider(_ => AiAnalysisExecutionResult.Failure(
             AiProviderOutcome.AiResultUnknown,
             new ContractError(
@@ -2165,13 +2349,23 @@ public sealed class AiAnalysisSchedulerTests
             provider,
             store,
             queue,
-            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)));
+            new AiAnalysisBudgetPolicy(2, 100, 100, 10m, 1m, new AiAnalysisPricing(0.01m, 0.03m)),
+            stateStore: stateStore);
 
         await scheduler.EnqueueAsync(Request(), AiAnalysisWorkStage.ProductJointUnderstanding, CancellationToken.None);
         var result = await scheduler.ProcessNextAsync(CancellationToken.None);
 
         Assert.Equal(AiAnalysisWorkDisposition.ResultUnknown, result.Disposition);
-        Assert.Equal("AI_PROVIDER_RESULT_UNKNOWN", result.ErrorCode);
+        Assert.Equal("AI_PROVIDER_NETWORK_UNKNOWN", result.ErrorCode);
+        Assert.Equal(
+            "AI_PROVIDER_NETWORK_UNKNOWN",
+            scheduler.TerminalErrorsSnapshot["request_01"]);
+        var persisted = await stateStore.LoadSchedulingStateAsync(
+            "ai-s3-default",
+            CancellationToken.None);
+        Assert.Equal(
+            "AI_PROVIDER_NETWORK_UNKNOWN",
+            persisted!.TerminalErrors!["request_01"]);
         Assert.Equal(AiAnalysisSchedulingControlState.Running, scheduler.ControlState);
         Assert.Equal(AiAnalysisSessionStatus.AiResultUnknown,
             (await store.LoadSessionAsync("session-request_01", CancellationToken.None))!.Status);
@@ -2311,6 +2505,16 @@ public sealed class AiAnalysisSchedulerTests
         RequirementsDigest = "sha256:" + new string((char)('0' + index), 64)
     };
 
+    private static AiAnalysisRequestV1 BacklogRequest(int index) => Request() with
+    {
+        RequestId = $"backlog_request_{index:D3}",
+        StyleId = $"backlog_style_{index:D3}",
+        RequirementsDigest = "sha256:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes($"backlog-{index}")))
+            .ToLowerInvariant()
+    };
+
     private static AiAnalysisResultV1 Result(string requestId) => new(
         AiAnalysisProtocol.ResultSchemaVersion,
         "result",
@@ -2336,6 +2540,69 @@ public sealed class AiAnalysisSchedulerTests
             Seen.Add(request);
             var index = Math.Min(Calls++, _steps.Length - 1);
             return Task.FromResult(_steps[index](request));
+        }
+    }
+
+    private sealed class ConcurrencyCopyPreparer : IAiAnalysisCopyPreparer
+    {
+        private readonly TaskCompletionSource _twoEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _active;
+        private int _maxObserved;
+        private int _prepareCalls;
+
+        public int PrepareCalls => Volatile.Read(ref _prepareCalls);
+
+        public int MaxObservedConcurrency => Volatile.Read(ref _maxObserved);
+
+        public Task WaitUntilTwoEnteredAsync() => _twoEntered.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<AiAnalysisCopyMetadata> PrepareAsync(
+            AiAnalysisCopyPreparationRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _prepareCalls);
+            var active = Interlocked.Increment(ref _active);
+            UpdateMaximum(active);
+            if (active >= AiAnalysisProductionPolicy.MaxConcurrentCopyPreparations)
+            {
+                _twoEntered.TrySetResult();
+            }
+
+            try
+            {
+                await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return new AiAnalysisCopyMetadata(
+                    request.AnalysisCopyReference,
+                    "sha256:" + request.SourceAsset.Sha256.ToLowerInvariant(),
+                    request.SourceAsset.Length,
+                    request.SourceAsset.MimeType,
+                    request.SourceAsset.PixelWidth,
+                    request.SourceAsset.PixelHeight,
+                    request.CompressionProfileVersion,
+                    $"lease-{request.AnalysisCopyReference}");
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _active);
+            }
+        }
+
+        private void UpdateMaximum(int candidate)
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref _maxObserved);
+                if (candidate <= current || Interlocked.CompareExchange(ref _maxObserved, candidate, current) == current)
+                {
+                    return;
+                }
+            }
         }
     }
 

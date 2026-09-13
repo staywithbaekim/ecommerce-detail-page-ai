@@ -42,6 +42,31 @@ public enum ReferenceReviewDecision
     ManualCalibration
 }
 
+public enum ReferenceSemanticSource
+{
+    LegacyV1 = 0,
+    AiV2,
+    UserOverride,
+    AiUnavailable
+}
+
+public sealed record ReferenceSemanticMetadata(
+    ReferenceSemanticSource Source,
+    string RequestSchemaVersion,
+    string ResultSchemaVersion,
+    string ModelConfigVersion,
+    string PromptContractVersion,
+    string CacheKey,
+    IReadOnlyList<string> PositiveEvidence,
+    IReadOnlyList<string> ExclusionEvidence,
+    bool UserOverridden = false)
+{
+    public bool IsCommitEligible => Source is ReferenceSemanticSource.AiV2 or ReferenceSemanticSource.UserOverride
+        && !string.IsNullOrWhiteSpace(RequestSchemaVersion)
+        && !string.IsNullOrWhiteSpace(ResultSchemaVersion)
+        && !string.IsNullOrWhiteSpace(PromptContractVersion);
+}
+
 /// <summary>
 /// Transient request.  <see cref="ReferencePhotoDirectory"/> is consumed
 /// during analysis only and is intentionally absent from persisted results.
@@ -51,7 +76,8 @@ public sealed record ReferenceLearningRequest(
     string PageId,
     string InternalPsdRelativePath,
     string ReferencePhotoDirectory,
-    string? PreviewRelativePath = null);
+    string? PreviewRelativePath = null,
+    string? PageName = null);
 
 public sealed record ReferencePhotoFingerprint(
     string AssetId,
@@ -129,7 +155,9 @@ public sealed record ReferenceFrameCandidate(
     IReadOnlyList<ReferenceSupersededLayerEvidence>? SupersededLayers = null,
     IReadOnlyList<int>? WindowLayerPath = null,
     bool IsProduct = true,
-    string? StructuralReason = null)
+    string? StructuralReason = null,
+    PsdLayerPixelEvidence? PixelEvidence = null,
+    ReferenceSemanticMetadata? SemanticMetadata = null)
 {
     public IReadOnlyList<ReferenceSupersededLayerEvidence> SupersededLayerEvidence =>
         SupersededLayers ?? [];
@@ -139,6 +167,9 @@ public sealed record ReferenceFrameCandidate(
     public string StructuralReasonText => string.IsNullOrWhiteSpace(StructuralReason)
         ? "可见智能对象候选"
         : StructuralReason;
+
+    public PsdLayerPixelEvidence EffectivePixelEvidence => PixelEvidence
+        ?? new PsdLayerPixelEvidence(false, 0, 0, null);
 
     /// <summary>
     /// True only when the local evidence closes over the current candidate:
@@ -154,6 +185,10 @@ public sealed record ReferenceFrameCandidate(
         && LayerPath.All(segment => segment >= 0)
         && !string.IsNullOrWhiteSpace(StructureSignature)
         && TransformBox.Count == 8
+        && EffectivePixelEvidence.Available
+        && EffectivePixelEvidence.RenderedPixelCount > 0
+        && EffectivePixelEvidence.CompositeContributionPixelCount > 0
+        && EffectivePixelEvidence.CompositeContributionBounds is not null
         && LayoutIntent.Scale > 0
         && LayoutIntent.SafeBounds.Right > LayoutIntent.SafeBounds.Left
         && LayoutIntent.SafeBounds.Bottom > LayoutIntent.SafeBounds.Top
@@ -172,7 +207,7 @@ public sealed record ReferenceFrameCandidate(
         && MatchState == ReferenceMatchState.Exact
         && Confidence >= 0.99
         && !string.IsNullOrWhiteSpace(SemanticLabel)
-        && !string.Equals(SemanticLabel, "成分/水洗唛信息图", StringComparison.Ordinal)
+        && (SemanticMetadata is null || SemanticMetadata.IsCommitEligible)
         && ReviewDecision == ReferenceReviewDecision.Pending;
 
     public bool IsHighConfidence => (MatchState is ReferenceMatchState.Exact
@@ -182,7 +217,8 @@ public sealed record ReferenceFrameCandidate(
         && ReviewDecision == ReferenceReviewDecision.Accepted
         && IsProduct
         && !string.IsNullOrWhiteSpace(ReferenceAssetId)
-        && !string.IsNullOrWhiteSpace(SemanticLabel);
+        && !string.IsNullOrWhiteSpace(SemanticLabel)
+        && (SemanticMetadata is null || SemanticMetadata.IsCommitEligible);
 
     // Primitive projections keep the presentation layer on the Application
     // contract instead of forcing it to reference the Domain assembly merely
@@ -247,7 +283,8 @@ public sealed record ReferenceLearningDocument(
 
     public bool CanCommit => State == ReferenceLearningState.ReadyToCommit
         && Candidates.Count > 0
-        && Candidates.Any(candidate => candidate.IsHighConfidence)
+        && Candidates.All(candidate => candidate.ReviewDecision is not (
+            ReferenceReviewDecision.Pending or ReferenceReviewDecision.ManualCalibration))
         && Candidates
             .Where(candidate => candidate.ReviewDecision != ReferenceReviewDecision.Rejected)
             .All(candidate => candidate.IsHighConfidence);
@@ -351,12 +388,16 @@ public interface IReferenceLearningCommitService
 
 /// <summary>
 /// Projects only explicitly accepted exact or manually confirmed matches into the existing
-/// renderer-neutral template contract.  Reference asset IDs are retained as
-/// provenance criteria; a target batch must provide explicit selections and
-/// therefore cannot silently reuse reference photos.
+/// renderer-neutral template contract.  Explicitly retained template content is omitted from
+/// the binding set.  Reference asset IDs are retained as provenance criteria; a target batch
+/// must provide explicit selections and therefore cannot silently reuse reference photos.
 /// </summary>
 public static class ReferenceLearningRuleProjector
 {
+    public const string ReferenceAuditVersion = "reference-audit/v1";
+    public const string ReferenceHashChunkPrefix = "reference_hashes_";
+    private const int HashesPerCriterion = 3;
+
     public static IReadOnlyList<FrameBinding> ProjectBindings(
         ReferenceLearningDocument document)
     {
@@ -380,13 +421,24 @@ public static class ReferenceLearningRuleProjector
 
         return document.Candidates
             .Where(candidate => candidate.IsHighConfidence)
-            .Select(candidate => CreateBinding(candidate, candidate.ReferenceAssetId!))
+            .Select(candidate => CreateBinding(
+                candidate,
+                candidate.ReferenceAssetId!,
+                document.ReferencePhotos.SingleOrDefault(photo => string.Equals(
+                    photo.AssetId,
+                    candidate.ReferenceAssetId,
+                    StringComparison.Ordinal)),
+                document.ReferenceFolderDigest,
+                document.ReferencePhotos))
             .ToArray();
     }
 
     private static FrameBinding CreateBinding(
         ReferenceFrameCandidate candidate,
-        string assetId) => FrameBinding.Create(
+        string assetId,
+        ReferencePhotoFingerprint? referencePhoto,
+        string referenceSetDigest,
+        IReadOnlyList<ReferencePhotoFingerprint> referencePhotos) => FrameBinding.Create(
             candidate.FrameId,
             candidate.PageId,
             LayerPath.Create(NormalizeLayerPath(candidate.LayerPath)),
@@ -409,11 +461,73 @@ public static class ReferenceLearningRuleProjector
                 string.IsNullOrWhiteSpace(candidate.SemanticLabel)
                     ? "请选择目标款中与该图片框语义匹配的商品图。"
                     : candidate.SemanticLabel,
-                [
-                    SelectionCriterion.Create("asset_id", assetId),
-                    SelectionCriterion.Create("reference_only", "true")
-                ]),
+                CreateSelectionCriteria(
+                    candidate,
+                    assetId,
+                    referencePhoto,
+                    referenceSetDigest,
+                    referencePhotos)),
             candidate.LayoutIntent);
+
+    private static List<SelectionCriterion> CreateSelectionCriteria(
+        ReferenceFrameCandidate candidate,
+        string assetId,
+        ReferencePhotoFingerprint? referencePhoto,
+        string referenceSetDigest,
+        IReadOnlyList<ReferencePhotoFingerprint> referencePhotos)
+    {
+        var hashes = referencePhotos
+            .Select(photo => photo.Sha256.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (hashes.Length == 0
+            || hashes.Length > Desktop.Application.Ai.AiAnalysisProductionPolicy.MaxReferenceAssetsPerRequest
+            || hashes.Any(hash => hash.Length != 64 || hash.Any(character => !Uri.IsHexDigit(character))))
+        {
+            throw new TemplateRuleViolationException("TPL_LEARN_REFERENCE_AUDIT_INVALID");
+        }
+
+        var criteria = new List<SelectionCriterion>
+        {
+            SelectionCriterion.Create("asset_id", assetId),
+            SelectionCriterion.Create("reference_only", "true"),
+            SelectionCriterion.Create("reference_audit_version", ReferenceAuditVersion),
+            SelectionCriterion.Create("reference_set_digest", referenceSetDigest.Trim().ToLowerInvariant()),
+            SelectionCriterion.Create(
+                "semantic_source",
+                candidate.SemanticMetadata?.Source.ToString() ?? "LegacyV1"),
+            SelectionCriterion.Create(
+                "semantic_request_version",
+                candidate.SemanticMetadata?.RequestSchemaVersion ?? "reference-learning/v1"),
+            SelectionCriterion.Create(
+                "semantic_result_version",
+                candidate.SemanticMetadata?.ResultSchemaVersion ?? "reference-learning/v1"),
+            SelectionCriterion.Create(
+                "semantic_model_version",
+                candidate.SemanticMetadata?.ModelConfigVersion ?? "legacy-local-model/v1"),
+            SelectionCriterion.Create(
+                "semantic_prompt_version",
+                candidate.SemanticMetadata?.PromptContractVersion ?? "legacy-local-hint/v1"),
+            SelectionCriterion.Create(
+                "semantic_cache_key",
+                candidate.SemanticMetadata?.CacheKey ?? "legacy-none"),
+            SelectionCriterion.Create(
+                "reference_file_name",
+                referencePhoto?.FileName ?? assetId),
+            SelectionCriterion.Create(
+                "reference_relative_path",
+                referencePhoto?.RelativePath ?? referencePhoto?.FileName ?? assetId)
+        };
+        for (var index = 0; index < hashes.Length; index += HashesPerCriterion)
+        {
+            criteria.Add(SelectionCriterion.Create(
+                $"{ReferenceHashChunkPrefix}{index / HashesPerCriterion:D2}",
+                string.Join('.', hashes.Skip(index).Take(HashesPerCriterion))));
+        }
+
+        return criteria;
+    }
 
     private static int[] NormalizeLayerPath(IReadOnlyList<int> path)
     {
@@ -433,6 +547,126 @@ public static class ReferenceLearningRuleProjector
 public static class ReferenceLearningDigest
 {
     public static string Compute(
+        string psdSha256,
+        string structureSignature,
+        string referenceFolderDigest,
+        IEnumerable<ReferencePhotoFingerprint> referencePhotos,
+        IEnumerable<ReferenceFrameCandidate> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(referencePhotos);
+        ArgumentNullException.ThrowIfNull(candidates);
+        var photos = referencePhotos
+            .OrderBy(photo => photo.AssetId, StringComparer.Ordinal)
+            .ThenBy(photo => photo.RelativePath, StringComparer.Ordinal)
+            .Select(photo => new
+            {
+                photo.AssetId,
+                photo.FileName,
+                photo.RelativePath,
+                photo.Length,
+                photo.Sha256,
+                photo.MimeType,
+                photo.Width,
+                photo.Height
+            })
+            .ToArray();
+        var candidateValues = candidates.ToArray();
+        var frames = candidateValues
+            .OrderBy(candidate => candidate.FrameId, StringComparer.Ordinal)
+            .Select(candidate => new
+            {
+                candidate.FrameId,
+                candidate.PageId,
+                candidate.LayerPath,
+                candidate.LayerId,
+                candidate.LayerName,
+                candidate.StructureSignature,
+                candidate.Visible,
+                candidate.EffectiveVisible,
+                candidate.Clipping,
+                candidate.UserMask,
+                candidate.VectorMask,
+                candidate.Opacity,
+                candidate.BlendMode,
+                candidate.TransformBox,
+                MatchState = candidate.MatchState.ToString(),
+                candidate.ReferenceAssetId,
+                candidate.ReferencePhotoRelativePath,
+                candidate.EmbeddedContentSha256,
+                SupersededLayers = candidate.SupersededLayerEvidence.Select(layer => new
+                {
+                    layer.LayerPath,
+                    layer.LayerId,
+                    layer.Visible,
+                    layer.Clipping
+                }),
+                candidate.StructuralWindowLayerPath,
+                candidate.IsProduct,
+                candidate.StructuralReasonText,
+                PixelEvidence = new
+                {
+                    candidate.EffectivePixelEvidence.Available,
+                    candidate.EffectivePixelEvidence.RenderedPixelCount,
+                    candidate.EffectivePixelEvidence.CompositeContributionPixelCount,
+                    candidate.EffectivePixelEvidence.CompositeContributionBounds
+                },
+                candidate.SemanticLabel,
+                candidate.Confidence,
+                LayoutIntent = new
+                {
+                    candidate.LayoutIntent.Intent,
+                    candidate.LayoutIntent.Scale,
+                    candidate.LayoutIntent.OffsetX,
+                    candidate.LayoutIntent.OffsetY,
+                    candidate.LayoutIntent.SafeBounds
+                },
+                ReviewDecision = candidate.ReviewDecision.ToString(),
+                candidate.ReviewNote
+            })
+            .ToArray();
+        var payload = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            PsdSha256 = psdSha256,
+            StructureSignature = structureSignature,
+            ReferenceFolderDigest = referenceFolderDigest,
+            ReferencePhotos = photos,
+            Candidates = frames
+        });
+        if (candidateValues.Any(candidate => candidate.SemanticMetadata is not null))
+        {
+            payload = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                BaseDigest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant(),
+                Semantics = candidateValues
+                    .OrderBy(candidate => candidate.FrameId, StringComparer.Ordinal)
+                    .Select(candidate => candidate.SemanticMetadata is null
+                        ? null
+                        : new
+                        {
+                            Source = candidate.SemanticMetadata.Source.ToString(),
+                            candidate.SemanticMetadata.RequestSchemaVersion,
+                            candidate.SemanticMetadata.ResultSchemaVersion,
+                            candidate.SemanticMetadata.ModelConfigVersion,
+                            candidate.SemanticMetadata.PromptContractVersion,
+                            candidate.SemanticMetadata.CacheKey,
+                            candidate.SemanticMetadata.PositiveEvidence,
+                            candidate.SemanticMetadata.ExclusionEvidence,
+                            candidate.SemanticMetadata.UserOverridden
+                        })
+                    .ToArray()
+            });
+        }
+        var hash = System.Security.Cryptography.SHA256.HashData(payload);
+        return $"sha256:{Convert.ToHexString(hash).ToLowerInvariant()}";
+    }
+
+    /// <summary>
+    /// Reproduces the original v1 digest for read-only recovery of sessions
+    /// written before final-composite pixel evidence was introduced. Such a
+    /// recovered candidate does not satisfy <see cref="ReferenceFrameCandidate.IsEvidenceClosed"/>
+    /// and therefore cannot be newly committed without reanalysis.
+    /// </summary>
+    public static string ComputeLegacyWithoutPixelEvidence(
         string psdSha256,
         string structureSignature,
         string referenceFolderDigest,
@@ -510,8 +744,7 @@ public static class ReferenceLearningDigest
             ReferencePhotos = photos,
             Candidates = frames
         });
-        var hash = System.Security.Cryptography.SHA256.HashData(
-            payload);
+        var hash = System.Security.Cryptography.SHA256.HashData(payload);
         return $"sha256:{Convert.ToHexString(hash).ToLowerInvariant()}";
     }
 }

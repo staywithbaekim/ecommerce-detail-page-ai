@@ -123,7 +123,8 @@ public sealed class JsonSchemaContractValidator : IJsonContractDiagnosticValidat
         [ContractDocumentKind.TemplatePackageManifest] = LoadSchema("template-package-v1.schema.json"),
         [ContractDocumentKind.AssetManifest] = LoadSchema("asset-manifest-v1.schema.json"),
         [ContractDocumentKind.AiAnalysis] = LoadSchema("ai-analysis-v1.schema.json"),
-        [ContractDocumentKind.ReferenceLearning] = LoadSchema("reference-learning-v1.schema.json")
+        [ContractDocumentKind.ReferenceLearning] = LoadSchema("reference-learning-v1.schema.json"),
+        [ContractDocumentKind.ReferenceLearningAi] = LoadSchema("reference-learning-ai-v2.schema.json")
     };
 
     private static ContractValidationDiagnosticResult DiagnosticFailure(

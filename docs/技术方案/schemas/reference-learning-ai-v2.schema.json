@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reference-learning-ai/v2",
+  "title": "Reference learning AI request and result v2",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "version": { "type": "string", "pattern": "^[A-Za-z0-9_.\\/-]{1,128}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "boundedText": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "selectionRequirement": {
+      "type": "string",
+      "description": "未来不同商品可复用的图片类别短语，只写对象或部位、朝向、姿态、景别等必要区分，不得复述参考照片的颜色、背景、家具、道具、饰品、光线或其他偶然细节。",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[^,，.。;；:：\\r\\n]+$"
+    },
+    "evidenceText": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "content_hash", "mime_type", "pixel_width", "pixel_height", "analysis_copy_ref", "analysis_copy_digest", "analysis_copy_length", "analysis_copy_mime_type", "analysis_copy_compression_profile", "analysis_copy_lease_id"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/id" },
+        "content_hash": { "$ref": "#/$defs/sha256" },
+        "mime_type": { "enum": ["image/jpeg", "image/png", "image/tiff"] },
+        "pixel_width": { "type": "integer", "minimum": 1 },
+        "pixel_height": { "type": "integer", "minimum": 1 },
+        "analysis_copy_ref": { "$ref": "#/$defs/id" },
+        "analysis_copy_digest": { "$ref": "#/$defs/sha256" },
+        "analysis_copy_length": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+        "analysis_copy_mime_type": { "enum": ["image/jpeg", "image/png"] },
+        "analysis_copy_compression_profile": {
+          "enum": [
+            "wic-bounded/max1600/jpeg-q82/png/v1",
+            "wic-bounded/max1600/jpeg-q82/png-opaque-jpeg/v2",
+            "wic-bounded/max1280/jpeg-q76/png-opaque-jpeg/v3",
+            "wic-bounded/max1280/jpeg-q82/png-opaque-jpeg/v4"
+          ]
+        },
+        "analysis_copy_lease_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "framePrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "page_id", "reference_asset_id", "page_context", "frame_context", "layout_intent"],
+      "properties": {
+        "frame_id": { "$ref": "#/$defs/id" },
+        "page_id": { "$ref": "#/$defs/id" },
+        "reference_asset_id": { "$ref": "#/$defs/id" },
+        "page_context": { "$ref": "#/$defs/boundedText" },
+        "frame_context": { "$ref": "#/$defs/boundedText" },
+        "layout_intent": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_kind", "operation", "request_id", "correlation_id", "model_config_version", "prompt_contract_version", "response_schema_version", "compression_profile_version", "consent_id", "reference_set_digest", "assets", "frames"],
+      "properties": {
+        "schema_version": { "const": "reference-learning-ai/v2" },
+        "document_kind": { "const": "request" },
+        "operation": { "const": "generate_selection_requirements" },
+        "request_id": { "$ref": "#/$defs/id" },
+        "correlation_id": { "$ref": "#/$defs/id" },
+        "model_config_version": { "$ref": "#/$defs/version" },
+        "prompt_contract_version": { "$ref": "#/$defs/version" },
+        "response_schema_version": { "const": "reference-learning-ai-result/v2" },
+        "compression_profile_version": {
+          "enum": [
+            "wic-bounded/max1600/jpeg-q82/png/v1",
+            "wic-bounded/max1600/jpeg-q82/png-opaque-jpeg/v2",
+            "wic-bounded/max1280/jpeg-q76/png-opaque-jpeg/v3",
+            "wic-bounded/max1280/jpeg-q82/png-opaque-jpeg/v4"
+          ]
+        },
+        "consent_id": { "$ref": "#/$defs/id" },
+        "reference_set_digest": { "$ref": "#/$defs/sha256" },
+        "assets": { "type": "array", "minItems": 1, "maxItems": 24, "items": { "$ref": "#/$defs/asset" } },
+        "frames": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "$ref": "#/$defs/framePrompt" } }
+      }
+    },
+    "frameResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "selection_requirement", "positive_evidence", "exclusion_evidence", "confidence"],
+      "properties": {
+        "frame_id": { "$ref": "#/$defs/id" },
+        "selection_requirement": { "$ref": "#/$defs/selectionRequirement" },
+        "positive_evidence": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/evidenceText" } },
+        "exclusion_evidence": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/evidenceText" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "scope", "message_summary"],
+      "properties": {
+        "code": { "$ref": "#/$defs/id" },
+        "scope": { "enum": ["request", "product", "requirement", "asset"] },
+        "message_summary": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usage_event_id", "input_units", "output_units", "request_count", "provider_cost_amount", "provider_cost_currency"],
+      "properties": {
+        "usage_event_id": { "$ref": "#/$defs/id" },
+        "input_units": { "type": "integer", "minimum": 0 },
+        "output_units": { "type": "integer", "minimum": 0 },
+        "request_count": { "const": 1 },
+        "provider_cost_amount": { "type": ["number", "null"], "minimum": 0 },
+        "provider_cost_currency": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_kind", "operation", "request_id", "model_config_version", "frame_results", "warnings", "usage"],
+      "properties": {
+        "schema_version": { "const": "reference-learning-ai-result/v2" },
+        "document_kind": { "const": "result" },
+        "operation": { "const": "generate_selection_requirements" },
+        "request_id": { "$ref": "#/$defs/id" },
+        "model_config_version": { "$ref": "#/$defs/version" },
+        "frame_results": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "$ref": "#/$defs/frameResult" } },
+        "warnings": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/warning" } },
+        "usage": { "$ref": "#/$defs/usage" }
+      }
+    }
+  }
+}

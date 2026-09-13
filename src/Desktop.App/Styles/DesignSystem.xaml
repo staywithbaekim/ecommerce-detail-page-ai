@@ -26,6 +26,26 @@
     <SolidColorBrush x:Key="StatusPausedBrush" Color="#E7C46A" />
     <SolidColorBrush x:Key="StatusRecoverableBrush" Color="#FF3B30" />
     <SolidColorBrush x:Key="StatusDraftBrush" Color="#E7C46A" />
+    <SolidColorBrush x:Key="StatusCompletedTextBrush" Color="#237A45" />
+    <SolidColorBrush x:Key="CalibrationFrameOverlayBrush" Color="#0AFFFFFF" />
+    <SolidColorBrush x:Key="CalibrationFrameBorderBrush" Color="#A1A1AA" />
+
+    <Style x:Key="ReviewStatusDotStyle" TargetType="Ellipse">
+        <Setter Property="Width" Value="8" />
+        <Setter Property="Height" Value="8" />
+        <Setter Property="Fill" Value="{StaticResource TextDisabledBrush}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding StatusTone}" Value="Pending">
+                <Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding StatusTone}" Value="Completed">
+                <Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding StatusTone}" Value="Blocked">
+                <Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
 
     <Style TargetType="Window">
         <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
@@ -287,6 +307,48 @@
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource TextBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="FieldPasswordBoxStyle" TargetType="PasswordBox">
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="Padding" Value="12,7" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="PasswordBox">
+                    <Border x:Name="Chrome"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="6">
+                        <ScrollViewer x:Name="PART_ContentHost"
+                                      Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      HorizontalScrollBarVisibility="Hidden"
+                                      VerticalScrollBarVisibility="Hidden" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource BorderStrongBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource TextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource TextDisabledBrush}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

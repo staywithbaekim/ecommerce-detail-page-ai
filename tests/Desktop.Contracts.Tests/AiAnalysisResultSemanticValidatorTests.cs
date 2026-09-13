@@ -207,6 +207,102 @@ public sealed class AiAnalysisResultSemanticValidatorTests
     }
 
     [Fact]
+    public void ReferenceNormalizerClosesAllTransportAliasesOverProducingRequest()
+    {
+        var request = new AiAnalysisRequestV1(
+            AiAnalysisProtocol.RequestSchemaVersion,
+            "request",
+            "ai-real-request-01",
+            "correlation_01",
+            "product_01",
+            "batch_01",
+            "style_01",
+            "snapshot_01",
+            "revision_01",
+            AiAnalysisKind.ProductJointUnderstanding,
+            "model/real-v3",
+            "ai-prompt/v3",
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "compression/v1",
+            "consent_01",
+            "sha256:" + new string('a', 64),
+            [
+                new AiAssetInputV1("asset_real_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copy_01"),
+                new AiAssetInputV1("asset_real_02", "sha256:" + new string('c', 64), "image/jpeg", 10, 10, "copy_02")
+            ],
+            [
+                new AiRequirementInputV1("learn_frame_real_01", "正面站立图", "主图", true),
+                new AiRequirementInputV1("learn_frame_real_02", "面料特写图", "特写", true)
+            ]);
+        var result = new AiAnalysisResultV1(
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "result",
+            "request_0",
+            null,
+            "model_0",
+            [
+                new AiRequirementMatchV1("req_0", "img_0", 1, 0.95m, ["exact"]),
+                new AiRequirementMatchV1("req_1", "img_1", 1, 0.94m, ["exact"])
+            ],
+            [new AiVariantGroupV1("variant_01", "款式", "默认", ["img_0", "img_1"], true)],
+            [new AiSubjectGeometryV1("img_0", 0.1m, 0.1m, 0.9m, 0.9m, 0.95m)],
+            new AiSizeTableCandidateV1("img_1", 0.9m, ["尺码"], [["L"]]),
+            [],
+            new AiUsageSummaryV1("usage_01", 1, 1, 1, null, null));
+
+        var normalized = AiAnalysisResultReferenceNormalizer.Normalize(request, result);
+
+        Assert.Equal(request.RequestId, normalized.RequestId);
+        Assert.Equal(request.ModelConfigVersion, normalized.ModelConfigVersion);
+        Assert.Equal(
+            request.Requirements.Select(requirement => requirement.RequirementId),
+            normalized.RequirementMatches.Select(match => match.RequirementId));
+        Assert.Equal(
+            request.Assets.Select(asset => asset.AssetId),
+            normalized.RequirementMatches.Select(match => match.AssetId));
+        Assert.Equal("asset_real_01", Assert.Single(normalized.SubjectGeometry).AssetId);
+        Assert.Equal("asset_real_02", normalized.SizeTableCandidate!.SourceAssetId);
+    }
+
+    [Fact]
+    public void ReferenceNormalizerRejectsAliasAndRealIdThatCollapseToDuplicateAsset()
+    {
+        var request = new AiAnalysisRequestV1(
+            AiAnalysisProtocol.RequestSchemaVersion,
+            "request",
+            "request_01",
+            "correlation_01",
+            "product_01",
+            "batch_01",
+            "style_01",
+            "snapshot_01",
+            "revision_01",
+            AiAnalysisKind.ProductJointUnderstanding,
+            "model/proposed",
+            "ai-prompt/v3",
+            AiAnalysisProtocol.ResultSchemaVersion,
+            "compression/v1",
+            "consent_01",
+            "sha256:" + new string('a', 64),
+            [new AiAssetInputV1("asset_01", "sha256:" + new string('b', 64), "image/jpeg", 10, 10, "copy_01")],
+            [new AiRequirementInputV1("frame_01", "正面站立图", "主图", true)]);
+        var result = Result() with
+        {
+            VariantGroups = [new AiVariantGroupV1(
+                "variant_01",
+                "款式",
+                "默认",
+                ["img_0", "asset_01"],
+                true)]
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => AiAnalysisResultReferenceNormalizer.Normalize(request, result));
+
+        Assert.Equal(AiAnalysisResultSemanticValidator.StructureInvalidCode, exception.Message);
+    }
+
+    [Fact]
     public void RecognizesOnlyStableSemanticCodes()
     {
         Assert.True(AiAnalysisResultSemanticValidator.IsSemanticErrorCode(

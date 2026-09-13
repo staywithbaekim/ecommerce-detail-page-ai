@@ -27,7 +27,7 @@ public sealed record TemplateRenderSubjectGeometry(
 public sealed record TemplateRenderSelection(
     string FrameId,
     string AssetResourceId,
-    TemplateRenderSubjectGeometry SubjectGeometry);
+    TemplateRenderSubjectGeometry? SubjectGeometry);
 
 public sealed record TemplateRenderPlanRequest(
     string PlanId,
@@ -114,10 +114,10 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 throw new TemplateRuleViolationException("TPL_RENDER_SOURCE_MISSING");
             }
 
-            if (explicitSelection is not null
-                && (!explicitSelection.SubjectGeometry.IsValid
+            if (explicitSelection?.SubjectGeometry is { } geometry
+                && (!geometry.IsValid
                     || !string.Equals(
-                        explicitSelection.SubjectGeometry.AssetResourceId,
+                        geometry.AssetResourceId,
                         assetId,
                         StringComparison.Ordinal)))
             {

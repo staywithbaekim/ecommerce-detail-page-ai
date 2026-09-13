@@ -132,7 +132,11 @@ public sealed partial class SqliteDesktopStore
             """;
         command.Parameters.AddWithValue("$state_key", stateKey);
         command.Parameters.AddWithValue("$pending_items_json", JsonSerializer.Serialize(
-            new PersistedSchedulerState(state.PendingItems, state.HistoricalRequests ?? []), AiJsonOptions));
+            new PersistedSchedulerState(
+                state.PendingItems,
+                state.HistoricalRequests ?? [],
+                state.TerminalErrors),
+            AiJsonOptions));
         command.Parameters.AddWithValue("$request_count", state.Budget.RequestCount);
         command.Parameters.AddWithValue("$input_tokens", state.Budget.InputTokens);
         command.Parameters.AddWithValue("$output_tokens", state.Budget.OutputTokens);
@@ -149,7 +153,7 @@ public sealed partial class SqliteDesktopStore
     {
         try
         {
-            var (items, historicalRequests) = DeserializeSchedulerPayload(reader.GetString(0));
+            var (items, historicalRequests, terminalErrors) = DeserializeSchedulerPayload(reader.GetString(0));
             var budget = new AiAnalysisBudgetSnapshot(
                 reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3),
                 decimal.Parse(reader.GetString(4), NumberStyles.Float, CultureInfo.InvariantCulture),
@@ -173,7 +177,8 @@ public sealed partial class SqliteDesktopStore
                 ParseTime(reader.GetString(7)),
                 controlState,
                 controlReason,
-                historicalRequests);
+                historicalRequests,
+                terminalErrors);
             ValidateSchedulingState(state);
             return state;
         }
@@ -195,21 +200,26 @@ public sealed partial class SqliteDesktopStore
         && string.Equals(left.ControlReason, right.ControlReason, StringComparison.Ordinal)
         && JsonSerializer.Serialize(left.PendingItems, AiJsonOptions) == JsonSerializer.Serialize(right.PendingItems, AiJsonOptions)
         && JsonSerializer.Serialize(left.HistoricalRequests ?? [], AiJsonOptions)
-            == JsonSerializer.Serialize(right.HistoricalRequests ?? [], AiJsonOptions);
+            == JsonSerializer.Serialize(right.HistoricalRequests ?? [], AiJsonOptions)
+        && JsonSerializer.Serialize(left.TerminalErrors ?? new Dictionary<string, string>(), AiJsonOptions)
+            == JsonSerializer.Serialize(right.TerminalErrors ?? new Dictionary<string, string>(), AiJsonOptions);
 
-    private static (AiAnalysisWorkItem[] Items, AiAnalysisRequestV1[] HistoricalRequests) DeserializeSchedulerPayload(string json)
+    private static (AiAnalysisWorkItem[] Items, AiAnalysisRequestV1[] HistoricalRequests, Dictionary<string, string> TerminalErrors) DeserializeSchedulerPayload(string json)
     {
         using var document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind == JsonValueKind.Array)
         {
             return (JsonSerializer.Deserialize<AiAnalysisWorkItem[]>(json, AiJsonOptions)
-                        ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT"), []);
+                        ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT"), [], new Dictionary<string, string>(StringComparer.Ordinal));
         }
 
         var payload = JsonSerializer.Deserialize<PersistedSchedulerState>(json, AiJsonOptions)
             ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT");
         return (payload.PendingItems?.ToArray() ?? throw new InvalidDataException("AI_SCHEDULER_STATE_CORRUPT"),
-            payload.HistoricalRequests?.ToArray() ?? []);
+            payload.HistoricalRequests?.ToArray() ?? [],
+            payload.TerminalErrors is null
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                : new Dictionary<string, string>(payload.TerminalErrors, StringComparer.Ordinal));
     }
 
     private static async Task<AiAnalysisSchedulingState?> LoadSchedulingStateForWriteAsync(
@@ -298,6 +308,25 @@ public sealed partial class SqliteDesktopStore
             ValidateIdentifier(request.BatchId, "AI_BATCH_ID_INVALID");
             ValidateIdentifier(request.StyleId, "AI_STYLE_ID_INVALID");
         }
+
+        var terminalErrors = state.TerminalErrors
+            ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        if (terminalErrors.Count > 10_000)
+        {
+            throw new InvalidOperationException("AI_SCHEDULER_TERMINAL_ERRORS_TOO_LARGE");
+        }
+
+        var historyIdSet = history.Select(request => request.RequestId)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var pair in terminalErrors)
+        {
+            ValidateIdentifier(pair.Key, "AI_SCHEDULER_TERMINAL_ERROR_REQUEST_INVALID");
+            if (!historyIdSet.Contains(pair.Key)
+                || !IsSafeErrorCode(pair.Value))
+            {
+                throw new InvalidOperationException("AI_SCHEDULER_TERMINAL_ERROR_INVALID");
+            }
+        }
     }
 
     private static void ValidateSchedulingWorkItem(AiAnalysisWorkItem item)
@@ -376,7 +405,13 @@ public sealed partial class SqliteDesktopStore
 
     private sealed record PersistedSchedulerState(
         IReadOnlyList<AiAnalysisWorkItem> PendingItems,
-        IReadOnlyList<AiAnalysisRequestV1> HistoricalRequests);
+        IReadOnlyList<AiAnalysisRequestV1> HistoricalRequests,
+        IReadOnlyDictionary<string, string>? TerminalErrors = null);
+
+    private static bool IsSafeErrorCode(string value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.Length <= 128
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character == '_');
 
     private static bool ReadBoolean(int value, string code) => value switch
     {

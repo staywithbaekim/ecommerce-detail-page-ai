@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Desktop.Application.Files;
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
+using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Files;
@@ -63,8 +64,7 @@ public sealed class ReferenceLearningCommitIntegrationTests
             Assert.Equal(3, committed.FrameBindings.Length);
             Assert.All(
                 committed.FrameBindings.Where(binding => binding.PageId is "page_front" or "page_detail"),
-                binding => Assert.Contains(binding.SelectionRequirement.Criteria, criterion =>
-                    criterion.Key == "reference_only" && criterion.Value == "true"));
+                AssertLearningAuditCriteria);
             Assert.NotNull(await manifests.ReadMarkerAsync(RevisionDirectory(session), "ready.marker", CancellationToken.None));
             Assert.NotNull(await manifests.ReadMarkerAsync(RevisionDirectory(session), "committed.marker", CancellationToken.None));
             Assert.Equal(3, (await manifests.LoadAsync(committed.ManifestRef!, CancellationToken.None))!.Entries.Count);
@@ -85,6 +85,9 @@ public sealed class ReferenceLearningCommitIntegrationTests
             var baseRevision = await reopened.GetRevisionAsync("revision_base", CancellationToken.None);
             Assert.Equal(session.DraftRevisionId, group!.CurrentRevisionId);
             Assert.Equal(TemplateRevisionState.Committed, committed!.State);
+            Assert.All(
+                committed.FrameBindings.Where(binding => binding.PageId is "page_front" or "page_detail"),
+                AssertLearningAuditCriteria);
             Assert.Equal(["frame_base"], baseRevision!.FrameBindings.Select(binding => binding.FrameId));
             Assert.Equal(TemplateRevisionState.Committed, baseRevision.State);
             Assert.Equal(ReferenceLearningState.Committed,
@@ -372,7 +375,21 @@ public sealed class ReferenceLearningCommitIntegrationTests
             pageId == "page_front" ? "完整正面图" : "商品细节图",
             1,
             layout,
-            ReferenceReviewDecision.Accepted);
+            ReferenceReviewDecision.Accepted,
+            PixelEvidence: new PsdLayerPixelEvidence(
+                true,
+                790 * 1252,
+                790 * 1252,
+                new PsdLayerBounds(0, 0, 790, 1252)),
+            SemanticMetadata: new ReferenceSemanticMetadata(
+                ReferenceSemanticSource.AiV2,
+                ReferenceLearningAiProtocol.RequestSchemaVersion,
+                ReferenceLearningAiProtocol.ResultSchemaVersion,
+                ReferenceLearningAiService.ModelConfigVersion,
+                ReferenceLearningAiProtocol.SemanticPromptVersion,
+                "sha256:" + new string('e', 64),
+                ["主体特征与参考图一致"],
+                ["排除其他展示角度"]));
         var photos = new[] { photo };
         var candidates = new[] { candidate };
         var psdHash = "sha256:" + new string(pageId == "page_front" ? '3' : '4', 64);
@@ -444,6 +461,20 @@ public sealed class ReferenceLearningCommitIntegrationTests
 
     private static string RevisionDirectory(TemplateDraftSession session) =>
         $"templates/groups/{session.GroupId}/revisions/{session.DraftRevisionId}";
+
+    private static void AssertLearningAuditCriteria(FrameBinding binding)
+    {
+        var criteria = binding.SelectionRequirement.Criteria.ToDictionary(
+            criterion => criterion.Key,
+            criterion => criterion.Value,
+            StringComparer.Ordinal);
+        Assert.Equal("true", criteria["reference_only"]);
+        Assert.Equal(ReferenceLearningRuleProjector.ReferenceAuditVersion, criteria["reference_audit_version"]);
+        Assert.Equal("sha256:" + new string('5', 64), criteria["reference_set_digest"]);
+        Assert.Matches("^[12]{64}$", criteria["reference_hashes_00"]);
+        Assert.Equal(ReferenceLearningAiService.ModelConfigVersion, criteria["semantic_model_version"]);
+        Assert.Equal(ReferenceLearningAiProtocol.SemanticPromptVersion, criteria["semantic_prompt_version"]);
+    }
 
     private static async Task<string> WriteSourceAsync(string root, string name, byte[] bytes)
     {

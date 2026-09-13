@@ -20,6 +20,18 @@ public interface IAiServicePort
     Task<AiAnalysisExecutionResult> AnalyzeAsync(
         AiAnalysisRequestV1 request,
         CancellationToken cancellationToken);
+
+    Task<ReferenceLearningAiExecutionResult> AnalyzeReferenceLearningAsync(
+        ReferenceLearningAiRequestV2 request,
+        CancellationToken cancellationToken) => Task.FromResult(
+            ReferenceLearningAiExecutionResult.Failure(
+                AiProviderOutcome.TerminalError,
+                new ContractError(
+                    "TPL_LEARN_AI_CONTRACT_UNSUPPORTED",
+                    false,
+                    "provider",
+                    "当前 AI 适配器不支持人工结果学习 v2，请更新应用后重试。"),
+                TimeSpan.Zero));
 }
 
 public interface IAiAnalysisCopySource
@@ -44,6 +56,57 @@ public static class AiAnalysisCopyProfiles
     public const string BytePreservingProvisionalV1 = "byte-preserving/provisional-v1";
     public const string WicBoundedV1 = "wic-bounded/max1600/jpeg-q82/png/v1";
     public const string WicBoundedCandidateV1 = "wic-bounded/max1600/jpeg-q82/png/v1-candidate";
+    /// <summary>
+    /// The production WIC profile after the real-request-body correction.
+    /// Opaque PNG input may be emitted as bounded JPEG; PNG with meaningful
+    /// alpha remains PNG.  The version is part of every request/cache
+    /// fingerprint so copies produced by the old profile cannot be reused.
+    /// </summary>
+    public const string WicBoundedV2 = "wic-bounded/max1600/jpeg-q82/png-opaque-jpeg/v2";
+    public const string WicBoundedCandidateV2 = "wic-bounded/max1600/jpeg-q82/png-opaque-jpeg/v2-candidate";
+    /// <summary>
+    /// Transport-bounded production profile for multi-image visual analysis.
+    /// The lower analysis-only resolution keeps a 24-image request well below
+    /// the HTTP body ceiling on constrained uplinks; original media and render
+    /// assets are never changed.
+    /// </summary>
+    public const string WicBoundedV3 = "wic-bounded/max1280/jpeg-q76/png-opaque-jpeg/v3";
+    public const string WicTransportCandidate1440Q78V3 =
+        "wic-bounded/max1440/jpeg-q78/png-opaque-jpeg/v3-candidate";
+    public const string WicTransportCandidate1280Q76V3 =
+        "wic-bounded/max1280/jpeg-q76/png-opaque-jpeg/v3-candidate";
+    /// <summary>
+    /// Current production transport profile. It keeps the V3 geometry bound,
+    /// restores the approved q82 quality used by the legacy demo, and remains
+    /// a distinct fingerprint so no V3/V2 bytes or cache entries are reused.
+    /// </summary>
+    public const string WicBoundedV4 = "wic-bounded/max1280/jpeg-q82/png-opaque-jpeg/v4";
+    public const string WicBoundedCandidateV4 =
+        "wic-bounded/max1280/jpeg-q82/png-opaque-jpeg/v4-candidate";
+
+    public static bool IsWicBoundedV1(string? profile) => profile is
+        WicBoundedV1 or WicBoundedCandidateV1;
+
+    public static bool IsWicBoundedV2(string? profile) => profile is
+        WicBoundedV2 or WicBoundedCandidateV2;
+
+    public static bool IsWicBoundedV3(string? profile) => profile is
+        WicBoundedV3 or WicTransportCandidate1280Q76V3;
+
+    public static bool IsWicBoundedV4(string? profile) => profile is
+        WicBoundedV4 or WicBoundedCandidateV4;
+
+    public static bool ConvertsOpaquePngToJpeg(string? profile) =>
+        IsWicBoundedV2(profile)
+        || IsWicBoundedV3(profile)
+        || IsWicBoundedV4(profile)
+        || profile is WicTransportCandidate1440Q78V3;
+
+    public static bool IsApproved(string? profile) =>
+        IsWicBoundedV1(profile)
+        || IsWicBoundedV2(profile)
+        || IsWicBoundedV3(profile)
+        || IsWicBoundedV4(profile);
 }
 
 public sealed record AiAnalysisCopyMetadata(
@@ -134,12 +197,46 @@ public sealed record AiAnalysisExecutionResult(
     public static AiAnalysisExecutionResult Failure(
         AiProviderOutcome outcome,
         ContractError error,
-        TimeSpan duration) => new(
+        TimeSpan duration,
+        AiProviderUsage? usage = null) => new(
             outcome is AiProviderOutcome.Completed
                 ? throw new ArgumentOutOfRangeException(nameof(outcome))
                 : outcome,
             null,
+            usage,
+            error ?? throw new ArgumentNullException(nameof(error)),
+            duration);
+}
+
+public sealed record ReferenceLearningAiExecutionResult(
+    AiProviderOutcome Outcome,
+    ReferenceLearningAiResultV2? Result,
+    AiProviderUsage? Usage,
+    ContractError? Error,
+    TimeSpan Duration)
+{
+    public bool IsSuccess => Outcome == AiProviderOutcome.Completed && Result is not null;
+
+    public static ReferenceLearningAiExecutionResult Completed(
+        ReferenceLearningAiResultV2 result,
+        AiProviderUsage? usage,
+        TimeSpan duration) => new(
+            AiProviderOutcome.Completed,
+            result ?? throw new ArgumentNullException(nameof(result)),
+            usage,
             null,
+            duration);
+
+    public static ReferenceLearningAiExecutionResult Failure(
+        AiProviderOutcome outcome,
+        ContractError error,
+        TimeSpan duration,
+        AiProviderUsage? usage = null) => new(
+            outcome is AiProviderOutcome.Completed
+                ? throw new ArgumentOutOfRangeException(nameof(outcome))
+                : outcome,
+            null,
+            usage,
             error ?? throw new ArgumentNullException(nameof(error)),
             duration);
 }
@@ -147,6 +244,80 @@ public sealed record AiAnalysisExecutionResult(
 public interface IAiCredentialSource
 {
     ValueTask<string?> GetCredentialAsync(CancellationToken cancellationToken);
+}
+
+public enum AiCredentialState
+{
+    NotConfigured = 0,
+    Configured,
+    Unavailable
+}
+
+/// <summary>
+/// A redacted local status snapshot.  The API key itself must never cross
+/// this boundary or be persisted by the application layer.
+/// </summary>
+public sealed record AiCredentialStatusSnapshot(
+    AiCredentialState State,
+    string? MaskedSuffix,
+    string? ErrorCode = null)
+{
+    public bool IsConfigured => State == AiCredentialState.Configured;
+}
+
+/// <summary>
+/// Local credential-management boundary for the settings page.  Implementations
+/// must use the operating system's secure credential store and must not log,
+/// persist, or return the secret from status operations.
+/// </summary>
+public interface IAiCredentialManagementPort
+{
+    Task<AiCredentialStatusSnapshot> GetStatusAsync(CancellationToken cancellationToken);
+
+    Task SaveAsync(string apiKey, CancellationToken cancellationToken);
+
+    Task RemoveAsync(CancellationToken cancellationToken);
+}
+
+public static class AiCredentialRules
+{
+    /// <summary>
+    /// Windows Generic Credential Manager entries have a small bounded blob.
+    /// This is deliberately stricter than the current read compatibility cap;
+    /// it rejects malformed or unexpectedly large input before native I/O.
+    /// </summary>
+    public const int MaxUtf8Bytes = 512;
+
+    public static string NormalizeAndValidate(string? apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new ArgumentException("AI API Key 不能为空。", nameof(apiKey));
+        }
+
+        var value = apiKey.Trim();
+        if (value.Length == 0
+            || value.Any(char.IsControl)
+            || value.Any(char.IsWhiteSpace))
+        {
+            throw new ArgumentException("AI API Key 不能包含空白或控制字符。", nameof(apiKey));
+        }
+
+        var byteCount = System.Text.Encoding.UTF8.GetByteCount(value);
+        if (byteCount > MaxUtf8Bytes)
+        {
+            throw new ArgumentException("AI API Key 超出本机凭据安全长度上限。", nameof(apiKey));
+        }
+
+        return value;
+    }
+
+    public static string MaskSuffix(string apiKey)
+    {
+        var value = NormalizeAndValidate(apiKey);
+        var suffix = value.Length <= 4 ? value : value[^4..];
+        return $"••••{suffix}";
+    }
 }
 
 public static class AiConsentScopes

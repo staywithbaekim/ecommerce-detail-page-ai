@@ -2,12 +2,19 @@ namespace Desktop.Contracts.Ai;
 
 /// <summary>
 /// Closes result references over the request that produced them. Some
-/// multimodal transports expose images to the model by stable zero-based
-/// aliases (img_0, img_1, ...); those aliases are transport-only and must
-/// never reach application state or user-selection persistence.
+/// multimodal transports expose request-owned references to the model by
+/// short stable aliases. Those aliases are transport-only and must never
+/// reach application state or user-selection persistence.
 /// </summary>
 public static class AiAnalysisResultReferenceNormalizer
 {
+    public const string RequestAlias = "request_0";
+    public const string ModelConfigVersionAlias = "model_0";
+
+    public static string RequirementAlias(int index) => $"req_{index}";
+
+    public static string AssetAlias(int index) => $"img_{index}";
+
     public static AiAnalysisResultV1 Normalize(
         AiAnalysisRequestV1 request,
         AiAnalysisResultV1 result)
@@ -22,25 +29,38 @@ public static class AiAnalysisResultReferenceNormalizer
         // NullReferenceException.
         AiAnalysisResultSemanticValidator.Validate(result);
 
-        var requirementIds = request.Requirements
-            .Select(requirement => requirement.RequirementId)
-            .ToHashSet(StringComparer.Ordinal);
+        var requestAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        AddReference(requestAliases, request.RequestId, request.RequestId);
+        AddReference(requestAliases, RequestAlias, request.RequestId);
+
+        var modelAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        AddReference(modelAliases, request.ModelConfigVersion, request.ModelConfigVersion);
+        AddReference(modelAliases, ModelConfigVersionAlias, request.ModelConfigVersion);
+
+        var requirementAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var index = 0; index < request.Requirements.Count; index++)
+        {
+            var requirementId = request.Requirements[index].RequirementId;
+            AddReference(requirementAliases, requirementId, requirementId);
+            AddReference(requirementAliases, RequirementAlias(index), requirementId);
+        }
+
         var assetAliases = new Dictionary<string, string>(StringComparer.Ordinal);
         for (var index = 0; index < request.Assets.Count; index++)
         {
             var assetId = request.Assets[index].AssetId;
-            if (!assetAliases.TryAdd(assetId, assetId)
-                || !assetAliases.TryAdd($"img_{index}", assetId))
-            {
-                throw new InvalidDataException("AI_RESULT_REFERENCE_MAP_INVALID");
-            }
+            AddReference(assetAliases, assetId, assetId);
+            AddReference(assetAliases, AssetAlias(index), assetId);
         }
 
-        string AssetId(string value)
+        static string ResolveReference(
+            IReadOnlyDictionary<string, string> aliases,
+            string value,
+            string mismatchCode)
         {
-            if (!assetAliases.TryGetValue(value, out var normalized))
+            if (!aliases.TryGetValue(value, out var normalized))
             {
-                throw new InvalidDataException("AI_RESULT_ASSET_REFERENCE_MISMATCH");
+                throw new InvalidDataException(mismatchCode);
             }
 
             return normalized;
@@ -48,28 +68,56 @@ public static class AiAnalysisResultReferenceNormalizer
 
         var matches = result.RequirementMatches.Select(match =>
         {
-            if (!requirementIds.Contains(match.RequirementId))
+            return match with
             {
-                throw new InvalidDataException("AI_RESULT_REQUIREMENT_REFERENCE_MISMATCH");
-            }
-
-            return match with { AssetId = AssetId(match.AssetId) };
+                RequirementId = ResolveReference(
+                    requirementAliases,
+                    match.RequirementId,
+                    "AI_RESULT_REQUIREMENT_REFERENCE_MISMATCH"),
+                AssetId = ResolveReference(
+                    assetAliases,
+                    match.AssetId,
+                    "AI_RESULT_ASSET_REFERENCE_MISMATCH")
+            };
         }).ToArray();
         var variants = result.VariantGroups
-            .Select(group => group with { AssetIds = group.AssetIds.Select(AssetId).ToArray() })
+            .Select(group => group with
+            {
+                AssetIds = group.AssetIds.Select(value => ResolveReference(
+                    assetAliases,
+                    value,
+                    "AI_RESULT_ASSET_REFERENCE_MISMATCH")).ToArray()
+            })
             .ToArray();
         var geometry = result.SubjectGeometry
-            .Select(item => item with { AssetId = AssetId(item.AssetId) })
+            .Select(item => item with
+            {
+                AssetId = ResolveReference(
+                    assetAliases,
+                    item.AssetId,
+                    "AI_RESULT_ASSET_REFERENCE_MISMATCH")
+            })
             .ToArray();
         var sizeTable = result.SizeTableCandidate is null
             ? null
             : result.SizeTableCandidate with
             {
-                SourceAssetId = AssetId(result.SizeTableCandidate.SourceAssetId)
+                SourceAssetId = ResolveReference(
+                    assetAliases,
+                    result.SizeTableCandidate.SourceAssetId,
+                    "AI_RESULT_ASSET_REFERENCE_MISMATCH")
             };
 
         var normalized = result with
         {
+            RequestId = ResolveReference(
+                requestAliases,
+                result.RequestId,
+                "AI_RESULT_REQUEST_REFERENCE_MISMATCH"),
+            ModelConfigVersion = ResolveReference(
+                modelAliases,
+                result.ModelConfigVersion,
+                "AI_RESULT_MODEL_REFERENCE_MISMATCH"),
             RequirementMatches = matches,
             VariantGroups = variants,
             SubjectGeometry = geometry,
@@ -78,5 +126,23 @@ public static class AiAnalysisResultReferenceNormalizer
 
         AiAnalysisResultSemanticValidator.Validate(normalized);
         return normalized;
+    }
+
+    private static void AddReference(
+        Dictionary<string, string> aliases,
+        string alias,
+        string normalized)
+    {
+        if (aliases.TryGetValue(alias, out var existing))
+        {
+            if (!string.Equals(existing, normalized, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("AI_RESULT_REFERENCE_MAP_INVALID");
+            }
+
+            return;
+        }
+
+        aliases.Add(alias, normalized);
     }
 }

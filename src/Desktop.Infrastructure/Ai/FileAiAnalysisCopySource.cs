@@ -87,11 +87,19 @@ public sealed class FileAiAnalysisCopySource : IAiAnalysisCopySource
             || inspected.PixelWidth != metadata.PixelWidth
             || inspected.PixelHeight != metadata.PixelHeight)
             throw new InvalidDataException("AI 分析副本内容与元数据不闭合。");
-        if ((string.Equals(metadata.CompressionProfileVersion, AiAnalysisCopyProfiles.WicBoundedV1, StringComparison.Ordinal)
-                || string.Equals(metadata.CompressionProfileVersion, AiAnalysisCopyProfiles.WicBoundedCandidateV1, StringComparison.Ordinal))
+        var approvedMaxEdge = AiAnalysisCopyProfiles.IsWicBoundedV3(metadata.CompressionProfileVersion)
+            || AiAnalysisCopyProfiles.IsWicBoundedV4(metadata.CompressionProfileVersion)
+            ? 1280
+            : AiAnalysisCopyProfiles.IsWicBoundedV1(metadata.CompressionProfileVersion)
+                || AiAnalysisCopyProfiles.IsWicBoundedV2(metadata.CompressionProfileVersion)
+                    ? 1600
+                    : (int?)null;
+        if (approvedMaxEdge is not null
             && (metadata.MimeType is not ("image/jpeg" or "image/png")
-                || Math.Max(metadata.PixelWidth, metadata.PixelHeight) > 1600))
+                || Math.Max(metadata.PixelWidth, metadata.PixelHeight) > approvedMaxEdge.Value))
+        {
             throw new InvalidDataException("AI 分析副本压缩配置不闭合。");
+        }
         return new AiAnalysisCopy(metadata.Reference, metadata.MimeType, metadata.PixelWidth, metadata.PixelHeight, bytes,
             metadata.Digest, metadata.ByteLength, metadata.CompressionProfileVersion, metadata.LeaseId);
     }

@@ -1,9 +1,11 @@
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Templates;
 using Desktop.Contracts.Validation;
+using System.Text.Json.Nodes;
 
 namespace Desktop.Infrastructure.Tests;
 
@@ -20,6 +22,17 @@ public sealed class JsonReferenceLearningSessionStoreTests
         var document = Document();
 
         await store.SaveAsync(document, CancellationToken.None);
+        var persisted = await File.ReadAllTextAsync(Path.Combine(
+            directory.Path,
+            "learning",
+            "reference-sessions",
+            document.LearningId + ".json"));
+        var diagnostic = new JsonSchemaContractValidator().ValidateWithDiagnostic(
+            ContractDocumentKind.ReferenceLearning,
+            persisted);
+        Assert.True(
+            diagnostic.Validation.IsValid,
+            $"schema_path={diagnostic.FirstFailureInstancePath} keyword={diagnostic.FirstFailureKeyword}\n{persisted}");
         var restarted = new JsonReferenceLearningSessionStore(
             new AtomicFileStore(new LocalAppPathPolicy(directory.Path)),
             new JsonSchemaContractValidator());
@@ -33,11 +46,11 @@ public sealed class JsonReferenceLearningSessionStoreTests
             .LayerPath);
         Assert.Equal([1], loadedCandidate.StructuralWindowLayerPath);
         Assert.True(loadedCandidate.IsProduct);
-        var persisted = await File.ReadAllTextAsync(Path.Combine(
-            directory.Path,
-            "learning",
-            "reference-sessions",
-            document.LearningId + ".json"));
+        Assert.True(loadedCandidate.EffectivePixelEvidence.Available);
+        Assert.Equal(100, loadedCandidate.EffectivePixelEvidence.RenderedPixelCount);
+        Assert.Equal(100, loadedCandidate.EffectivePixelEvidence.CompositeContributionPixelCount);
+        Assert.Equal(ReferenceLearningAiService.ModelConfigVersion, loadedCandidate.SemanticMetadata!.ModelConfigVersion);
+        Assert.Equal(ReferenceLearningAiProtocol.SemanticPromptVersion, loadedCandidate.SemanticMetadata.PromptContractVersion);
         Assert.Contains("reference-learning/v1", persisted, StringComparison.Ordinal);
         Assert.DoesNotContain(directory.Path, persisted, StringComparison.OrdinalIgnoreCase);
     }
@@ -85,6 +98,49 @@ public sealed class JsonReferenceLearningSessionStoreTests
         Assert.False(loaded.CanCommit);
     }
 
+    [Fact]
+    public async Task LegacyV1SessionWithoutPixelEvidenceRemainsReadableButCannotCommit()
+    {
+        using var directory = new TestDirectory();
+        var store = new JsonReferenceLearningSessionStore(
+            new AtomicFileStore(new LocalAppPathPolicy(directory.Path)),
+            new JsonSchemaContractValidator());
+        var current = Document();
+        var legacyCandidate = current.Candidates[0] with
+        {
+            PixelEvidence = null,
+            SemanticMetadata = null
+        };
+        var legacyCandidates = new[] { legacyCandidate };
+        var legacy = current with
+        {
+            Candidates = legacyCandidates,
+            RulesDigest = ReferenceLearningDigest.ComputeLegacyWithoutPixelEvidence(
+                current.PsdSha256,
+                current.StructureSignature,
+                current.ReferenceFolderDigest,
+                current.ReferencePhotos,
+                legacyCandidates)
+        };
+
+        await store.SaveAsync(legacy, CancellationToken.None);
+        var path = Path.Combine(
+            directory.Path,
+            "learning",
+            "reference-sessions",
+            legacy.LearningId + ".json");
+        var json = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        json["candidates"]![0]!.AsObject().Remove("pixel_evidence");
+        json["candidates"]![0]!.AsObject().Remove("semantic_metadata");
+        await File.WriteAllTextAsync(path, json.ToJsonString());
+
+        var loaded = await store.GetAsync(legacy.LearningId, CancellationToken.None);
+
+        Assert.NotNull(loaded);
+        Assert.False(Assert.Single(loaded!.Candidates).EffectivePixelEvidence.Available);
+        Assert.False(loaded.CanCommit);
+    }
+
     private static ReferenceLearningDocument Document()
     {
         var layout = LayoutIntent.Create(
@@ -108,7 +164,21 @@ public sealed class JsonReferenceLearningSessionStoreTests
         {
             SupersededLayers = [new ReferenceSupersededLayerEvidence([2], 2, true, true)],
             WindowLayerPath = [1],
-            StructuralReason = "替换栈栈顶；已折叠 1 个被覆盖旧图层。"
+            StructuralReason = "替换栈栈顶；已折叠 1 个被覆盖旧图层。",
+            PixelEvidence = new PsdLayerPixelEvidence(
+                true,
+                100,
+                100,
+                new PsdLayerBounds(0, 0, 10, 10)),
+            SemanticMetadata = new ReferenceSemanticMetadata(
+                ReferenceSemanticSource.AiV2,
+                ReferenceLearningAiProtocol.RequestSchemaVersion,
+                ReferenceLearningAiProtocol.ResultSchemaVersion,
+                ReferenceLearningAiService.ModelConfigVersion,
+                ReferenceLearningAiProtocol.SemanticPromptVersion,
+                "sha256:" + new string('e', 64),
+                ["主体完整"],
+                ["排除背面"])
         };
         var candidates = new[] { candidate };
         var photos = new[]

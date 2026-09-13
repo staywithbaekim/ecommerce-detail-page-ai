@@ -1,6 +1,7 @@
 ﻿<Application x:Class="Desktop.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:app="clr-namespace:Desktop.App"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <ResourceDictionary>
@@ -8,6 +9,7 @@
                 <ResourceDictionary Source="Styles/DesignSystem.xaml" />
             </ResourceDictionary.MergedDictionaries>
             <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+            <app:BoundedPreviewImageConverter x:Key="BoundedPreviewImageConverter" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

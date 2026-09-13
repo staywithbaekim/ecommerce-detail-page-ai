@@ -96,6 +96,191 @@ public sealed class TemplateRepositoryTests
     }
 
     [Fact]
+    public async Task RenamedTemplateGroupSurvivesRestartWithoutChangingRevisionPointer()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = new DateTimeOffset(2026, 9, 12, 1, 0, 0, TimeSpan.Zero);
+        var group = TemplateGroup.Create("group_rename", "原名称", now);
+        var committed = Commit(TemplateRevision.CreateDraft(
+            "revision_rename",
+            group.GroupId,
+            1,
+            now,
+            [Page("page_rename", "revision_rename", 0)]));
+
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveGroupAsync(group, CancellationToken.None);
+            await store.CommitRevisionAsync(committed, null, CancellationToken.None);
+            var workspace = new TemplateWorkspaceService(
+                store,
+                store,
+                importer: null!,
+                timeProvider: TimeProvider.System);
+            await workspace.RenameTemplateGroupAsync(
+                group.GroupId,
+                "已重命名模板",
+                CancellationToken.None);
+        }
+
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var restored = await reopened.GetGroupAsync(group.GroupId, CancellationToken.None);
+
+        Assert.Equal("已重命名模板", restored!.Name);
+        Assert.Equal(committed.RevisionId, restored.CurrentRevisionId);
+        Assert.NotNull(await reopened.GetRevisionAsync(committed.RevisionId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task PageEditReusesExistingSqliteDraftAndLegacyCalibrationMarker()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = new DateTimeOffset(2026, 9, 7, 1, 0, 0, TimeSpan.Zero);
+        var group = TemplateGroup.Create("group_edit_recovery", "页面编辑恢复", now);
+        var committed = Commit(TemplateRevision.CreateDraft(
+            "revision_edit_recovery_base",
+            group.GroupId,
+            1,
+            now,
+            [Page("page_detail", "revision_edit_recovery_base", 0)]));
+        var draft = TemplateRevision.CreateIncrement(
+            "revision_edit_recovery_draft",
+            committed,
+            2,
+            now.AddMinutes(1),
+            []);
+
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await store.SaveGroupAsync(group, CancellationToken.None);
+        await store.CommitRevisionAsync(committed, null, CancellationToken.None);
+        await store.SaveDraftRevisionAsync(draft, CancellationToken.None);
+        await store.SaveCalibrationDraftAsync(
+            CalibrationDraft.Create(
+                $"calibration_{committed.RevisionId}_page_detail",
+                committed.RevisionId,
+                ["page_detail"],
+                TemplateRevisionState.Calibrating,
+                1),
+            CancellationToken.None);
+
+        var workspace = new TemplateWorkspaceService(
+            store,
+            store,
+            importer: null!,
+            timeProvider: TimeProvider.System);
+        var resumed = await workspace.BeginPageEditAsync(
+            group.GroupId,
+            "page_detail",
+            CancellationToken.None);
+
+        Assert.Equal(draft.RevisionId, resumed.DraftRevisionId);
+        Assert.Equal(2, resumed.RevisionNo);
+        Assert.Contains("page_detail", resumed.EditablePageIds);
+        Assert.Equal(draft.RevisionId, (await store.GetLatestRevisionForGroupAsync(
+            group.GroupId,
+            CancellationToken.None))!.RevisionId);
+    }
+
+    [Fact]
+    public async Task FullEditCanBeSavedAsIndependentGroupWithoutChangingOriginalRevisionOrPsd()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = new DateTimeOffset(2026, 9, 7, 2, 30, 0, TimeSpan.Zero);
+        var psdBytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 0x01, 0x02, 0x03 };
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(psdBytes)).ToLowerInvariant();
+        var group = TemplateGroup.Create("group_full_clone", "原模板组", now);
+        var resourcePath =
+            "templates/groups/group_full_clone/revisions/revision_full_clone_base/template.psd";
+        var resource = new ImportedTemplateResource(
+            "resource_full_clone",
+            group.GroupId,
+            "revision_full_clone_base",
+            resourcePath,
+            psdBytes.Length,
+            hash,
+            "sha256:" + new string('b', 64),
+            Inspection(),
+            now);
+        var draft = TemplateRevision.CreateDraft(
+            "revision_full_clone_base",
+            group.GroupId,
+            1,
+            now,
+            [TemplatePage.Create(
+                "page_full_clone",
+                "revision_full_clone_base",
+                0,
+                "主图页",
+                TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct,
+                null,
+                enabled: true,
+                resource.ResourceId)],
+            [Binding("frame_full_clone", "page_full_clone").Reconfigure(
+                SelectionRequirement.Create(
+                    "Choose the main product image.",
+                    [SelectionCriterion.Create("asset_id", "asset_front")]))]);
+
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        var paths = new LocalAppPathPolicy(directory.Path);
+        var files = new AtomicFileStore(paths);
+        await files.WriteAtomicallyAsync(resourcePath, psdBytes, CancellationToken.None);
+        await store.SaveGroupAsync(group, CancellationToken.None);
+        await store.SaveImportedAsync("import_full_clone", resource, CancellationToken.None);
+        await store.CommitRevisionAsync(Commit(draft), null, CancellationToken.None);
+
+        var workspace = new TemplateWorkspaceService(
+            store,
+            store,
+            importer: null!,
+            TimeProvider.System,
+            new JsonManifestStore(files),
+            new TemplateOwnedStorage(paths),
+            paths,
+            new TemplateSourceFilePort(paths),
+            files);
+
+        var session = await workspace.BeginFullEditAsync(group.GroupId, CancellationToken.None);
+        var savedAs = await workspace.CommitDraftAsNewGroupAsync(
+            session,
+            "原模板组 副本",
+            CancellationToken.None);
+
+        var originalGroup = await store.GetGroupAsync(group.GroupId, CancellationToken.None);
+        var originalRevision = await store.GetRevisionAsync(
+            originalGroup!.CurrentRevisionId!,
+            CancellationToken.None);
+        var clonedRevision = await store.GetRevisionAsync(savedAs.RevisionId, CancellationToken.None);
+        var clonedPage = Assert.Single(clonedRevision!.Pages);
+        var clonedResource = await store.GetByResourceIdAsync(
+            clonedPage.TemplateResourceId,
+            CancellationToken.None);
+        var clonedBytes = await files.ReadAsync(
+            clonedResource!.InternalRelativePath,
+            CancellationToken.None);
+
+        Assert.NotEqual(group.GroupId, savedAs.GroupId);
+        Assert.Equal("原模板组", originalGroup.Name);
+        Assert.Equal(draft.RevisionId, originalGroup.CurrentRevisionId);
+        Assert.Equal("page_full_clone", Assert.Single(originalRevision!.Pages).PageId);
+        Assert.Equal("原模板组 副本", savedAs.Name);
+        Assert.NotEqual("page_full_clone", clonedPage.PageId);
+        Assert.NotEqual(resource.ResourceId, clonedPage.TemplateResourceId);
+        Assert.NotEqual(resource.InternalRelativePath, clonedResource.InternalRelativePath);
+        Assert.Equal(psdBytes, clonedBytes);
+        Assert.Equal(
+            "asset_front",
+            Assert.Single(clonedRevision.FrameBindings).SelectionRequirement.Criteria.Single().Value);
+    }
+
+    [Fact]
     public async Task CommittedRevisionCannotBeOverwrittenByDraft()
     {
         using var directory = new TestDirectory();
@@ -287,6 +472,103 @@ public sealed class TemplateRepositoryTests
     }
 
     [Fact]
+    public async Task PageEditMigratesLegacyCalibrationStateAndRestoresLearningRule()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var pageId = "page_legacy_calibration";
+        var group = TemplateGroup.Create("group_legacy_calibration", "旧校准恢复", now);
+        var committedDraft = TemplateRevision.CreateDraft(
+            "revision_legacy_committed",
+            group.GroupId,
+            1,
+            now,
+            [Page(pageId, "revision_legacy_committed", 0)],
+            [Binding("learn_frame_legacy", pageId).Reconfigure(
+                SelectionRequirement.Create(
+                    "商品展示图，与参考款保持同一正面视角。",
+                    [
+                        SelectionCriterion.Create("asset_id", "asset_reference"),
+                        SelectionCriterion.Create("reference_only", "true"),
+                        SelectionCriterion.Create("reference_file_name", "front.jpg")
+                    ]),
+                LayoutIntent.Create(
+                    "subject_cover",
+                    1.25,
+                    14,
+                    -6,
+                    TemplateRect.Create(0, 0, 790, 1252))) ]);
+        var committed = Commit(committedDraft);
+        var draft = TemplateRevision.CreateIncrement(
+            "revision_legacy_edit",
+            committed,
+            2,
+            now,
+            []);
+        var resource = new ImportedTemplateResource(
+            $"resource_{pageId}",
+            group.GroupId,
+            committed.RevisionId,
+            $"templates/groups/{group.GroupId}/drafts/{committed.RevisionId}/staging/resource_{pageId}/template.psd",
+            4,
+            new string('a', 64),
+            "sha256:" + new string('b', 64),
+            Inspection(),
+            now);
+        var legacyDraftId = $"calibration_{committed.RevisionId}_{pageId}";
+        var legacySnapshot = new CalibrationStateSnapshot(
+            legacyDraftId,
+            pageId,
+            3,
+            "asset_reference",
+            "frame_257",
+            [new TemplateCalibrationAsset("asset_reference", "front.jpg", "", 790, 1252)],
+            [new CalibrationFrameState("frame_257", "asset_reference", 1.25, 14, -6)]);
+        var session = new TemplateDraftSession(
+            group.GroupId,
+            group.Name,
+            draft.RevisionId,
+            draft.RevisionNo,
+            new HashSet<string>(StringComparer.Ordinal) { pageId })
+        {
+            EditablePageIds = new HashSet<string>(StringComparer.Ordinal) { pageId }
+        };
+
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await store.SaveGroupAsync(group, CancellationToken.None);
+        await store.SaveDraftRevisionAsync(committedDraft, CancellationToken.None);
+        await store.CommitRevisionAsync(committed, null, CancellationToken.None);
+        await store.SaveDraftRevisionAsync(draft, CancellationToken.None);
+        await store.SaveImportedAsync("import_legacy_calibration", resource, CancellationToken.None);
+        await store.SaveCalibrationDraftAsync(
+            CalibrationDraft.Create(
+                legacyDraftId,
+                committed.RevisionId,
+                [pageId],
+                TemplateRevisionState.Calibrating,
+                legacySnapshot.Sequence),
+            CancellationToken.None);
+        await store.SaveCalibrationStateAsync(legacySnapshot, CancellationToken.None);
+
+        var service = new TemplateCalibrationService(store, store, store);
+        var restored = await service.LoadAsync(session, pageId, CancellationToken.None);
+        var migrated = await store.GetCalibrationStateAsync(
+            $"calibration_{draft.RevisionId}_{pageId}",
+            pageId,
+            CancellationToken.None);
+
+        Assert.Equal("frame_257", restored.SelectedFrameId);
+        Assert.Equal("asset_reference", restored.SelectedAssetId);
+        Assert.Equal("商品展示图，与参考款保持同一正面视角。", restored.SelectionRequirement);
+        Assert.Equal(1.25, restored.SelectedScale);
+        Assert.Equal(14, restored.SelectedOffsetX);
+        Assert.Equal(-6, restored.SelectedOffsetY);
+        Assert.NotNull(migrated);
+    }
+
+    [Fact]
     public async Task FivePageSnapshotRemainsIsolatedAfterSixthPageCommitAndRestart()
     {
         using var directory = new TestDirectory();
@@ -372,13 +654,69 @@ public sealed class TemplateRepositoryTests
         await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
         await store.InitializeAsync();
         await store.SaveGroupAsync(group, CancellationToken.None);
-        await store.DeleteGroupAsync(group.GroupId, CancellationToken.None);
-        await new TemplateOwnedStorage(paths).DeleteGroupFilesAsync(group.GroupId, CancellationToken.None);
+        var workspace = new TemplateWorkspaceService(
+            store,
+            store,
+            importer: null!,
+            TimeProvider.System,
+            ownedStorage: new TemplateOwnedStorage(paths));
+
+        await workspace.DeleteTemplateGroupAsync(group.GroupId, CancellationToken.None);
 
         Assert.Null(await store.GetGroupAsync(group.GroupId, CancellationToken.None));
         Assert.False(File.Exists(paths.ResolveOwnedPath(ownedPath)));
         Assert.Equal(sourceHash, Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(sourcePath))));
+    }
+
+    [Fact]
+    public async Task LockedOwnedFileKeepsSqliteMetadataAndCanBeRetriedAfterRelease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TestDirectory();
+        var paths = new LocalAppPathPolicy(directory.Path);
+        var files = new AtomicFileStore(paths);
+        var group = TemplateGroup.Create("group_delete_locked", "占用中的模板", DateTimeOffset.UtcNow);
+        var ownedPath =
+            "templates/groups/group_delete_locked/drafts/revision_delete/staging/resource_delete/template.psd";
+        await files.WriteAtomicallyAsync(
+            ownedPath,
+            new byte[] { 1, 2, 3, 4 },
+            CancellationToken.None);
+
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await store.SaveGroupAsync(group, CancellationToken.None);
+        var workspace = new TemplateWorkspaceService(
+            store,
+            store,
+            importer: null!,
+            TimeProvider.System,
+            ownedStorage: new TemplateOwnedStorage(paths));
+
+        await using (var locked = new FileStream(
+                         paths.ResolveOwnedPath(ownedPath),
+                         FileMode.Open,
+                         FileAccess.Read,
+                         FileShare.Read))
+        {
+            var failure = await Assert.ThrowsAsync<IOException>(() =>
+                workspace.DeleteTemplateGroupAsync(group.GroupId, CancellationToken.None));
+
+            Assert.Equal("TPL_DELETE_FILES_FAILED", failure.Message);
+            Assert.NotNull(await store.GetGroupAsync(group.GroupId, CancellationToken.None));
+            Assert.True(File.Exists(paths.ResolveOwnedPath(ownedPath)));
+        }
+
+        var blockers = await workspace.DeleteTemplateGroupAsync(group.GroupId, CancellationToken.None);
+
+        Assert.Empty(blockers);
+        Assert.Null(await store.GetGroupAsync(group.GroupId, CancellationToken.None));
+        Assert.False(File.Exists(paths.ResolveOwnedPath(ownedPath)));
     }
 
     private static TemplatePage Page(string pageId, string revisionId, int order) => TemplatePage.Create(

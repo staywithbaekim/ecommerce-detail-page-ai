@@ -221,6 +221,31 @@ public sealed class TemplateDomainTests
     }
 
     [Fact]
+    public void RenameChangesOnlyDisplayMetadata()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var committed = Commit(TemplateRevision.CreateDraft(
+            "revision_rename",
+            "group_rename",
+            1,
+            now,
+            [Page("page_rename", "revision_rename", 0)]));
+        var group = TemplateGroup.Create("group_rename", "原名称", now)
+            .PointTo(committed, null, now.AddMinutes(1));
+
+        var renamed = group.Rename("新名称", now.AddMinutes(2));
+        var invalid = Assert.Throws<TemplateRuleViolationException>(() =>
+            group.Rename(" ", now.AddMinutes(2)));
+
+        Assert.Equal("新名称", renamed.Name);
+        Assert.Equal(group.GroupId, renamed.GroupId);
+        Assert.Equal(group.CurrentRevisionId, renamed.CurrentRevisionId);
+        Assert.Equal(group.CreatedAt, renamed.CreatedAt);
+        Assert.Equal(now.AddMinutes(2), renamed.UpdatedAt);
+        Assert.Equal("TPL_GROUP_NAME_INVALID", invalid.Code);
+    }
+
+    [Fact]
     public void BatchSnapshotFreezesPagesAndCannotSwitchAfterAnalysisStarts()
     {
         var first = Commit(TemplateRevision.CreateDraft(

@@ -197,6 +197,67 @@ public sealed record AssetManifestInspection(
     bool IsStaged,
     bool IsCommitted);
 
+public static class InputCommitJournalProtocol
+{
+    public const string Version = "input-commit-journal/v1";
+}
+
+public enum InputCommitJournalState
+{
+    Staged = 0,
+    DatabaseCommitted,
+    Committed,
+    RecoveryRequired
+}
+
+/// <summary>
+/// Application-owned evidence for the input batch two-phase commit.  The
+/// ready draft is intentionally kept in the journal so a committed manifest
+/// can rebuild a missing SQLite graph after a process or disk failure.  It
+/// contains metadata only; source bytes and PSDs never enter this record.
+/// </summary>
+public sealed record InputCommitJournal(
+    string SchemaVersion,
+    string BatchId,
+    InputCommitJournalState State,
+    StagedAssetManifest StagedManifest,
+    BatchDraft ReadyDraft,
+    DateTimeOffset UpdatedAt)
+{
+    public static InputCommitJournal Create(
+        StagedAssetManifest stagedManifest,
+        BatchDraft readyDraft,
+        DateTimeOffset updatedAt) => new(
+        InputCommitJournalProtocol.Version,
+        readyDraft.BatchId,
+        InputCommitJournalState.Staged,
+        stagedManifest,
+        readyDraft,
+        updatedAt);
+
+    public InputCommitJournal WithState(
+        InputCommitJournalState state,
+        DateTimeOffset updatedAt) => this with
+        {
+            State = state,
+            UpdatedAt = updatedAt
+        };
+}
+
+public interface IInputCommitJournalStore
+{
+    Task SaveAsync(
+        InputCommitJournal journal,
+        CancellationToken cancellationToken);
+
+    Task<InputCommitJournal?> GetAsync(
+        string batchId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> ListBatchIdsAsync(
+        CancellationToken cancellationToken);
+}
+
 public interface IAssetManifestStore
 {
     Task<StagedAssetManifest> StageAsync(
@@ -221,15 +282,26 @@ public sealed record BatchScanCommitRequest(
 
 public sealed record BatchScanCommitResult
 {
-    private BatchScanCommitResult(BatchDraft? draft, ScanBlockReason? failure)
+    private BatchScanCommitResult(
+        BatchDraft? draft,
+        ScanBlockReason? failure,
+        bool requiresRecovery)
     {
         Draft = draft;
         Failure = failure;
+        RequiresRecovery = requiresRecovery;
     }
 
     public BatchDraft? Draft { get; }
 
     public ScanBlockReason? Failure { get; }
+
+    /// <summary>
+    /// Indicates that the durable commit boundary was crossed.  The caller
+    /// must keep the journal evidence intact instead of overwriting it with a
+    /// normal blocked draft.
+    /// </summary>
+    public bool RequiresRecovery { get; }
 
     public bool IsSuccess => Draft?.ScanStatus == BatchScanStatus.ScanReady;
 
@@ -241,11 +313,13 @@ public sealed record BatchScanCommitResult
             throw new InputRuleViolationException("INPUT_COMMIT_RESULT_NOT_READY");
         }
 
-        return new BatchScanCommitResult(draft, null);
+        return new BatchScanCommitResult(draft, null, false);
     }
 
-    public static BatchScanCommitResult Blocked(ScanBlockReason failure) =>
-        new(null, failure ?? throw new ArgumentNullException(nameof(failure)));
+    public static BatchScanCommitResult Blocked(
+        ScanBlockReason failure,
+        bool requiresRecovery = false) =>
+        new(null, failure ?? throw new ArgumentNullException(nameof(failure)), requiresRecovery);
 }
 
 public interface IBatchScanCommitter

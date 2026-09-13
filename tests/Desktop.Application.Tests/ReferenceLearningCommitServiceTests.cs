@@ -1,5 +1,6 @@
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Tests;
@@ -33,6 +34,14 @@ public sealed class ReferenceLearningCommitServiceTests
             item.Key == "asset_id" && item.Value == "asset_reference_front");
         Assert.Contains(binding.SelectionRequirement.Criteria, item =>
             item.Key == "reference_only" && item.Value == "true");
+        Assert.Contains(binding.SelectionRequirement.Criteria, item =>
+            item.Key == "reference_audit_version" && item.Value == "reference-audit/v1");
+        Assert.Contains(binding.SelectionRequirement.Criteria, item =>
+            item.Key == "reference_set_digest" && item.Value == "sha256:" + new string('d', 64));
+        Assert.Contains(binding.SelectionRequirement.Criteria, item =>
+            item.Key == "reference_hashes_00" && item.Value == new string('a', 64));
+        Assert.Contains(binding.SelectionRequirement.Criteria, item =>
+            item.Key == "semantic_model_version" && item.Value == ReferenceLearningAiService.ModelConfigVersion);
     }
 
     [Fact]
@@ -173,7 +182,21 @@ public sealed class ReferenceLearningCommitServiceTests
             "正面商品图",
             1,
             layout,
-            ReferenceReviewDecision.Accepted);
+            ReferenceReviewDecision.Accepted,
+            PixelEvidence: new PsdLayerPixelEvidence(
+                true,
+                20_000,
+                20_000,
+                new PsdLayerBounds(0, 0, 100, 200)),
+            SemanticMetadata: new ReferenceSemanticMetadata(
+                ReferenceSemanticSource.AiV2,
+                "reference-learning-ai/v2",
+                "reference-learning-ai-result/v2",
+                ReferenceLearningAiService.ModelConfigVersion,
+                ReferenceLearningAiProtocol.SemanticPromptVersion,
+                "sha256:" + new string('e', 64),
+                ["主体完整"],
+                ["排除其他姿态"]));
         var candidates = new[] { candidate };
         var photos = new[]
         {
@@ -247,11 +270,19 @@ public sealed class ReferenceLearningCommitServiceTests
                 new DateTimeOffset(2026, 9, 5, 1, 0, 0, TimeSpan.Zero)));
         }
 
+        public Task<TemplateGroupDetails> CommitDraftAsNewGroupAsync(
+            TemplateDraftSession session,
+            string newGroupName,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateGroupDetails?> GetDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateGroupDetails?> GetCommittedDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task RenameTemplateGroupAsync(string groupId, string newName, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftSession> BeginCreateAsync(string groupName, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftSession> BeginIncrementAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginPageEditAsync(string groupId, string pageId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateDraftSession> BeginFullEditAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftSession> ResumeDraftAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateWorkspaceImportResult> ImportPageAsync(TemplateDraftSession session, string commandId, string resourceId, string sourcePsdPath, string pageName, TemplateDuplicateDecision duplicateDecision, string? selectedDuplicateResourceId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftView> GetDraftAsync(TemplateDraftSession session, CancellationToken cancellationToken) => throw new NotSupportedException();

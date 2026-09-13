@@ -114,7 +114,11 @@ public enum AiRequirementSelectionUiStatus
     ManualLocked,
     Missing,
     Unavailable,
-    Cancelled
+    Cancelled,
+    /// <summary>AI selected a usable candidate but recommends a quick check.</summary>
+    ReviewRequired,
+    /// <summary>The current AI candidate cannot be used safely without a user fix.</summary>
+    Unsafe
 }
 
 /// <summary>
@@ -133,7 +137,8 @@ public sealed record AiRequirementSelectionProjection(
     AiRequirementSelectionUiStatus Status,
     string StatusText,
     string? SelectedAssetId,
-    string? SelectedPreviewPath)
+    string? SelectedPreviewPath,
+    string? SelectedAssetDisplayName = null)
 {
     public string StatusState => Status.ToString();
 
@@ -177,7 +182,7 @@ public sealed record AiCandidateProjection(
         ? "暂无补充证据"
         : string.Join(" · ", EvidenceCodes.Select(ToEvidenceText).Distinct(StringComparer.Ordinal));
 
-    public string LockText => IsLocked ? "已选用" : "选用这张";
+    public string LockText => IsLocked ? "已确认" : "确认";
 
     public bool CanLock => !IsLocked;
 
@@ -186,6 +191,10 @@ public sealed record AiCandidateProjection(
         "front_view" => "正面",
         "back_view" => "背面",
         "detail_view" => "细节",
+        AiTargetMatchEvidence.Exact => "精确符合要求",
+        AiTargetMatchEvidence.SafeSimilar => "安全的相近替代",
+        AiTargetMatchEvidence.MaterialDifference => "与要求存在实质差异",
+        AiTargetMatchEvidence.Unsafe => "不安全候选",
         "clear_subject" => "主体清晰",
         "variant_match" => "变体一致",
         "SUBJECT_COMPLETE" => "主体完整",
@@ -222,7 +231,12 @@ public sealed record AiPageAnalysisProjection(
 
     public bool HasWarnings => WarningTexts.Count > 0;
 
-    public bool CanGenerate => Status == AiPageUiStatus.Ready;
+    /// <summary>
+    /// Yellow is an executable state.  Only a page which explicitly carries a
+    /// manual-configuration gate is withheld from generation.
+    /// </summary>
+    public bool CanGenerate => Status == AiPageUiStatus.Ready
+        || (Status == AiPageUiStatus.ReviewRequired && !RequiresManualConfiguration);
 }
 
 public sealed record AiStyleAnalysisProjection(
@@ -237,7 +251,17 @@ public sealed record AiStyleAnalysisProjection(
 {
     public string StatusState => Status.ToString();
 
-    public bool HasReadyPage => Pages.Any(page => page.Status == AiPageUiStatus.Ready);
+    public bool HasReadyPage => Pages.Any(page => page.CanGenerate);
+
+    /// <summary>
+    /// A style can be shown in the executable queue when it has at least one
+    /// usable page and every remaining page is either intentionally isolated
+    /// or cancelled.  Advisory-yellow pages are deliberately included: they
+    /// are already filled by AI and do not require a per-frame confirmation.
+    /// </summary>
+    public bool CanGenerate => Pages.Any(page => page.CanGenerate)
+        && Pages.All(page => page.CanGenerate
+            || page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.Cancelled);
 
     public bool HasBusinessError => Pages.Any(page => page.Status == AiPageUiStatus.BusinessError);
 }
@@ -266,7 +290,20 @@ public sealed record AiBatchAnalysisProjection(
 {
     public string StatusState => Status.ToString();
 
-    public string ProgressText => $"已完成 {CompletedStyleCount}/{StyleCount} 款 · 可生成页面 {ReadyPageCount}/{TotalPageCount}";
+    /// <summary>
+    /// A terminal page can still require business or system review. Keep the
+    /// processed count separate from the executable count so the UI never
+    /// makes a completed analysis look like an unfinished upload.
+    /// </summary>
+    public int ProcessedPageCount => Styles.SelectMany(style => style.Pages)
+        .Count(page => page.Status is AiPageUiStatus.Ready
+            or AiPageUiStatus.ReviewRequired
+            or AiPageUiStatus.BusinessError
+            or AiPageUiStatus.SystemError
+            or AiPageUiStatus.Cancelled);
+
+    public string ProgressText =>
+        $"已完成 {CompletedStyleCount}/{StyleCount} 款 · 已处理 {ProcessedPageCount}/{TotalPageCount} 页 · 可生成 {ExecutablePageCount}/{TotalPageCount} 页";
 
     public int ExecutablePageCount => Styles.SelectMany(style => style.Pages)
         .Count(page => page.Status == AiPageUiStatus.Ready
@@ -276,11 +313,14 @@ public sealed record AiBatchAnalysisProjection(
     public int IsolatedPageCount => Styles.SelectMany(style => style.Pages)
         .Count(page => page.Status == AiPageUiStatus.BusinessError);
 
+    public bool HasUnsettledPages => Styles.SelectMany(style => style.Pages)
+        .Any(page => page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing);
+
     public bool CanEnterGeneration => (Status is AiBatchUiStatus.Ready or AiBatchUiStatus.ReviewRequired)
         && ExecutablePageCount > 0
-        && Styles.SelectMany(style => style.Pages).All(page => page.Status is
-            AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired
-                or AiPageUiStatus.BusinessError or AiPageUiStatus.Cancelled);
+        && Styles.SelectMany(style => style.Pages).All(page =>
+            page.CanGenerate
+            || page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.Cancelled);
 
     public bool CanPause => IsBusy is false
         && Status is not AiBatchUiStatus.BudgetStopped
@@ -299,7 +339,8 @@ public sealed record AiBatchAnalysisProjection(
         or AiBatchUiStatus.NotGeneratable
         or AiBatchUiStatus.Cancelled
         or AiBatchUiStatus.RecoveryRequired
-        or AiBatchUiStatus.Failed;
+        or AiBatchUiStatus.Failed
+        || Status == AiBatchUiStatus.ReviewRequired && !HasUnsettledPages;
 }
 
 /// <summary>
@@ -309,9 +350,9 @@ public sealed record AiBatchAnalysisProjection(
 /// </summary>
 public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposable
 {
-    private const string ModelConfigVersion = "doubao-seed-2.1-pro-260628";
-    private const string PromptContractVersion = "ai-prompt/v1";
-    private const string CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV1;
+    private const string ModelConfigVersion = AiAnalysisProductionPolicy.ModelConfigVersionV2;
+    private const string PromptContractVersion = AiAnalysisProductionPolicy.PromptContractVersionV3;
+    private const string CompressionProfileVersion = AiAnalysisCopyProfiles.WicBoundedV4;
 
     private readonly IBatchRepository _batches;
     private readonly ITemplateRepository _templates;
@@ -324,6 +365,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     private readonly IAiRenderPlanFactory? _renderPlans;
     private readonly ISizeTableRepository? _sizeTables;
     private readonly ISizeTableRasterizer? _sizeTableRasterizer;
+    private readonly IAiAnalysisCheckpointPort? _checkpointPort;
     private readonly ConcurrentDictionary<string, BatchContext> _contexts = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _contextGate = new(1, 1);
     private readonly CancellationTokenSource _backgroundCancellation = new();
@@ -331,6 +373,36 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     public void Dispose()
     {
         _backgroundCancellation.Cancel();
+        foreach (var context in _contexts.Values)
+        {
+            context.StopAdmission();
+        }
+
+        // StartAsync now returns while admission/consumer work continues. Do
+        // not dispose the scheduler or its file store underneath those tasks;
+        // otherwise shutdown can race an atomic staging write and leave a
+        // temporary file locked. The bounded wait only applies to shutdown;
+        // Provider calls retain the adapter's bounded total/stage deadlines
+        // (300 seconds total, with a 180-second upload cap).  Shutdown must
+        // not dispose a request while its deferred observer is still draining.
+        foreach (var context in _contexts.Values)
+        {
+            foreach (var task in new[] { context.AdmissionTask, context.BackgroundTask }
+                         .Where(task => task is not null)
+                         .Select(task => task!))
+            {
+                try
+                {
+                    _ = task.Wait(TimeSpan.FromSeconds(5));
+                }
+                catch (AggregateException)
+                {
+                    // The durable scheduler state is the recovery source; an
+                    // exception during shutdown must not mask application exit.
+                }
+            }
+        }
+
         foreach (var context in _contexts.Values)
         {
             context.Dispose();
@@ -351,7 +423,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         ITemplateResourceRepository? templateResources = null,
         IAiRenderPlanFactory? renderPlans = null,
         ISizeTableRepository? sizeTables = null,
-        ISizeTableRasterizer? sizeTableRasterizer = null)
+        ISizeTableRasterizer? sizeTableRasterizer = null,
+        IAiAnalysisCheckpointPort? checkpointPort = null)
     {
         _batches = batches ?? throw new ArgumentNullException(nameof(batches));
         _templates = templates ?? throw new ArgumentNullException(nameof(templates));
@@ -364,6 +437,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         _renderPlans = renderPlans;
         _sizeTables = sizeTables;
         _sizeTableRasterizer = sizeTableRasterizer;
+        _checkpointPort = checkpointPort;
     }
 
     public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken cancellationToken) =>
@@ -381,6 +455,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     {
         var context = await LoadContextAsync(batchId, cancellationToken).ConfigureAwait(false);
         await EnsureSchedulerRestoredAsync(context, cancellationToken).ConfigureAwait(false);
+        await EnsureAnalysisStateRecoveredAsync(context, cancellationToken).ConfigureAwait(false);
+        ThrowIfAnalysisStateUnavailable(context);
         if (context.Batch.ScanStatus != BatchScanStatus.ScanReady)
         {
             throw new InvalidOperationException("AI_INPUT_BATCH_NOT_READY");
@@ -389,15 +465,11 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         var consent = await RequireUploadConsentAsync(cancellationToken).ConfigureAwait(false);
 
         var projectionOptions = ProjectionOptions(context.Batch.BatchId, consent.ConsentId);
-        _ = await context.Scheduler.EnqueueBatchAsync(
-            context.Batch,
-            context.TemplateRevision,
-            projectionOptions,
-            cancellationToken).ConfigureAwait(false);
         context.Started = true;
         await RefreshRequestsAsync(context, cancellationToken).ConfigureAwait(false);
-        var projection = await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
+        StartAdmission(context, projectionOptions);
         StartBackgroundProcessing(context);
+        var projection = await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
         return projection;
     }
 
@@ -412,7 +484,14 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         }
 
         await EnsureSchedulerRestoredAsync(context, cancellationToken).ConfigureAwait(false);
+        await EnsureAnalysisStateRecoveredAsync(context, cancellationToken).ConfigureAwait(false);
         await RefreshRequestsAsync(context, cancellationToken).ConfigureAwait(false);
+        if (context.Started
+            && context.Scheduler.ControlState == AiAnalysisSchedulingControlState.Running
+            && (context.Scheduler.ReadyCount > 0 || context.Scheduler.PendingCount > 0))
+        {
+            StartBackgroundProcessing(context);
+        }
         return await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
     }
 
@@ -422,8 +501,17 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     public Task<AiBatchAnalysisProjection> ResumeAsync(string batchId, CancellationToken cancellationToken) =>
         ControlAsync(batchId, (scheduler, token) => scheduler.ResumeAsync(token), cancellationToken);
 
-    public Task<AiBatchAnalysisProjection> CancelAsync(string batchId, CancellationToken cancellationToken) =>
-        ControlAsync(batchId, (scheduler, token) => scheduler.CancelAsync(batchId, token), cancellationToken);
+    public async Task<AiBatchAnalysisProjection> CancelAsync(
+        string batchId,
+        CancellationToken cancellationToken)
+    {
+        var context = await LoadContextAsync(batchId, cancellationToken).ConfigureAwait(false);
+        context.StopAdmission();
+        return await ControlAsync(
+            batchId,
+            (scheduler, token) => scheduler.CancelAsync(batchId, token),
+            cancellationToken).ConfigureAwait(false);
+    }
 
     public Task<AiBatchAnalysisProjection> WaitForNetworkAsync(string batchId, CancellationToken cancellationToken) =>
         ControlAsync(batchId, (scheduler, token) => scheduler.WaitForNetworkAsync("网络暂不可用；恢复网络后可继续。", token), cancellationToken);
@@ -538,9 +626,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             var selectedRequirements = projection.Styles
                 .Single(item => string.Equals(item.StyleId, style.StyleId, StringComparison.Ordinal))
                 .Pages
-                .Where(page => page.Status == AiPageUiStatus.Ready
-                    || page.Status == AiPageUiStatus.ReviewRequired
-                        && !page.RequiresManualConfiguration)
+                .Where(page => page.CanGenerate)
                 .SelectMany(page => page.Requirements ?? [])
                 .Where(requirement => requirement.SelectedAssetId is not null)
                 .GroupBy(requirement => requirement.RequirementId, StringComparer.Ordinal)
@@ -792,6 +878,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
     {
         var context = await LoadContextAsync(batchId, cancellationToken).ConfigureAwait(false);
         await EnsureSchedulerRestoredAsync(context, cancellationToken).ConfigureAwait(false);
+        await EnsureAnalysisStateRecoveredAsync(context, cancellationToken).ConfigureAwait(false);
         await command(context.Scheduler, cancellationToken).ConfigureAwait(false);
         await RefreshRequestsAsync(context, cancellationToken).ConfigureAwait(false);
         if (context.Scheduler.ControlState == AiAnalysisSchedulingControlState.Running)
@@ -801,37 +888,123 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         return await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
     }
 
+    private void StartAdmission(
+        BatchContext context,
+        AiAnalysisProjectionOptions projectionOptions)
+    {
+        if (!context.TryStartAdmission())
+        {
+            return;
+        }
+
+        context.AdmissionTask = Task.Run(
+            async () =>
+            {
+                using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    _backgroundCancellation.Token,
+                    context.AdmissionCancellation.Token);
+                try
+                {
+                    var result = await context.Scheduler.EnqueueBatchAsync(
+                        context.Batch,
+                        context.TemplateRevision,
+                        projectionOptions,
+                        linkedCancellation.Token).ConfigureAwait(false);
+                    foreach (var styleResult in result.StyleResults.Where(item =>
+                                 item.Disposition == AiAnalysisWorkDisposition.TerminalError
+                                 && !string.IsNullOrWhiteSpace(item.ErrorCode)))
+                    {
+                        context.AdmissionFailures[styleResult.RequestId] = styleResult.ErrorCode!;
+                    }
+                }
+                catch (OperationCanceledException) when (linkedCancellation.IsCancellationRequested)
+                {
+                    if (!_backgroundCancellation.IsCancellationRequested
+                        && !context.AdmissionCancellation.IsCancellationRequested)
+                    {
+                        context.AdmissionError = "AI_ANALYSIS_ADMISSION_CANCELLED";
+                    }
+                }
+                catch (Exception exception)
+                {
+                    // Keep the UI actionable without exposing exception text or
+                    // local paths. The durable scheduler remains the source of
+                    // truth for any requests admitted before the failure.
+                    context.AdmissionError = NormalizeAdmissionError(exception);
+                }
+                finally
+                {
+                    context.MarkAdmissionCompleted();
+                }
+            });
+    }
+
+    private static string NormalizeAdmissionError(Exception exception) => exception switch
+    {
+        InvalidOperationException invalid when !string.IsNullOrWhiteSpace(invalid.Message)
+            && invalid.Message.StartsWith("AI_", StringComparison.Ordinal)
+            => invalid.Message,
+        InvalidDataException invalid when !string.IsNullOrWhiteSpace(invalid.Message)
+            && invalid.Message.StartsWith("AI_", StringComparison.Ordinal)
+            => invalid.Message,
+        IOException io when !string.IsNullOrWhiteSpace(io.Message)
+            && io.Message.StartsWith("AI_", StringComparison.Ordinal)
+            => io.Message,
+        _ => "AI_ANALYSIS_ADMISSION_FAILED"
+    };
+
     private static async Task ProcessBatchAsync(
         BatchContext context,
         CancellationToken cancellationToken)
     {
-        while (context.Scheduler.ReadyCount > 0)
+        while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // A producer can be preparing the next款 while the ready buffer is
+            // temporarily empty. Do not exit early; otherwise StartAsync would
+            // regress to "prepare everything, then consume".
+            if (context.AdmissionCompleted
+                && context.Scheduler.PendingCount == 0
+                && context.Scheduler.ReadyCount == 0)
+            {
+                // Keep the consumer alive while the batch remains open. A user
+                // can enqueue a selected-asset refinement immediately after
+                // the first layer becomes ready; returning here creates a
+                // narrow enqueue/exit race in which the refinement is durable
+                // but no consumer remains to process it.
+                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             if (context.Scheduler.ControlState is AiAnalysisSchedulingControlState.Paused
+                or AiAnalysisSchedulingControlState.PauseRequested
                 or AiAnalysisSchedulingControlState.WaitingForNetwork
                 or AiAnalysisSchedulingControlState.CancelRequested
                 or AiAnalysisSchedulingControlState.Cancelled)
             {
-                break;
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            var readyCount = context.Scheduler.ReadyCount;
+            if (readyCount == 0)
+            {
+                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                continue;
             }
 
             var workerCount = Math.Min(
                 AiAnalysisProductionPolicy.QueueV1.MaxConcurrentRequests,
-                context.Scheduler.ReadyCount);
+                readyCount);
             var results = await Task.WhenAll(Enumerable.Range(0, workerCount)
                 .Select(_ => context.Scheduler.ProcessNextAsync(cancellationToken))).ConfigureAwait(false);
-            if (results.Any(result => result.Disposition is AiAnalysisWorkDisposition.BudgetStopped
-                    or AiAnalysisWorkDisposition.Paused
-                    or AiAnalysisWorkDisposition.WaitingForNetwork))
+            foreach (var result in results.Where(result =>
+                         result.Disposition is (AiAnalysisWorkDisposition.TerminalError
+                             or AiAnalysisWorkDisposition.ResultUnknown)
+                         && !string.IsNullOrWhiteSpace(result.ErrorCode)))
             {
-                break;
-            }
-            if (context.Scheduler.ControlState is AiAnalysisSchedulingControlState.Paused
-                or AiAnalysisSchedulingControlState.WaitingForNetwork
-                or AiAnalysisSchedulingControlState.Cancelled)
-            {
-                break;
+                context.RuntimeFailures[result.RequestId] = result.ErrorCode!;
             }
         }
     }
@@ -943,6 +1116,23 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             }
         }
 
+        context.TerminalErrors.Clear();
+        foreach (var pair in state?.TerminalErrors
+                     ?? Enumerable.Empty<KeyValuePair<string, string>>())
+        {
+            if (context.Requests.ContainsKey(pair.Key))
+            {
+                context.TerminalErrors[pair.Key] = pair.Value;
+            }
+        }
+        foreach (var pair in context.Scheduler.TerminalErrorsSnapshot)
+        {
+            if (context.Requests.ContainsKey(pair.Key))
+            {
+                context.TerminalErrors[pair.Key] = pair.Value;
+            }
+        }
+
         foreach (var style in context.Batch.Styles)
         {
             if (context.Requests.ContainsKey($"ai-{context.Batch.BatchId}-{style.StyleId}"))
@@ -985,7 +1175,10 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             or AiStyleUiStatus.BusinessError
             or AiStyleUiStatus.SystemError
             or AiStyleUiStatus.Cancelled);
-        var readyPages = pages.Count(page => page.Status == AiPageUiStatus.Ready);
+        // The product queue accepts both green and advisory-yellow pages. Keep
+        // the aggregate count aligned with the same page-level gate used by
+        // the generation button.
+        var readyPages = pages.Count(page => page.CanGenerate);
         var controlState = context.Scheduler.ControlState;
         var status = context.SchedulerRestoreError is not null
             ? AiBatchUiStatus.RecoveryRequired
@@ -994,6 +1187,27 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 controlState,
                 context.Batch.SelectionMode == BatchSelectionMode.Manual,
                 context.Scheduler.Budget.HardStopped);
+        var oversizedRequest = context.TerminalErrors.Any(pair =>
+            string.Equals(pair.Value, "AI_PROVIDER_REQUEST_TOO_LARGE", StringComparison.Ordinal))
+            || context.RuntimeFailures.Any(pair =>
+                string.Equals(pair.Value, "AI_PROVIDER_REQUEST_TOO_LARGE", StringComparison.Ordinal));
+        var responseReferenceMismatch = context.TerminalErrors.Any(pair =>
+            string.Equals(pair.Value, "AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", StringComparison.Ordinal))
+            || context.RuntimeFailures.Any(pair =>
+                string.Equals(pair.Value, "AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH", StringComparison.Ordinal));
+        var providerSubmissionFailure = context.TerminalErrors.Values
+            .Concat(context.RuntimeFailures.Values)
+            .FirstOrDefault(IsProviderSubmissionFailureCode);
+        var providerUnknownCode = context.TerminalErrors.Values
+            .Concat(context.RuntimeFailures.Values)
+            .FirstOrDefault(IsSpecificProviderUnknownCode);
+        var hasBlockingConfiguration = pages.Any(page =>
+            page.Status == AiPageUiStatus.ReviewRequired
+            && page.RequiresManualConfiguration);
+        var hasBlockedPages = pages.Any(page =>
+            page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError
+            || page.Status == AiPageUiStatus.ReviewRequired
+                && page.RequiresManualConfiguration);
         var message = controlState switch
         {
             AiAnalysisSchedulingControlState.Paused when context.Scheduler.ControlReason ==
@@ -1010,17 +1224,32 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             AiAnalysisSchedulingControlState.Paused => "分析已暂停；点击恢复后从安全检查点继续。",
             AiAnalysisSchedulingControlState.WaitingForNetwork => context.Scheduler.ControlReason
                 ?? "等待网络恢复；不会自动重发未知结果。",
+            _ when oversizedRequest => "本款最终 JSON 请求体超过 16 MiB；未发送 AI 请求。请减少本款照片后重新建立批次。",
+            _ when responseReferenceMismatch => "AI 已返回，但结果引用无法与本批次安全对应，已阻止选图和生成。请使用修复版本重新建立批次。",
+            _ when providerSubmissionFailure is not null => "AI 请求体未完整上传，火山未受理。请检查网络后重试分析。",
+            _ when providerUnknownCode is not null => DescribeProviderUnknown(providerUnknownCode).BatchMessage,
             _ => status switch
             {
                 AiBatchUiStatus.Ready => "分析完成，所有已选页面均可生成。",
                 AiBatchUiStatus.ManualConfiguration => "分析完成，请逐个图片框选择并锁定素材。",
-                AiBatchUiStatus.ReviewRequired => "分析完成，部分页面需要人工复核后才能生成。",
+                AiBatchUiStatus.ReviewRequired when !hasBlockedPages
+                    => "分析完成；绿色和黄色页面均可直接生成，黄色页面建议快速检查。",
+                AiBatchUiStatus.ReviewRequired when pages.Any(page =>
+                    page.Status == AiPageUiStatus.BusinessError)
+                    => "分析完成；绿色和黄色页面可直接生成，红色页面已隔离并需单独处理。",
+                AiBatchUiStatus.ReviewRequired => "分析完成，部分页面需要人工处理后才能生成。",
                 AiBatchUiStatus.BudgetStopped => "本轮 AI 预算已达到停止线；请降低范围或等待人工批准后继续。",
                 AiBatchUiStatus.NotGeneratable => "没有可生成页面，请先处理标红页面。",
                 AiBatchUiStatus.Cancelled => "批次已取消；源图片和模板均未修改。",
+                AiBatchUiStatus.RecoveryRequired when !context.AdmissionFailures.IsEmpty
+                    => $"部分款式未进入 AI 分析：单次目标批次请求最多 {AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest} 张照片，或本地 admission 发生可行动错误；请按款式提示修复后重新扫描。",
+                AiBatchUiStatus.RecoveryRequired when IsLocalAnalysisPersistenceFailure(context.SchedulerRestoreError)
+                    => "本地分析状态未保存或不一致，未发送新的 AI 请求；请重新扫描并建立新批次。",
                 AiBatchUiStatus.RecoveryRequired => context.SchedulerRestoreError is null
                     ? "部分分析结果未知或需要恢复。请查询状态后再继续，不会自动重发。"
                     : "上次分析未能安全恢复，请刷新状态或重新打开批次；不会自动重发。",
+                AiBatchUiStatus.Failed when context.AdmissionError is not null
+                    => "分析准备失败，未完成的款式未发送请求；请按页面提示修复后重新扫描。",
                 AiBatchUiStatus.Failed => "分析失败。请按页面提示修复后重试。",
                 AiBatchUiStatus.Analysing => "正在分析商品素材；完成后会逐页更新状态。",
                 _ => "等待分析任务开始。"
@@ -1030,7 +1259,14 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             context.Batch.BatchId,
             status,
             message,
-            status is AiBatchUiStatus.Ready ? "进入生成" : "继续处理",
+            status is AiBatchUiStatus.Ready
+                || status == AiBatchUiStatus.ReviewRequired && !hasBlockedPages
+                ? "进入生成"
+                : oversizedRequest || responseReferenceMismatch
+                    ? "重新建立批次"
+                    : providerSubmissionFailure is not null
+                        ? "重试分析"
+                    : "继续处理",
             styles.Count,
             completedStyles,
             readyPages,
@@ -1097,7 +1333,13 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         var statusText = status switch
         {
             AiStyleUiStatus.Ready => "可生成",
-            AiStyleUiStatus.ReviewRequired => "待人工复核",
+            AiStyleUiStatus.ReviewRequired when pages.Any(page =>
+                page.Status == AiPageUiStatus.ReviewRequired
+                && !page.RequiresManualConfiguration)
+                && !pages.Any(page => page.RequiresManualConfiguration
+                    || page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError)
+                => "可生成 · 建议检查",
+            AiStyleUiStatus.ReviewRequired => "部分页面需处理",
             AiStyleUiStatus.BusinessError => "需要修复",
             AiStyleUiStatus.SystemError => "需要恢复",
             AiStyleUiStatus.Cancelled => "已取消",
@@ -1128,8 +1370,43 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             .OrderBy(binding => binding.FrameId, StringComparer.Ordinal)
             .ToArray();
         var pageName = page.Name;
+        if (IsLocalAnalysisPersistenceFailure(context.SchedulerRestoreError))
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "本地状态未保存，需要恢复",
+                "本地批次或分析状态未能与清单、数据库一致；未发送新的 AI 请求，也不是图片匹配失败。请重新扫描并建立新批次。",
+                "本地状态未保存");
+        }
+        if (request is not null
+            && context.AdmissionFailures.TryGetValue(request.RequestId, out var admissionFailure))
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "分析未提交",
+                ToAdmissionFailureText(admissionFailure),
+                "未提交分析");
+        }
         if (request is null)
         {
+            if (context.AdmissionError is not null)
+            {
+                return ResultFailureProjection(
+                    context,
+                    style,
+                    page,
+                    pageBindings,
+                    "分析准备失败",
+                    "本款未能进入分析队列，未发送 AI 请求；请重新扫描并查看错误提示。",
+                    "分析未提交");
+            }
+
             return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
                 AiPageUiStatus.Waiting, "待分析", "等待分析", [], [],
                 Requirements: BuildRequirementSelections(
@@ -1140,6 +1417,17 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         var firstLayerInput = styleResults.FirstOrDefault(input =>
             string.Equals(input.Request.RequestId, request.RequestId, StringComparison.Ordinal));
         var ledger = firstLayerInput?.Ledger;
+        if (ledger is null && context.AdmissionError is not null)
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "分析准备失败",
+                "本款未能进入分析队列，未发送 AI 请求；请重新扫描并查看错误提示。",
+                "分析未提交");
+        }
         if (firstLayerInput?.Failure == ResultReadFailure.InvalidReference)
         {
             return ResultFailureProjection(
@@ -1182,14 +1470,69 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         }
         if (ledger.Status == "AiResultUnknown")
         {
+            var unknownSession = await _store.LoadSessionAsync(
+                SessionId(request), cancellationToken).ConfigureAwait(false);
+            _ = context.TerminalErrors.TryGetValue(request.RequestId, out var unknownCode)
+                || context.RuntimeFailures.TryGetValue(request.RequestId, out unknownCode);
+            var presentation = DescribeProviderUnknown(unknownCode);
             return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
-                AiPageUiStatus.SystemError, "结果未知，需要恢复", "查询状态", [], ["供应商处理结果未知，禁止自动重发。"],
+                AiPageUiStatus.SystemError,
+                presentation.StatusText,
+                presentation.ActionText,
+                [],
+                [presentation.WarningText],
                 Requirements: BuildRequirementSelections(
-                    context, style, page, pageBindings, [], [],
-                    AiRequirementSelectionUiStatus.Unavailable, "结果未知，禁止重发"));
+                    context, style, page, pageBindings, [], unknownSession?.LockedSelections.Values ?? [],
+                    AiRequirementSelectionUiStatus.Unavailable,
+                    presentation.RequirementStatusText));
         }
         if (ledger.Status == "TerminalError")
         {
+            var hasTerminalError = context.TerminalErrors.TryGetValue(
+                    request.RequestId,
+                    out var terminalError)
+                || context.RuntimeFailures.TryGetValue(request.RequestId, out terminalError);
+            if (hasTerminalError
+                && string.Equals(terminalError, "AI_PROVIDER_REQUEST_TOO_LARGE", StringComparison.Ordinal))
+            {
+                return ResultFailureProjection(
+                    context,
+                    style,
+                    page,
+                    pageBindings,
+                    "请求体过大，需要重新建立批次",
+                    "最终 UTF-8 JSON 请求体超过 16 MiB；未发送 AI 请求。请减少本款照片后重新建立批次。",
+                    "请求体过大",
+                    "重新建立批次");
+            }
+            if (hasTerminalError
+                && string.Equals(
+                    terminalError,
+                    "AI_PROVIDER_RESPONSE_REFERENCE_MISMATCH",
+                    StringComparison.Ordinal))
+            {
+                return ResultFailureProjection(
+                    context,
+                    style,
+                    page,
+                    pageBindings,
+                    "AI 返回引用不匹配，需要重新建立批次",
+                    "AI 已返回，但结果中的请求、图片或图片框标识无法与本批次安全对应，已阻止选图和生成。请使用修复版本重新建立批次。",
+                    "AI 返回引用不匹配",
+                    "重新建立批次");
+            }
+            if (hasTerminalError && IsProviderSubmissionFailureCode(terminalError!))
+            {
+                return ResultFailureProjection(
+                    context,
+                    style,
+                    page,
+                    pageBindings,
+                    "AI 请求未送达",
+                    "完整请求体未上传，火山未受理。请检查网络后重试分析。",
+                    "提交失败，可安全重试",
+                    "重试分析");
+            }
             return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
                 AiPageUiStatus.SystemError, "分析失败，需要恢复", "重试分析", [], ["分析未能安全完成，请检查网络或本地存储后重试。"],
                 Requirements: BuildRequirementSelections(
@@ -1278,6 +1621,29 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                     .ThenBy(match => match.AssetId, StringComparer.Ordinal)
                     .First(),
                 StringComparer.Ordinal);
+        var assessmentByRequirement = pageBindings.ToDictionary(
+            binding => binding.FrameId,
+            binding => AiTargetMatchPolicy.Assess(
+                binding,
+                matches.Where(match => string.Equals(
+                        match.RequirementId,
+                        binding.FrameId,
+                        StringComparison.Ordinal))
+                    .ToArray(),
+                lockedByRequirement.ContainsKey(binding.FrameId)),
+            StringComparer.Ordinal);
+        if (assessmentByRequirement.Values.Any(assessment =>
+                assessment == AiTargetRequirementAssessment.InvalidResult))
+        {
+            return ResultFailureProjection(
+                context,
+                style,
+                page,
+                pageBindings,
+                "匹配结果无效，需要恢复",
+                "AI 未按已确认规则返回可判定的匹配类别，已阻止选图和生成。",
+                "匹配结果无效");
+        }
         var selectedAssetIds = pageBindings.Select(binding =>
                 lockedByRequirement.TryGetValue(binding.FrameId, out var locked)
                     ? locked.AssetId
@@ -1365,7 +1731,14 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 match.EvidenceCodes,
                 lockedByRequirement.TryGetValue(match.RequirementId, out var locked)
                     && string.Equals(locked.AssetId, match.AssetId, StringComparison.Ordinal),
-                bindingIndex >= 0 ? $"图片框 {bindingIndex + 1}" : "图片框",
+                // The semantic category is the useful user-facing identity of
+                // a frame.  Do not expose an arbitrary ordinal such as
+                // “图片框 1”; it does not tell the user which template slot
+                // is being discussed and becomes misleading after template
+                // edits or reordering.
+                bindingIndex >= 0
+                    ? ToUserSelectionRequirement(binding!.SelectionRequirement.Description)
+                    : "当前图片",
                 asset is null ? null : ResolvePreviewPath(context.Batch.InputRoot, asset.SourceRelativePath),
                 ToUserSelectionRequirement(
                     binding?.SelectionRequirement.Description ?? "商品主体清晰完整，构图适合当前图片框。"),
@@ -1380,10 +1753,10 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             .Any(warning => string.Equals(warning.Code, "variant_conflict", StringComparison.Ordinal))
             && matches.Length > 0
             && pageBindings.Any(binding => !lockedByRequirement.ContainsKey(binding.FrameId));
-        var hasUnconfirmedLowConfidence = pageBindings.Any(binding =>
-            !lockedByRequirement.ContainsKey(binding.FrameId)
-            && topMatchByRequirement.TryGetValue(binding.FrameId, out var selected)
-            && selected.Confidence < 0.8m);
+        var hasUnconfirmedReview = assessmentByRequirement.Values.Any(assessment =>
+            assessment == AiTargetRequirementAssessment.ReviewRequired);
+        var hasUnsafeOrNoSafeCandidate = assessmentByRequirement.Values.Any(assessment =>
+            assessment == AiTargetRequirementAssessment.BusinessError);
         var warnings = relevantResults
             .SelectMany(input => input.Result!.Warnings)
             .Where(warning => IsNormalPageWarningRelevant(
@@ -1406,14 +1779,36 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             warnings = warnings.Append("必需图片框缺少可信匹配，请选择候选或补充素材。")
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
-        if (hasUnconfirmedLowConfidence)
+        if (hasUnconfirmedReview)
         {
-            warnings = warnings.Append("首选素材匹配置信度较低，请人工确认并锁定。")
+            var hasMaterialDifference = pageBindings.Any(binding =>
+                assessmentByRequirement.GetValueOrDefault(binding.FrameId)
+                    == AiTargetRequirementAssessment.ReviewRequired
+                && matches
+                    .Where(match => string.Equals(
+                        match.RequirementId,
+                        binding.FrameId,
+                        StringComparison.Ordinal))
+                    .OrderBy(match => match.Rank)
+                    .ThenBy(match => match.AssetId, StringComparer.Ordinal)
+                    .FirstOrDefault() is { } top
+                && top.EvidenceCodes.Contains(
+                    AiTargetMatchEvidence.MaterialDifference,
+                    StringComparer.Ordinal));
+            warnings = warnings.Append(
+                    hasMaterialDifference
+                        ? "首选素材与当前图片类别存在实质差异，请检查或替换用图。"
+                        : "首选素材未达到绿色置信度门槛，请快速检查，需要时再替换用图。")
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+        if (hasUnsafeOrNoSafeCandidate && !hasMissingRequiredMatch)
+        {
+            warnings = warnings.Append("没有可自动采用的安全候选，请补充素材或人工修正。")
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
         if (selectedAssetsMissingGeometry.Count > 0)
         {
-            warnings = warnings.Append("已选素材仍需完成主体边界分析，完成前不会进入生成。")
+            warnings = warnings.Append("部分已选素材未返回主体边界；本页按已校准布局标黄，仍可生成，建议检查构图。")
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
         if (hasActiveGeometryRefinement)
@@ -1421,19 +1816,30 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             warnings = warnings.Append("已选素材正在进行主体边界分析，完成后将自动更新此页。")
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
-        var businessWarning = hasMissingRequiredMatch || hasVariantConflict;
+        var businessWarning = hasMissingRequiredMatch
+            || hasVariantConflict
+            || hasUnsafeOrNoSafeCandidate;
+        // Yellow review and a missing optional subject boundary are advisory.
+        // Only an actual business error, an active refinement request, or the
+        // explicit manual-selection mode keeps a page out of the queue.
+        var requiresManualConfiguration = manualNeedsLock
+            || hasMissingRequiredMatch
+            || hasVariantConflict
+            || hasUnsafeOrNoSafeCandidate
+            || hasActiveGeometryRefinement;
         var status = businessWarning
             ? AiPageUiStatus.BusinessError
             : hasActiveGeometryRefinement
                 ? AiPageUiStatus.Analysing
-                : manualNeedsLock || hasUnconfirmedLowConfidence || selectedAssetsMissingGeometry.Count > 0
+                : manualNeedsLock || hasUnconfirmedReview || selectedAssetsMissingGeometry.Count > 0
                 ? AiPageUiStatus.ReviewRequired
                 : AiPageUiStatus.Ready;
         var statusText = status switch
         {
             AiPageUiStatus.Ready => "可生成",
             AiPageUiStatus.Analysing => "主体分析中",
-            AiPageUiStatus.ReviewRequired => "待人工确认",
+            AiPageUiStatus.ReviewRequired when !requiresManualConfiguration => "可生成 · 建议检查",
+            AiPageUiStatus.ReviewRequired => "待人工处理",
             AiPageUiStatus.BusinessError => "需要修复",
             _ => "待处理"
         };
@@ -1448,12 +1854,12 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
             {
                 AiPageUiStatus.Ready => "已通过",
                 AiPageUiStatus.Analysing => "分析中",
+                AiPageUiStatus.ReviewRequired when !requiresManualConfiguration => "可生成 · 建议检查",
                 _ => "处理此页"
             },
             candidates,
             warnings,
-            manualNeedsLock || hasUnconfirmedLowConfidence || selectedAssetsMissingGeometry.Count > 0
-                || hasActiveGeometryRefinement,
+            requiresManualConfiguration,
             BuildRequirementSelections(
                 context,
                 style,
@@ -1462,7 +1868,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 matches,
                 lockedByRequirement.Values,
                 AiRequirementSelectionUiStatus.Missing,
-                "待人工选择"));
+                "待人工选择",
+                assessmentByRequirement));
     }
 
     private async Task<StyleResultInput[]> LoadStyleResultsAsync(
@@ -1792,14 +2199,15 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         IReadOnlyList<FrameBinding> pageBindings,
         string statusText,
         string warningText,
-        string requirementStatusText) => new(
+        string requirementStatusText,
+        string actionText = "查询状态") => new(
             context.Batch.BatchId,
             style.StyleId,
             page.PageId,
             page.Name,
             AiPageUiStatus.SystemError,
             statusText,
-            "查询状态",
+            actionText,
             [],
             [warningText],
             Requirements: BuildRequirementSelections(
@@ -1811,6 +2219,45 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 [],
                 AiRequirementSelectionUiStatus.Unavailable,
                 requirementStatusText));
+
+    private sealed record ProviderUnknownPresentation(
+        string StatusText,
+        string WarningText,
+        string RequirementStatusText,
+        string ActionText,
+        string BatchMessage);
+
+    private static bool IsProviderSubmissionFailureCode(string code) => code is
+        "AI_PROVIDER_SUBMISSION_TIMEOUT"
+        or "AI_PROVIDER_SUBMISSION_NETWORK_FAILURE";
+
+    private static bool IsSpecificProviderUnknownCode(string code) => code is
+        "AI_PROVIDER_RESPONSE_HEADERS_TIMEOUT"
+        or "AI_PROVIDER_RESPONSE_HEADERS_NETWORK_FAILURE"
+        or "AI_PROVIDER_RESPONSE_BODY_TIMEOUT"
+        or "AI_PROVIDER_RESPONSE_BODY_NETWORK_FAILURE";
+
+    private static ProviderUnknownPresentation DescribeProviderUnknown(string? code) => code switch
+    {
+        "AI_PROVIDER_RESPONSE_HEADERS_TIMEOUT" or "AI_PROVIDER_RESPONSE_HEADERS_NETWORK_FAILURE" => new(
+            "已上传，未收到响应",
+            "请求体已写入传输通道，但应用没有收到供应商响应头；是否被火山接收仍未知，已记录脱敏阶段日志且不会自动重发。",
+            "未收到响应，可人工选图",
+            "核对账单或人工选图",
+            "AI 请求体已写入传输通道，但没有收到供应商响应头；是否被火山接收仍未知。请核对账单；系统不会自动重发。"),
+        "AI_PROVIDER_RESPONSE_BODY_TIMEOUT" or "AI_PROVIDER_RESPONSE_BODY_NETWORK_FAILURE" => new(
+            "响应读取失败，结果未知",
+            "应用已收到供应商响应头，但响应体未完整读回；处理结果未知，已记录脱敏阶段日志且不会自动重发。",
+            "响应未读完，可人工选图",
+            "人工选图",
+            "供应商已经返回响应头，但响应体未完整读回；处理结果未知，系统不会自动重发。"),
+        _ => new(
+            "结果未知，需要恢复",
+            "供应商处理结果未知，禁止自动重发。",
+            "结果未知，禁止重发",
+            "查询状态",
+            "供应商处理结果未知；系统不会自动重发，请查询状态或人工处理。")
+    };
 
     private static bool IsNormalPageWarningRelevant(
         AiWarningV1 warning,
@@ -1854,7 +2301,10 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         var allSettled = pages.Length > 0 && pages.All(page => page.Status is
             AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired
                 or AiPageUiStatus.BusinessError or AiPageUiStatus.Cancelled);
-        var hasExecutablePage = pages.Any(page => page.Status is AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired);
+        var hasExecutablePage = pages.Any(page => page.CanGenerate);
+        var hasBlockingConfiguration = pages.Any(page =>
+            page.Status == AiPageUiStatus.ReviewRequired
+            && page.RequiresManualConfiguration);
         // A hard budget stop is an actionable batch state only while work is
         // still unresolved. If all pages have settled, preserve the terminal
         // business result (ready, review, or no-output) instead of hiding it
@@ -1863,7 +2313,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         {
             return AiBatchUiStatus.BudgetStopped;
         }
-        if (allSettled && !hasExecutablePage)
+        if (allSettled && !hasExecutablePage && !hasBlockingConfiguration)
         {
             return AiBatchUiStatus.NotGeneratable;
         }
@@ -1871,7 +2321,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         {
             return AiBatchUiStatus.Ready;
         }
-        if (manualSelection && pages.Any(page => page.RequiresManualConfiguration))
+        if (manualSelection && hasBlockingConfiguration)
         {
             return AiBatchUiStatus.ManualConfiguration;
         }
@@ -1917,11 +2367,15 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         IEnumerable<AiRequirementMatchV1> matches,
         IEnumerable<AiLockedSelection> lockedSelections,
         AiRequirementSelectionUiStatus emptyStatus,
-        string emptyStatusText)
+        string emptyStatusText,
+        IReadOnlyDictionary<string, AiTargetRequirementAssessment>? assessments = null)
     {
         var assetsById = context.Batch.Assets
             .Where(asset => string.Equals(asset.StyleId, style.StyleId, StringComparison.Ordinal))
             .ToDictionary(asset => asset.AssetId, StringComparer.Ordinal);
+        var assetDisplayNames = style.AssetIds
+            .Select((assetId, index) => (assetId, displayName: $"照片 {index + 1:D2}"))
+            .ToDictionary(item => item.assetId, item => item.displayName, StringComparer.Ordinal);
         var matchesByRequirement = matches
             .GroupBy(match => match.RequirementId, StringComparer.Ordinal)
             .ToDictionary(
@@ -1947,13 +2401,24 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 : assetsById.GetValueOrDefault(selectedAssetId);
             var status = locked is not null
                 ? AiRequirementSelectionUiStatus.ManualLocked
-                : recommended is not null
-                    ? AiRequirementSelectionUiStatus.AiSelected
-                    : emptyStatus;
+                : recommended is null
+                    ? emptyStatus
+                    : assessments?.GetValueOrDefault(binding.FrameId) switch
+                    {
+                        AiTargetRequirementAssessment.ReviewRequired
+                            => AiRequirementSelectionUiStatus.ReviewRequired,
+                        AiTargetRequirementAssessment.BusinessError
+                            => AiRequirementSelectionUiStatus.Unsafe,
+                        AiTargetRequirementAssessment.InvalidResult
+                            => AiRequirementSelectionUiStatus.Unavailable,
+                        _ => AiRequirementSelectionUiStatus.AiSelected
+                    };
             var statusText = status switch
             {
                 AiRequirementSelectionUiStatus.ManualLocked => "人工选用 · 已锁定",
-                AiRequirementSelectionUiStatus.AiSelected => "AI 推荐 · 已选用",
+                AiRequirementSelectionUiStatus.AiSelected => "AI 推荐 · 已确认",
+                AiRequirementSelectionUiStatus.ReviewRequired => "AI 推荐 · 可生成，建议检查",
+                AiRequirementSelectionUiStatus.Unsafe => "AI 推荐 · 需处理",
                 _ => emptyStatusText
             };
             return new AiRequirementSelectionProjection(
@@ -1962,14 +2427,17 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
                 page.PageId,
                 page.Name,
                 binding.FrameId,
-                $"图片框 {index + 1}",
+                ToUserSelectionRequirement(binding.SelectionRequirement.Description),
                 ToUserSelectionRequirement(binding.SelectionRequirement.Description),
                 status,
                 statusText,
                 selectedAssetId,
                 selectedAsset is null
                     ? null
-                    : ResolvePreviewPath(context.Batch.InputRoot, selectedAsset.SourceRelativePath));
+                    : ResolvePreviewPath(context.Batch.InputRoot, selectedAsset.SourceRelativePath),
+                selectedAsset is null
+                    ? null
+                    : assetDisplayNames.GetValueOrDefault(selectedAsset.AssetId));
         }).ToArray();
     }
 
@@ -1980,6 +2448,21 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         "variant_conflict" => "检测到变体冲突，请确认当前款式素材。",
         "size_source_conflict" => "检测到多个尺码来源，请先确认来源。",
         _ => "分析结果需要人工确认。"
+    };
+
+    private static string ToAdmissionFailureText(string code) => code switch
+    {
+        "AI_ANALYSIS_ASSET_LIMIT_EXCEEDED"
+            => $"本款照片数量超过单次目标批次分析上限 {AiAnalysisProductionPolicy.MaxTargetAssetsPerRequest} 张；未创建 provider 请求。请减少照片后重新建立批次。",
+        "AI_ANALYSIS_REQUEST_LIMIT_EXCEEDED"
+            => "本款逻辑分析请求已达到上限；未继续提交新的 provider 请求。",
+        "AI_ANALYSIS_REQUEST_ID_CONFLICT"
+            => "本款分析请求标识与已有记录冲突；已安全阻断，不能直接重发。",
+        "AI_PROVIDER_REQUEST_TOO_LARGE"
+            => "最终 JSON 请求体超过 16 MiB；未发送 AI 请求。请减少本款照片后重新建立批次。",
+        "AI_ANALYSIS_ADMISSION_CANCELLED"
+            => "本款尚未完成本地准备，已取消提交；源文件未修改。",
+        _ => "本款未能安全进入 AI 分析队列；未提交 provider 请求，请重新扫描。"
     };
 
     private static string ToUserSelectionRequirement(string value)
@@ -2081,6 +2564,60 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         }
     }
 
+    private async Task EnsureAnalysisStateRecoveredAsync(
+        BatchContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_checkpointPort is null)
+        {
+            return;
+        }
+
+        await context.CheckpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (context.AnalysisStateRecoveryAttempted)
+            {
+                return;
+            }
+
+            context.AnalysisStateRecoveryAttempted = true;
+            try
+            {
+                var result = await _checkpointPort.RecoverAsync(
+                    context.Batch.BatchId,
+                    cancellationToken).ConfigureAwait(false);
+                if (result.Outcome == AiAnalysisCheckpointOutcome.RecoveryRequired)
+                {
+                    context.SchedulerRestoreError = result.ReasonCode;
+                }
+            }
+            catch (InvalidOperationException exception)
+            {
+                context.SchedulerRestoreError = exception.Message;
+            }
+        }
+        finally
+        {
+            context.CheckpointGate.Release();
+        }
+    }
+
+    private static void ThrowIfAnalysisStateUnavailable(BatchContext context)
+    {
+        if (!string.IsNullOrWhiteSpace(context.SchedulerRestoreError))
+        {
+            throw new InvalidOperationException(context.SchedulerRestoreError);
+        }
+    }
+
+    private static bool IsLocalAnalysisPersistenceFailure(string? code) =>
+        !string.IsNullOrWhiteSpace(code)
+        && (code.StartsWith("AI_CHECKPOINT_", StringComparison.Ordinal)
+            || code.StartsWith("AI_SCHEDULER_STATE_", StringComparison.Ordinal)
+            || code is "AI_SCHEDULER_PENDING_LEDGER_MISSING"
+                or "AI_SCHEDULER_PENDING_SESSION_MISSING");
+
     private static AiAnalysisRequestV1 GetFirstLayerRequest(BatchContext context, string styleId) =>
         context.Requests.Values.FirstOrDefault(request =>
             request.StyleId == styleId && request.AnalysisKind == AiAnalysisKind.ProductJointUnderstanding)
@@ -2113,17 +2650,47 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, IDisposa
         public string TemplateGroupName { get; } = templateGroupName;
         public AiAnalysisScheduler Scheduler { get; } = scheduler;
         public ConcurrentDictionary<string, AiAnalysisRequestV1> Requests { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, string> AdmissionFailures { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, string> TerminalErrors { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, string> RuntimeFailures { get; } = new(StringComparer.Ordinal);
         public SemaphoreSlim RestoreGate { get; } = new(1, 1);
+        public SemaphoreSlim CheckpointGate { get; } = new(1, 1);
+        public CancellationTokenSource AdmissionCancellation { get; } = new();
         public object BackgroundGate { get; } = new();
         public Task? BackgroundTask { get; set; }
+        public Task? AdmissionTask { get; set; }
         public bool SchedulerRestoreAttempted { get; set; }
+        public bool AnalysisStateRecoveryAttempted { get; set; }
         public string? SchedulerRestoreError { get; set; }
         public bool Started { get; set; }
+        public string? AdmissionError { get; set; }
+        private int _admissionStarted;
+        private int _admissionCompleted = 1;
+
+        public bool AdmissionCompleted => Volatile.Read(ref _admissionCompleted) != 0;
+
+        public bool TryStartAdmission()
+        {
+            if (Interlocked.CompareExchange(ref _admissionStarted, 1, 0) != 0)
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _admissionCompleted, 0);
+            return true;
+        }
+
+        public void MarkAdmissionCompleted() => Volatile.Write(ref _admissionCompleted, 1);
+
+        public void StopAdmission() => AdmissionCancellation.Cancel();
 
         public void Dispose()
         {
+            AdmissionCancellation.Cancel();
             Scheduler.Dispose();
             RestoreGate.Dispose();
+            CheckpointGate.Dispose();
+            AdmissionCancellation.Dispose();
         }
     }
 }

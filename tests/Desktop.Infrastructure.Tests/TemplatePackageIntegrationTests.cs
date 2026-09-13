@@ -1,6 +1,7 @@
 using Desktop.Application.Files;
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
+using Desktop.Contracts.Ai;
 using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Persistence;
@@ -169,8 +170,17 @@ public sealed class TemplatePackageIntegrationTests
         Assert.Equal("可迁移模板", imported.Name);
         Assert.Equal(hash, importedResource.Sha256);
         Assert.Equal(psdBytes, importedBytes);
-        Assert.Equal("asset_front", Assert.Single(reopenedRevision.FrameBindings)
-            .SelectionRequirement.Criteria.Single().Value);
+        var importedCriteria = Assert.Single(reopenedRevision.FrameBindings)
+            .SelectionRequirement.Criteria.ToDictionary(
+                criterion => criterion.Key,
+                criterion => criterion.Value,
+                StringComparer.Ordinal);
+        Assert.Equal("asset_front", importedCriteria["asset_id"]);
+        Assert.Equal("reference-audit/v1", importedCriteria["reference_audit_version"]);
+        Assert.Equal("sha256:" + new string('8', 64), importedCriteria["reference_set_digest"]);
+        Assert.Equal(new string('9', 64) + "." + new string('a', 64), importedCriteria["reference_hashes_00"]);
+        Assert.Equal(ReferenceLearningAiService.ModelConfigVersion, importedCriteria["semantic_model_version"]);
+        Assert.Equal(ReferenceLearningAiProtocol.SemanticPromptVersion, importedCriteria["semantic_prompt_version"]);
         Assert.NotNull(await targetManifest.ReadMarkerAsync(
             $"templates/groups/{imported.GroupId}/revisions/{imported.RevisionId}",
             "committed.marker",
@@ -220,7 +230,14 @@ public sealed class TemplatePackageIntegrationTests
         [],
         SelectionRequirement.Create(
             "Choose the main product image.",
-            [SelectionCriterion.Create("asset_id", "asset_front")]),
+            [
+                SelectionCriterion.Create("asset_id", "asset_front"),
+                SelectionCriterion.Create("reference_audit_version", "reference-audit/v1"),
+                SelectionCriterion.Create("reference_set_digest", "sha256:" + new string('8', 64)),
+                SelectionCriterion.Create("reference_hashes_00", new string('9', 64) + "." + new string('a', 64)),
+                SelectionCriterion.Create("semantic_model_version", ReferenceLearningAiService.ModelConfigVersion),
+                SelectionCriterion.Create("semantic_prompt_version", ReferenceLearningAiProtocol.SemanticPromptVersion)
+            ]),
         LayoutIntent.Create("subject_complete", 1.2, 4, -3, TemplateRect.Create(0, 0, 790, 1252)));
 
     private static TemplatePackageFrameBinding PackageBinding() => new(

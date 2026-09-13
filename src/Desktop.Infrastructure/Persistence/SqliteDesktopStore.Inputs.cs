@@ -29,12 +29,29 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             throw new InputRuleViolationException("INPUT_COMMIT_RESULT_NOT_READY");
         }
 
-        return SaveAsync(ready, cancellationToken);
+        // Once the manifest journal has been staged, the input commit is a
+        // non-cancellable durability barrier.  A caller cancellation must
+        // not turn an already committed SQLite transaction into an unknown
+        // result that can be mistaken for a failed scan.
+        return _writer.ExecuteAsync(
+            async (connection, _) =>
+            {
+                await using var transaction = (SqliteTransaction)await connection
+                    .BeginTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                await SaveBatchGraphAsync(
+                    connection,
+                    transaction,
+                    ready,
+                    CancellationToken.None).ConfigureAwait(false);
+                await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+                return true;
+            },
+            CancellationToken.None);
     }
 
     internal Task RollbackReadyAggregateAsync(
         BatchDraft scanningDraft,
-        CancellationToken cancellationToken) => SaveAsync(scanningDraft, cancellationToken);
+        CancellationToken cancellationToken) => SaveAsync(scanningDraft, CancellationToken.None);
 
     public async Task<BatchDraft?> GetAsync(string batchId, CancellationToken cancellationToken)
     {

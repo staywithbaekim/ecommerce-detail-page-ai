@@ -30,6 +30,7 @@ public sealed partial class MainWindowViewModel
     private CancellationTokenSource? _batchScanCancellation;
     private bool _applyingBatchProjection;
     private Task _batchTemplateLoadTask = Task.CompletedTask;
+    private int _batchDraftGeneration;
 
     public ObservableCollection<BatchPageOptionViewModel> BatchPages => _batchPages;
 
@@ -267,7 +268,9 @@ public sealed partial class MainWindowViewModel
         CancelBatchPageSelectionCommand = new RelayCommand(CancelBatchPageSelection);
         ScanBatchInputCommand = new AsyncRelayCommand(ScanBatchInputAsync, () => CanScanBatch);
         CancelBatchScanCommand = new RelayCommand(CancelBatchScan, () => IsBatchScanning);
-        RetryBatchScanCommand = new AsyncRelayCommand(ScanBatchInputAsync, () => CanScanBatch && IsBatchScanBlocked);
+        RetryBatchScanCommand = new AsyncRelayCommand(
+            RetryBatchScanAsync,
+            () => CanScanBatch && IsBatchScanBlocked);
         CreateTemplateFromBatchCommand = new RelayCommand(CreateTemplateFromBatch);
         ImportTemplateFromBatchCommand = new RelayCommand(ImportTemplateFromBatch);
         BatchPages.CollectionChanged += (_, args) =>
@@ -350,9 +353,9 @@ public sealed partial class MainWindowViewModel
         {
             SetBatchStatus(BatchInputUiStatus.ScanBlocked, "批次草稿暂时无法恢复，请检查本地存储后重试。");
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
-            SetBatchStatus(BatchInputUiStatus.ScanBlocked, "批次草稿未能安全恢复，请重新选择模板和目录后重试。");
+            SetBatchStatus(BatchInputUiStatus.ScanBlocked, ToBatchUserMessage(exception.Message));
         }
         finally
         {
@@ -363,13 +366,14 @@ public sealed partial class MainWindowViewModel
     private void CloseBatchInput()
     {
         IsBatchPageSelectionVisible = false;
+        BeginFreshBatchDraft();
         _batchScreen = BatchWorkspaceScreen.Workbench;
         NotifyBatchScreenChanged();
     }
 
     private void ResetBatchDraftForNewInput()
     {
-        _currentBatchId = null;
+        BeginFreshBatchDraft();
         BatchInputDirectory = "";
         BatchOutputDirectory = "";
         BatchRecognitionText = "请选择直接包含商品图片的目录，或包含款式子文件夹的批次目录。";
@@ -380,6 +384,17 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(BatchInputDirectoryDisplay));
         OnPropertyChanged(nameof(BatchOutputDirectoryDisplay));
         SetBatchStatus(BatchInputUiStatus.Draft, "请确认模板、商品目录、输出目录和至少一个页面。");
+    }
+
+    private void BeginFreshBatchDraft()
+    {
+        // A retry/new-batch action must never reuse a batch whose manifest or
+        // SQLite graph was already classified as inconsistent.  Incrementing
+        // the generation also makes an older fire-and-forget draft save a
+        // no-op when it completes after the UI has moved on.
+        _batchDraftGeneration++;
+        _currentBatchId = null;
+        OnPropertyChanged(nameof(BatchDraftSaveText));
     }
 
     private void CreateTemplateFromBatch()
@@ -565,9 +580,9 @@ public sealed partial class MainWindowViewModel
         {
             SetBatchStatus(BatchInputUiStatus.ScanBlocked, "目录暂时不可访问，请检查磁盘、权限或目录是否仍存在后重试。");
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
-            SetBatchStatus(BatchInputUiStatus.ScanBlocked, "扫描未能安全完成，请按提示整理目录或检查本地存储后重试。");
+            SetBatchStatus(BatchInputUiStatus.ScanBlocked, ToBatchUserMessage(exception.Message));
         }
         finally
         {
@@ -577,6 +592,17 @@ public sealed partial class MainWindowViewModel
             }
             BatchBusy = false;
         }
+    }
+
+    private async Task RetryBatchScanAsync()
+    {
+        if (!CanScanBatch || !IsBatchScanBlocked)
+        {
+            return;
+        }
+
+        BeginFreshBatchDraft();
+        await ScanBatchInputAsync().ConfigureAwait(true);
     }
 
     private void CancelBatchScan() => _batchScanCancellation?.Cancel();
@@ -618,11 +644,16 @@ public sealed partial class MainWindowViewModel
 
     private void OnBatchNavigationChanged()
     {
-        if (SelectedNavigationItem.Key != "workbench" && _batchScreen != BatchWorkspaceScreen.Workbench)
-        {
-            _batchScreen = BatchWorkspaceScreen.Workbench;
-            NotifyBatchScreenChanged();
-        }
+        // Navigation is a shell concern, not a batch-workflow reset.  Keep the
+        // active screen, batch id, selected style and replacement state intact
+        // while the user visits Settings/Templates/Tasks; returning to the
+        // workbench must show the exact page that was left.
+        UpdateAiAutoRefresh();
+        OnPropertyChanged(nameof(IsBatchInputVisible));
+        OnPropertyChanged(nameof(IsAiAnalysisVisible));
+        OnPropertyChanged(nameof(IsAiStyleReviewVisible));
+        OnPropertyChanged(nameof(IsResultOverviewVisible));
+        OnPropertyChanged(nameof(IsResultDetailVisible));
     }
 
     private void SetBatchWindowWidth(double width)
@@ -659,7 +690,7 @@ public sealed partial class MainWindowViewModel
             && CanScanBatch
             && _batchInputWorkflow is not null)
         {
-            _ = PersistBatchDraftAsync();
+            _ = PersistBatchDraftAsync(_batchDraftGeneration);
         }
     }
 
@@ -672,12 +703,15 @@ public sealed partial class MainWindowViewModel
         IsBatchAutomaticSelection ? BatchSelectionMode.Automatic : BatchSelectionMode.Manual,
         BatchIncludeEditablePsd);
 
-    private async Task PersistBatchDraftAsync()
+    private async Task PersistBatchDraftAsync(int generation)
     {
         await _batchDraftWrite.WaitAsync().ConfigureAwait(true);
         try
         {
-            if (_batchInputWorkflow is null || !CanScanBatch || IsBatchScanning)
+            if (generation != _batchDraftGeneration
+                || _batchInputWorkflow is null
+                || !CanScanBatch
+                || IsBatchScanning)
             {
                 return;
             }
@@ -685,16 +719,27 @@ public sealed partial class MainWindowViewModel
             var projection = await _batchInputWorkflow.SaveDraftAsync(
                 CreateBatchSubmission(),
                 CancellationToken.None).ConfigureAwait(true);
+            if (generation != _batchDraftGeneration)
+            {
+                return;
+            }
+
             _currentBatchId = projection.BatchId;
             OnPropertyChanged(nameof(BatchDraftSaveText));
         }
         catch (IOException)
         {
-            SetBatchStatus(BatchInputUiStatus.ScanBlocked, "批次草稿暂时无法保存，请检查本地存储后重试。");
+            if (generation == _batchDraftGeneration)
+            {
+                SetBatchStatus(BatchInputUiStatus.ScanBlocked, "批次草稿暂时无法保存，请检查本地存储后重试。");
+            }
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
-            SetBatchStatus(BatchInputUiStatus.ScanBlocked, "批次草稿未能安全保存，请检查模板和目录后重试。");
+            if (generation == _batchDraftGeneration)
+            {
+                SetBatchStatus(BatchInputUiStatus.ScanBlocked, ToBatchUserMessage(exception.Message));
+            }
         }
         finally
         {
@@ -771,6 +816,15 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(propertyName);
         return true;
     }
+
+    private static string ToBatchUserMessage(string code) => code switch
+    {
+        "INPUT_PERSISTENCE_FAILURE" =>
+            "本地状态未能安全保存，未发送 AI 请求。请重新扫描并建立新批次；源图片未修改。",
+        "INPUT_MANIFEST_DATABASE_MISMATCH" =>
+            "本地批次清单与数据库记录不一致，已阻止 AI 请求。请点击“重试扫描”；系统会使用同一文件夹建立新批次，源图片和 PSD 不会修改。",
+        _ => "批次未能安全恢复，请重新选择模板和目录后重试。"
+    };
 
     private static string DirectoryDisplayName(string path)
     {

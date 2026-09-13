@@ -127,6 +127,11 @@ public sealed class PsdInspectionWorkerClientTests
         var smartObject = Assert.Single(result.Inspection!.Layers).SmartObject!;
         Assert.True(smartObject.EmbeddedContentAvailable);
         Assert.Equal(new string('C', 64), smartObject.EmbeddedContentSha256);
+        var evidence = result.Inspection.Layers[0].PixelEvidence;
+        Assert.True(evidence.Available);
+        Assert.Equal(100, evidence.RenderedPixelCount);
+        Assert.Equal(100, evidence.CompositeContributionPixelCount);
+        Assert.Equal(new PsdLayerBounds(0, 0, 10, 10), evidence.CompositeContributionBounds);
     }
 
     [Fact]
@@ -146,6 +151,35 @@ public sealed class PsdInspectionWorkerClientTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal("TPL_PSD_WORKER_INVALID_RESPONSE", result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task HandlesChinesePathsByConvertingToShortPathFormat()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // Short path conversion is Windows-only
+        }
+
+        using var directory = new TestDirectory();
+        // Create a subdirectory with Chinese characters
+        var chineseSubdir = Path.Combine(directory.Path, "测试文件夹");
+        Directory.CreateDirectory(chineseSubdir);
+
+        var inputPath = Path.Combine(chineseSubdir, "templates", "internal.psd");
+        Directory.CreateDirectory(Path.GetDirectoryName(inputPath)!);
+        await File.WriteAllBytesAsync(inputPath, [1, 2, 3]);
+
+        var response = ValidResponse("request-09", TenByTenBounds);
+        var client = CreateScriptClient(chineseSubdir, WriteResponseScript(response));
+
+        var result = await client.InspectAsync(
+            new PsdInspectionRequest("request-09", "templates\\internal.psd"),
+            CancellationToken.None);
+
+        // Should succeed because short path conversion handles Chinese characters
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Inspection);
     }
 
     private static PsdInspectionWorkerClient CreateClient(string root) => new(
@@ -276,10 +310,17 @@ public sealed class PsdInspectionWorkerClientTests
                         fill_opacity = 255,
                         blend_mode = "normal",
                         bbox = TenByTenBounds,
-                        has_mask = false,
-                        has_vector_mask = false,
-                        clipping_base = (object?)null,
-                        smart_object = new
+                            has_mask = false,
+                            has_vector_mask = false,
+                            clipping_base = (object?)null,
+                            pixel_evidence = new
+                            {
+                                available = true,
+                                rendered_pixel_count = 100,
+                                composite_contribution_pixel_count = 100,
+                                composite_contribution_bbox = TenByTenBounds
+                            },
+                            smart_object = new
                         {
                             unique_id = "so_01",
                             filename = "front.png",

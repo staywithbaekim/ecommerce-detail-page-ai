@@ -26,7 +26,9 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         IAiBatchAnalysisWorkflow? aiBatchAnalysisWorkflow = null,
         ISizeTableEditingWorkflow? sizeTableEditingWorkflow = null,
         IReferenceLearningService? referenceLearningService = null,
-        IReferenceLearningCommitService? referenceLearningCommitService = null)
+        IReferenceLearningCommitService? referenceLearningCommitService = null,
+        IReferenceLearningAiService? referenceLearningAiService = null,
+        IAiCredentialManagementPort? aiCredentialManagement = null)
     {
         NavigationItems =
         [
@@ -50,9 +52,10 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             new("外置盘批次", "外置盘模板 · 25 款", "外置盘模板", "等待恢复", "Recoverable", "昨天 16:08", "查看")
         ];
         InitializeTemplates(templateWorkspace, templateCalibration, templatePackages);
-        InitializeReferenceLearning(referenceLearningService, referenceLearningCommitService);
+        InitializeReferenceLearning(referenceLearningService, referenceLearningCommitService, referenceLearningAiService);
         InitializeBatchInput(folderPicker, batchInputWorkflow);
         InitializeAiBatchAnalysis(aiBatchAnalysisWorkflow);
+        InitializeAiCredentialManagement(aiCredentialManagement);
         InitializeSizeTableEditor(sizeTableEditingWorkflow);
     }
 
@@ -170,6 +173,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
     public void Dispose()
     {
         DisposeAiAutoRefresh();
+        ClearAiCredentialInput();
         SizeTableEditor.PropertyChanged -= SizeTableEditor_PropertyChanged;
         _templateDraftWrite.Dispose();
         _batchDraftWrite.Dispose();

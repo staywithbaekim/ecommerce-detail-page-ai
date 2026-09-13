@@ -48,6 +48,23 @@ public sealed record TemplateDraftSession(
     IReadOnlySet<string> BasePageIds)
 {
     public bool IsIncremental => BasePageIds.Count > 0;
+
+    // An incremental revision normally affects only pages outside the base set.
+    // Page editing explicitly opts selected inherited pages back into the draft.
+    public IReadOnlySet<string> EditablePageIds { get; init; } =
+        new HashSet<string>(StringComparer.Ordinal);
+
+    public bool IsPageAffected(string pageId) =>
+        !BasePageIds.Contains(pageId) || EditablePageIds.Contains(pageId);
+
+    public bool CanEditPage(string pageId) => IsPageAffected(pageId);
+
+    public bool IsPageEdit => EditablePageIds.Count > 0;
+
+    public bool IsFullTemplateEdit => IsPageEdit
+        && BasePageIds.Count > 0
+        && EditablePageIds.Count == BasePageIds.Count
+        && BasePageIds.All(EditablePageIds.Contains);
 }
 
 public sealed record TemplateDraftPage(
@@ -72,9 +89,23 @@ public interface ITemplateWorkspaceService
 
     Task<TemplateGroupDetails?> GetCommittedDetailsAsync(string groupId, CancellationToken cancellationToken);
 
+    Task RenameTemplateGroupAsync(
+        string groupId,
+        string newName,
+        CancellationToken cancellationToken);
+
     Task<TemplateDraftSession> BeginCreateAsync(string groupName, CancellationToken cancellationToken);
 
     Task<TemplateDraftSession> BeginIncrementAsync(string groupId, CancellationToken cancellationToken);
+
+    Task<TemplateDraftSession> BeginPageEditAsync(
+        string groupId,
+        string pageId,
+        CancellationToken cancellationToken);
+
+    Task<TemplateDraftSession> BeginFullEditAsync(
+        string groupId,
+        CancellationToken cancellationToken);
 
     Task<TemplateDraftSession> ResumeDraftAsync(string groupId, CancellationToken cancellationToken);
 
@@ -114,6 +145,11 @@ public interface ITemplateWorkspaceService
 
     Task<TemplateGroupDetails> CommitDraftAsync(
         TemplateDraftSession session,
+        CancellationToken cancellationToken);
+
+    Task<TemplateGroupDetails> CommitDraftAsNewGroupAsync(
+        TemplateDraftSession session,
+        string newGroupName,
         CancellationToken cancellationToken);
 
     Task<TemplateBatchSnapshotView> CreateBatchSnapshotAsync(

@@ -348,8 +348,9 @@ public sealed partial class SqliteDesktopStore
         }
 
         var statusAdvanced = existing.Status != incoming.Status && existing.CanAdvanceTo(incoming.Status);
-        var selectionAdvanced = existing.Status == AiAnalysisSessionStatus.ManualReview
-            && incoming.Status == AiAnalysisSessionStatus.ManualReview
+        var selectionAdvanced = existing.Status is (AiAnalysisSessionStatus.ManualReview
+                or AiAnalysisSessionStatus.AiResultUnknown)
+            && incoming.Status == existing.Status
             && incoming.SelectionRevision == existing.SelectionRevision + 1;
         if (!statusAdvanced && !selectionAdvanced)
         {

@@ -335,6 +335,22 @@ public static class AiAnalysisCheckpointRules
         }
 
         var graphs = command.Graphs.ToDictionary(graph => graph.Request.RequestId, StringComparer.Ordinal);
+        var terminalErrors = schedulerState.TerminalErrors
+            ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        if (terminalErrors.Count > 10_000)
+        {
+            throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_TERMINAL_ERRORS_TOO_LARGE");
+        }
+        foreach (var pair in terminalErrors)
+        {
+            ValidateIdentifier(pair.Key, "AI_CHECKPOINT_TERMINAL_ERROR_REQUEST_INVALID");
+            if (!IsSafeErrorCode(pair.Value)
+                || !graphs.TryGetValue(pair.Key, out var terminalGraph)
+                || terminalGraph.Request.Status is not ("TerminalError" or "AiResultUnknown"))
+            {
+                throw new InvalidOperationException("AI_CHECKPOINT_TERMINAL_ERROR_INVALID");
+            }
+        }
         var pendingIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in schedulerState.PendingItems)
         {
@@ -498,6 +514,11 @@ public static class AiAnalysisCheckpointRules
 
     private static bool TryStatus(string value, out AiAnalysisSessionStatus status) =>
         Enum.TryParse(value, false, out status) && Enum.IsDefined(status);
+
+    private static bool IsSafeErrorCode(string value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.Length <= 128
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character == '_');
 
     private static bool RequiresResult(AiAnalysisSessionStatus status) => status is
         AiAnalysisSessionStatus.Validated or AiAnalysisSessionStatus.ManualReview or AiAnalysisSessionStatus.PlanClosed;

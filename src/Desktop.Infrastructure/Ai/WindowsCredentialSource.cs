@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Desktop.Application.Ai;
 
@@ -10,10 +11,12 @@ namespace Desktop.Infrastructure.Ai;
 /// secret is kept only in the returned string and native memory is released
 /// immediately; callers must not persist or log it.
 /// </summary>
-public sealed class WindowsCredentialSource : IAiCredentialSource
+public sealed class WindowsCredentialSource : IAiCredentialSource, IAiCredentialManagementPort
 {
     public const string DefaultTargetName = "AI-01-VolcArk-Test";
     private const uint GenericCredentialType = 1;
+    private const uint PersistLocalMachine = 2;
+    private const uint ErrorNotFound = 1168;
 
     private readonly string _targetName;
 
@@ -41,7 +44,7 @@ public sealed class WindowsCredentialSource : IAiCredentialSource
             var error = Marshal.GetLastWin32Error();
             // ERROR_NOT_FOUND is the normal missing-key path. Other failures
             // are deliberately surfaced without including the target secret.
-            if (error == 1168)
+            if (error == ErrorNotFound)
             {
                 return ValueTask.FromResult<string?>(null);
             }
@@ -63,14 +66,137 @@ public sealed class WindowsCredentialSource : IAiCredentialSource
             }
 
             var bytes = new byte[credential.CredentialBlobSize];
-            Marshal.Copy(credential.CredentialBlob, bytes, 0, bytes.Length);
-            var value = DecodeCredential(bytes);
-            return ValueTask.FromResult<string?>(string.IsNullOrWhiteSpace(value) ? null : value);
+            try
+            {
+                Marshal.Copy(credential.CredentialBlob, bytes, 0, bytes.Length);
+                var value = DecodeCredential(bytes);
+                return ValueTask.FromResult<string?>(string.IsNullOrWhiteSpace(value)
+                    ? null
+                    : AiCredentialRules.NormalizeAndValidate(value));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(bytes);
+            }
         }
         finally
         {
             CredFree(credentialPointer);
         }
+    }
+
+    public async Task<AiCredentialStatusSnapshot> GetStatusAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!OperatingSystem.IsWindows())
+        {
+            return new(AiCredentialState.Unavailable, null, "AI_CREDENTIAL_WINDOWS_ONLY");
+        }
+
+        try
+        {
+            var value = await GetCredentialAsync(cancellationToken).ConfigureAwait(false);
+            return value is null
+                ? new(AiCredentialState.NotConfigured, null)
+                : new(AiCredentialState.Configured, AiCredentialRules.MaskSuffix(value));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Status is intentionally redacted.  The exception is not returned
+            // because it could contain provider-specific or machine details.
+            return new(AiCredentialState.Unavailable, null, "AI_CREDENTIAL_READ_FAILED");
+        }
+    }
+
+    public Task SaveAsync(string apiKey, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var normalized = AiCredentialRules.NormalizeAndValidate(apiKey);
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Windows Credential Manager 仅在 Windows 上可用。");
+        }
+
+        var targetPointer = IntPtr.Zero;
+        var userPointer = IntPtr.Zero;
+        var blobPointer = IntPtr.Zero;
+        var blob = Encoding.UTF8.GetBytes(normalized);
+        try
+        {
+            targetPointer = Marshal.StringToCoTaskMemUni(_targetName);
+            userPointer = Marshal.StringToCoTaskMemUni("api-key");
+            blobPointer = Marshal.AllocHGlobal(blob.Length);
+            Marshal.Copy(blob, 0, blobPointer, blob.Length);
+
+            var credential = new NativeCredential
+            {
+                Type = GenericCredentialType,
+                TargetName = targetPointer,
+                CredentialBlobSize = checked((uint)blob.Length),
+                CredentialBlob = blobPointer,
+                Persist = PersistLocalMachine,
+                UserName = userPointer
+            };
+            if (!CredWriteW(ref credential, 0))
+            {
+                var error = Marshal.GetLastWin32Error();
+                throw new Win32Exception(error, "无法写入 AI 凭据存储。");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(blob);
+            if (blobPointer != IntPtr.Zero)
+            {
+                ZeroAndFree(blobPointer, blob.Length);
+            }
+
+            if (targetPointer != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(targetPointer);
+            }
+
+            if (userPointer != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(userPointer);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task RemoveAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Windows Credential Manager 仅在 Windows 上可用。");
+        }
+
+        if (!CredDeleteW(_targetName, GenericCredentialType, 0))
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (error != ErrorNotFound)
+            {
+                throw new Win32Exception(error, "无法移除 AI 凭据存储中的 Key。");
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static void ZeroAndFree(IntPtr pointer, int length)
+    {
+        if (length > 0)
+        {
+            Marshal.Copy(new byte[length], 0, pointer, length);
+        }
+
+        Marshal.FreeHGlobal(pointer);
     }
 
     private static string DecodeCredential(byte[] bytes)
@@ -102,6 +228,17 @@ public sealed class WindowsCredentialSource : IAiCredentialSource
         uint type,
         uint flags,
         out IntPtr credential);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredWriteW(
+        ref NativeCredential credential,
+        uint flags);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredDeleteW(
+        string target,
+        uint type,
+        uint flags);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool CredFree(IntPtr credential);
