@@ -1,10 +1,53 @@
 using Desktop.Application.Inputs;
+using Desktop.Application.Tasks;
 using UiBatchSelectionMode = Desktop.App.BatchSelectionMode;
 
 namespace Desktop.App;
 
-public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow) : IBatchInputWorkflow
+public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow, TaskCoordinator tasks) : IBatchInputWorkflow
 {
+    public async Task<IReadOnlyList<BatchRecoverySummary>> ListRecoverableAsync(
+        CancellationToken cancellationToken)
+    {
+        var drafts = await workflow.ListRecoverableAsync(cancellationToken).ConfigureAwait(false);
+        var summaries = new List<BatchRecoverySummary>(drafts.Count);
+        foreach (var draft in drafts.OrderByDescending(draft => draft.UpdatedAt)
+                     .ThenBy(draft => draft.BatchId, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var summary = new BatchRecoverySummary(draft.BatchId, draft.TemplateGroupId,
+                draft.InputRoot, Project(draft).Status, draft.UpdatedAt);
+            try
+            {
+                summary = summary with
+                {
+                    Task = await tasks.GetProjectionAsync(draft.BatchId, cancellationToken).ConfigureAwait(false)
+                };
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception)
+            {
+                // A damaged event stream must not turn into a harmless "scanned"
+                // status or hide every other batch. Never enter AI/render recovery here.
+                summary = summary with { TaskStateUnavailable = true };
+            }
+            summaries.Add(summary);
+        }
+        return summaries.OrderByDescending(summary => summary.LatestUpdatedAt)
+            .ThenBy(summary => summary.BatchId, StringComparer.Ordinal).ToArray();
+    }
+
+    public async Task<BatchInputProjection?> RestoreBatchAsync(
+        string batchId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(batchId);
+        var drafts = await workflow.ListRecoverableAsync(cancellationToken).ConfigureAwait(false);
+        var draft = drafts.FirstOrDefault(candidate =>
+            string.Equals(candidate.BatchId, batchId, StringComparison.Ordinal));
+        return draft is null ? null : ProjectRestored(draft);
+    }
+
     public async Task<BatchInputProjection?> RestoreLatestDraftAsync(
         CancellationToken cancellationToken)
     {
@@ -18,14 +61,7 @@ public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow)
             return null;
         }
 
-        var projection = Project(draft);
-        return draft.TemplateGroupId is null
-            ? projection with
-            {
-                Status = BatchInputUiStatus.ScanBlocked,
-                StatusMessage = "原批次使用的模板已不可用。请选择一个已校准模板后重新扫描。"
-            }
-            : projection;
+        return ProjectRestored(draft);
     }
 
     public async Task<BatchInputProjection> ScanAsync(
@@ -46,6 +82,18 @@ public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow)
         return Project(draft);
     }
 
+    private static BatchInputProjection ProjectRestored(BatchInputWorkflowState draft)
+    {
+        var projection = Project(draft);
+        return draft.TemplateGroupId is null
+            ? projection with
+            {
+                Status = BatchInputUiStatus.ScanBlocked,
+                StatusMessage = "原批次使用的模板已不可用。请选择一个已校准模板后重新扫描。"
+            }
+            : projection;
+    }
+
     private static BatchInputWorkflowCommand ToCommand(BatchInputSubmission submission)
     {
         ArgumentNullException.ThrowIfNull(submission);
@@ -53,12 +101,19 @@ public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow)
             submission.BatchId,
             submission.TemplateGroupId,
             submission.InputDirectory,
-            submission.OutputDirectory,
+            submission.OutputMode is null ? submission.OutputDirectory : "",
             submission.SelectedPageIds,
             submission.SelectionMode == UiBatchSelectionMode.Automatic
                 ? BatchInputWorkflowSelectionMode.Automatic
                 : BatchInputWorkflowSelectionMode.Manual,
-            submission.IncludeEditablePsd);
+            submission.IncludeEditablePsd,
+            submission.OutputMode switch
+            {
+                null => null,
+                BatchOutputMode.UnifiedDirectory => new(BatchInputWorkflowOutputMode.UnifiedDirectory, submission.OutputDirectory),
+                BatchOutputMode.StyleSourceDirectories => new(BatchInputWorkflowOutputMode.StyleSourceDirectories, null),
+                _ => throw new InvalidOperationException("INPUT_PUBLIC_OUTPUT_CONFIGURATION_INVALID")
+            });
     }
 
     private static BatchInputProjection Project(BatchInputWorkflowState draft)
@@ -93,13 +148,20 @@ public sealed class BatchInputWorkflowAdapter(BatchInputWorkflowFacade workflow)
             draft.TemplateGroupId,
             status,
             draft.InputRoot,
-            draft.OutputRoot,
+            draft.PublicOutput is null ? draft.OutputRoot : draft.PublicOutput.UnifiedRoot ?? "",
             draft.SelectedPageIds,
             draft.SelectionMode == BatchInputWorkflowSelectionMode.Automatic
                 ? UiBatchSelectionMode.Automatic
                 : UiBatchSelectionMode.Manual,
             draft.IncludeEditablePsd,
             recognitionText,
-            statusMessage);
+            statusMessage,
+            draft.PublicOutput?.Mode switch
+            {
+                null => null,
+                BatchInputWorkflowOutputMode.UnifiedDirectory => BatchOutputMode.UnifiedDirectory,
+                BatchInputWorkflowOutputMode.StyleSourceDirectories => BatchOutputMode.StyleSourceDirectories,
+                _ => throw new InvalidOperationException("INPUT_PUBLIC_OUTPUT_CONFIGURATION_INVALID")
+            });
     }
 }

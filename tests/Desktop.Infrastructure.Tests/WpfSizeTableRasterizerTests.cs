@@ -1,4 +1,5 @@
 using Desktop.Application.SizeTables;
+using Desktop.Application.Files;
 using Desktop.Domain.SizeTables;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.SizeTables;
@@ -7,6 +8,63 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class WpfSizeTableRasterizerTests
 {
+    [Fact]
+    public async Task MatchingHistoricalBytesAreReusedAcrossRasterizerInstancesWithoutRewriting()
+    {
+        using var directory = new TestDirectory();
+        var files = new RecordingFiles(new AtomicFileStore(new LocalAppPathPolicy(directory.Path)));
+        var request = new SizeTableRasterizationRequest(Table("/", 4), Style());
+        var first = await new WpfSizeTableRasterizer(files).RasterizeAsync(request, default);
+        var original = await files.ReadAsync(first.OwnedRelativePath, default);
+
+        var retries = await Task.WhenAll(new WpfSizeTableRasterizer(files).RasterizeAsync(request, default),
+            new WpfSizeTableRasterizer(files).RasterizeAsync(request, default));
+
+        Assert.Equal(1, files.Writes);
+        Assert.All(retries, retry => Assert.Equal(first, retry));
+        Assert.Equal(original, await files.ReadAsync(first.OwnedRelativePath, default));
+    }
+
+    [Fact]
+    public async Task SameIdentityWithDifferentExistingBytesIsRejectedAndOldBytesStayIntact()
+    {
+        using var directory = new TestDirectory();
+        var files = new RecordingFiles(new AtomicFileStore(new LocalAppPathPolicy(directory.Path)));
+        var request = new SizeTableRasterizationRequest(Table("/", 4), Style());
+        var rasterizer = new WpfSizeTableRasterizer(files);
+        var first = await rasterizer.RasterizeAsync(request, default);
+        var original = (await files.ReadAsync(first.OwnedRelativePath, default))!;
+        var different = original.ToArray();
+        different[^1] ^= 1;
+        await files.WriteAtomicallyAsync(first.OwnedRelativePath, different, default);
+        var writes = files.Writes;
+
+        var error = await Assert.ThrowsAsync<SizeTableRuleViolationException>(() => rasterizer.RasterizeAsync(request, default));
+
+        Assert.Equal("SIZE_TABLE_RASTER_IDENTITY_CONFLICT", error.Code);
+        Assert.Equal(writes, files.Writes);
+        Assert.Equal(different, await files.ReadAsync(first.OwnedRelativePath, default));
+    }
+
+    [Fact]
+    public async Task CorruptReadbackRejectsCandidateAndRetryDoesNotOverwriteFailedWrite()
+    {
+        using var directory = new TestDirectory();
+        var files = new RecordingFiles(new AtomicFileStore(new LocalAppPathPolicy(directory.Path))) { CorruptWrite = true };
+        var request = new SizeTableRasterizationRequest(Table("/", 4), Style());
+        var rasterizer = new WpfSizeTableRasterizer(files);
+
+        var first = await Assert.ThrowsAsync<SizeTableRuleViolationException>(() => rasterizer.RasterizeAsync(request, default));
+        var preserved = await files.ReadAsync(files.LastPath!, default);
+        files.CorruptWrite = false;
+        var retry = await Assert.ThrowsAsync<SizeTableRuleViolationException>(() => rasterizer.RasterizeAsync(request, default));
+
+        Assert.Equal("SIZE_TABLE_RASTER_READBACK_MISMATCH", first.Code);
+        Assert.Equal("SIZE_TABLE_RASTER_IDENTITY_CONFLICT", retry.Code);
+        Assert.Equal(1, files.Writes);
+        Assert.Equal(preserved, await files.ReadAsync(files.LastPath!, default));
+    }
+
     [Theory]
     [InlineData("/")]
     [InlineData("\\")]
@@ -80,6 +138,24 @@ public sealed class WpfSizeTableRasterizerTests
     }
 
     private static readonly DateTimeOffset Now = new(2026, 9, 1, 8, 0, 0, TimeSpan.Zero);
+
+    private sealed class RecordingFiles(IFileStore inner) : IFileStore
+    {
+        public int Writes { get; private set; }
+        public bool CorruptWrite { get; set; }
+        public string? LastPath { get; private set; }
+        public Task WriteAtomicallyAsync(string relativePath, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+        {
+            Writes++;
+            LastPath = relativePath;
+            var bytes = content.ToArray();
+            if (CorruptWrite) bytes[^1] ^= 1;
+            return inner.WriteAtomicallyAsync(relativePath, bytes, cancellationToken);
+        }
+        public Task<byte[]?> ReadAsync(string relativePath, CancellationToken cancellationToken) => inner.ReadAsync(relativePath, cancellationToken);
+        public Task<string?> ComputeSha256Async(string relativePath, CancellationToken cancellationToken) => inner.ComputeSha256Async(relativePath, cancellationToken);
+        public Task<bool> DeleteAsync(string relativePath, CancellationToken cancellationToken) => throw new InvalidOperationException("Rasterizer must not delete historical resources");
+    }
 
     private static SizeTableRasterStyle Style() => SizeTableRasterStyle.Create(
         "gold_v1",

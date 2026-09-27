@@ -18,15 +18,15 @@ public enum TemplateCalibrationMode
     ReferenceLearning
 }
 
-public sealed partial class MainWindowViewModel
+public sealed partial class TemplateWorkspaceViewModel
 {
     private readonly Dictionary<string, ReferenceLearningDocument> _referenceLearningDocuments =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, ReferenceLearningInputDraft> _referenceLearningInputDrafts =
         new(StringComparer.Ordinal);
-    private IReferenceLearningService? _referenceLearning;
-    private IReferenceLearningCommitService? _referenceLearningCommit;
-    private IReferenceLearningAiService? _referenceLearningAi;
+    private readonly IReferenceLearningService? _referenceLearning;
+    private readonly IReferenceLearningCommitService? _referenceLearningCommit;
+    private readonly IReferenceLearningAiService? _referenceLearningAi;
     private TemplateCalibrationMode _templateCalibrationMode;
     private string _referenceLearningPhotoDirectory = "";
     private string _referenceLearningStatusMessage = "请选择制作这些 PSD 时使用的同款源照片文件夹。";
@@ -52,21 +52,21 @@ public sealed partial class MainWindowViewModel
 
     public ObservableCollection<ReferenceLearningPhotoViewModel> ReferenceLearningPhotos { get; } = [];
 
-    public ICommand ChooseReferenceLearningFolderCommand { get; private set; } = null!;
+    public ICommand ChooseReferenceLearningFolderCommand { get; internal set; } = null!;
 
-    public ICommand AcceptReferenceLearningFrameCommand { get; private set; } = null!;
+    public ICommand AcceptReferenceLearningFrameCommand { get; internal set; } = null!;
 
-    public ICommand ConfirmReferenceLearningPageCommand { get; private set; } = null!;
+    public ICommand ConfirmReferenceLearningPageCommand { get; internal set; } = null!;
 
-    public ICommand ConfirmAllQualifiedReferenceLearningCommand { get; private set; } = null!;
+    public ICommand ConfirmAllQualifiedReferenceLearningCommand { get; internal set; } = null!;
 
-    public ICommand RejectReferenceLearningFrameCommand { get; private set; } = null!;
+    public ICommand RejectReferenceLearningFrameCommand { get; internal set; } = null!;
 
-    public ICommand ReturnReferenceLearningToManualCommand { get; private set; } = null!;
+    public ICommand ReturnReferenceLearningToManualCommand { get; internal set; } = null!;
 
-    public ICommand ReanalyzeReferenceLearningCommand { get; private set; } = null!;
+    public ICommand ReanalyzeReferenceLearningCommand { get; internal set; } = null!;
 
-    public ICommand CancelReferenceLearningCommand { get; private set; } = null!;
+    public ICommand CancelReferenceLearningCommand { get; internal set; } = null!;
 
     public bool IsDragCalibrationModeSelected
     {
@@ -106,13 +106,13 @@ public sealed partial class MainWindowViewModel
     public string ReferenceLearningStatusMessage
     {
         get => _referenceLearningStatusMessage;
-        private set => SetTemplateField(ref _referenceLearningStatusMessage, value);
+        internal set => SetTemplateField(ref _referenceLearningStatusMessage, value);
     }
 
     public bool ReferenceLearningBusy
     {
         get => _referenceLearningBusy;
-        private set
+        internal set
         {
             if (SetTemplateField(ref _referenceLearningBusy, value))
             {
@@ -148,17 +148,21 @@ public sealed partial class MainWindowViewModel
     public bool CanSaveCurrentCalibration => !IsReferenceLearningReviewMode
         || CanCommitReferenceLearning;
 
-    public string CalibrationStartActionText => IsReferenceLearningModeSelected
-        ? "开始学习并复核"
-        : "开始校准";
+    public string CalibrationStartActionText => !HasCalibratableTemplatePages
+        ? "保存模板组"
+        : IsReferenceLearningModeSelected
+            ? "开始学习并复核"
+            : "开始校准";
 
-    public string CalibrationModeHelpText => _templateCalibrationMode == TemplateCalibrationMode.ReferenceLearning
-        ? "人工学习结果会先自动填入；两种方式最终都保存为同一套模板规则。"
-        : "拖拽校准从用户选择开始；两种方式最终都保存为同一套模板规则。";
+    public string CalibrationModeHelpText => !HasCalibratableTemplatePages
+        ? "当前模板只有动态尺码表页，无需选择商品图或进行图片框校准。"
+        : _templateCalibrationMode == TemplateCalibrationMode.ReferenceLearning
+            ? "人工学习结果会先自动填入；两种方式最终都保存为同一套模板规则。"
+            : "拖拽校准从用户选择开始；两种方式最终都保存为同一套模板规则。";
 
-    public string CalibrationFlowStepText => IsTemplateCalibrationVisible
-        ? "导入模板  /  页面设置  /  模板校准"
-        : "导入模板  /  页面设置";
+    public string CalibrationFlowStepText => IsReferenceLearningReviewMode
+        ? "统一画布  /  人工结果学习  /  复核"
+        : "统一画布  /  导入模板  /  页面设置  /  模板校准";
 
     public string CalibrationPageListTitle => IsTemplateCalibrationVisible
         ? "校准页面"
@@ -559,14 +563,8 @@ public sealed partial class MainWindowViewModel
             ? document
             : null;
 
-    private void InitializeReferenceLearning(
-        IReferenceLearningService? referenceLearning,
-        IReferenceLearningCommitService? referenceLearningCommit,
-        IReferenceLearningAiService? referenceLearningAi)
+    private void InitializeReferenceLearning()
     {
-        _referenceLearning = referenceLearning;
-        _referenceLearningCommit = referenceLearningCommit;
-        _referenceLearningAi = referenceLearningAi;
         ChooseReferenceLearningFolderCommand = new AsyncRelayCommand(ChooseReferenceLearningFolderAsync);
         AcceptReferenceLearningFrameCommand = new AsyncRelayCommand(
             () => ApplyReferenceLearningReviewAsync(ReferenceReviewDecision.Accepted),
@@ -611,7 +609,6 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(CalibrationStartActionText));
         OnPropertyChanged(nameof(CalibrationModeHelpText));
         OnPropertyChanged(nameof(CalibrationEditorHintText));
-        OnPropertyChanged(nameof(CanContinuePageSettings));
         RaiseTemplateCommandCanExecuteChanged();
     }
 
@@ -636,12 +633,11 @@ public sealed partial class MainWindowViewModel
         ReferenceLearningStatusMessage = "已选择源照片文件夹；路径只在本次本地学习中使用。";
         OnPropertyChanged(nameof(HasReferenceLearningPhotoDirectory));
         OnPropertyChanged(nameof(ReferenceLearningPhotoDirectoryDisplay));
-        OnPropertyChanged(nameof(CanContinuePageSettings));
         RaiseTemplateCommandCanExecuteChanged();
         RaiseReferenceLearningCommands();
     }
 
-    private async Task StartReferenceLearningAsync()
+    public async Task StartReferenceLearningAsync()
     {
         if (_referenceLearning is null || _templateDraft is null || !HasReferenceLearningPhotoDirectory)
         {
@@ -1008,7 +1004,7 @@ public sealed partial class MainWindowViewModel
         }
 
         SetTemplateCalibrationMode(TemplateCalibrationMode.DragAndDrop);
-        SetTemplateScreen(TemplateScreen.Calibration);
+        SetTemplateScreen(TemplateScreen.Canvas);
         var pageLoadVersion = Interlocked.Increment(ref _calibrationPageLoadVersion);
         await LoadCalibrationPageAsync(SelectedTemplatePage, pageLoadVersion).ConfigureAwait(true);
         TemplateStatusMessage = "已退回拖拽校准；学习候选不会提交为模板规则。";
@@ -1018,7 +1014,7 @@ public sealed partial class MainWindowViewModel
     {
         if (_referenceLearning is null)
         {
-            SetTemplateScreen(TemplateScreen.PageSettings);
+            SetTemplateScreen(TemplateScreen.Canvas);
             return;
         }
 
@@ -1044,7 +1040,7 @@ public sealed partial class MainWindowViewModel
             }
 
             TemplateStatusMessage = "本次学习已取消；模板草稿和用户源文件保持不变。";
-            SetTemplateScreen(TemplateScreen.PageSettings);
+            SetTemplateScreen(TemplateScreen.Canvas);
         }
         catch (Exception)
         {
@@ -1261,46 +1257,8 @@ public sealed partial class MainWindowViewModel
         return $"{prefix}{message} {action}".Trim();
     }
 
-    private async Task<bool> EnsureAiUploadConsentForReferenceLearningAsync()
-    {
-        if (!await EnsureAiCredentialConfiguredForScanAsync().ConfigureAwait(true))
-        {
-            ReferenceLearningStatusMessage = BatchStatusMessage;
-            return false;
-        }
-
-        // Offline/unit-test compositions intentionally omit the batch
-        // workflow. Preserve their local reference-learning behavior.
-        if (_aiBatchWorkflow is null)
-        {
-            return true;
-        }
-
-        try
-        {
-            _uploadConsent = await _aiBatchWorkflow
-                .GetUploadConsentAsync(CancellationToken.None)
-                .ConfigureAwait(true);
-            NotifyAiChanged();
-            if (IsAiUploadConsentGranted)
-            {
-                return true;
-            }
-
-            _pendingAiConsentContinuation = AiConsentContinuation.ReferenceLearning;
-            AiUploadConsentAcknowledged = false;
-            IsAiUploadConsentDialogVisible = true;
-            ReferenceLearningStatusMessage = IsAiUploadConsentRevoked
-                ? "上传授权已撤回；重新授权后才会开始参考学习 AI 识别。"
-                : "开始参考学习 AI 识别前，请先确认压缩分析图上传授权。未同意前不会上传或调用 AI。";
-            return false;
-        }
-        catch (InvalidOperationException exception)
-        {
-            ReferenceLearningStatusMessage = ToAiUserMessage(exception.Message);
-            return false;
-        }
-    }
+    private Task<bool> EnsureAiUploadConsentForReferenceLearningAsync() =>
+        _host.EnsureUploadConsentAsync();
 
     private void NotifyReferenceLearningStateChanged()
     {
@@ -1315,6 +1273,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(CanEditCalibration));
         OnPropertyChanged(nameof(CanClearCalibrationAsset));
         OnPropertyChanged(nameof(CanSaveCurrentCalibration));
+        OnPropertyChanged(nameof(CanSaveTemplateCanvas));
         OnPropertyChanged(nameof(ReferenceLearningPageProgress));
         OnPropertyChanged(nameof(ReferenceLearningCurrentPageProgress));
         OnPropertyChanged(nameof(ReferenceLearningOverallProgress));
@@ -1386,6 +1345,7 @@ public sealed partial class MainWindowViewModel
         SelectedReferenceLearningFrame = null;
         ReferenceLearningStatusMessage = "请选择制作这些 PSD 时使用的同款源照片文件夹。";
         OnPropertyChanged(nameof(CanCommitReferenceLearning));
+        OnPropertyChanged(nameof(CanSaveTemplateCanvas));
         OnPropertyChanged(nameof(CanConfirmReferenceLearningPage));
         OnPropertyChanged(nameof(CanConfirmAllQualifiedReferenceLearning));
         OnPropertyChanged(nameof(ReferenceLearningQualifiedCandidateSummary));
@@ -1460,138 +1420,5 @@ public sealed partial class MainWindowViewModel
         var manual = candidates.Count(candidate =>
             candidate.ReviewDecision == ReferenceReviewDecision.ManualCalibration);
         return (candidates.Length - pending, candidates.Length, pending, manual);
-    }
-}
-
-public sealed class ReferenceLearningFrameViewModel : INotifyPropertyChanged
-{
-    private bool _isSelected;
-
-    public ReferenceLearningFrameViewModel(ReferenceFrameCandidate candidate)
-    {
-        Candidate = candidate;
-    }
-
-    public ReferenceFrameCandidate Candidate { get; }
-
-    public string FrameId => Candidate.FrameId;
-
-    public string LayerName => string.IsNullOrWhiteSpace(Candidate.LayerName)
-        ? $"图片框 {Candidate.LayerId}"
-        : Candidate.LayerName;
-
-    public ReferenceReviewDecision Decision => Candidate.ReviewDecision;
-
-    public string? ReferenceAssetId => Candidate.ReferenceAssetId;
-
-    public bool IsProduct => Candidate.IsProduct;
-
-    public bool IsAutoConfirmable => Candidate.IsAutoConfirmable;
-
-    public string StructuralSummary => Candidate.IsProduct
-        ? "可替换素材框 · 已验证源照片与最终显示"
-        : $"固定内容 · {Candidate.StructuralReasonText}";
-
-    public string SemanticLabel => Candidate.SemanticLabel;
-
-    public double Scale => Candidate.LayoutScale;
-
-    public double OffsetX => Candidate.LayoutOffsetX;
-
-    public double OffsetY => Candidate.LayoutOffsetY;
-
-    public double Left => Candidate.LayoutSafeLeft;
-
-    public double Top => Candidate.LayoutSafeTop;
-
-    public double Width => Candidate.LayoutSafeRight - Candidate.LayoutSafeLeft;
-
-    public double Height => Candidate.LayoutSafeBottom - Candidate.LayoutSafeTop;
-
-    public string MatchText => !Candidate.IsProduct
-        ? Candidate.StructuralReasonText
-        : Candidate.MatchState switch
-        {
-            ReferenceMatchState.Exact => "嵌入内容与源照片 SHA-256 精确匹配",
-            ReferenceMatchState.ManuallyConfirmed => "已由用户明确选择源照片",
-            ReferenceMatchState.Ambiguous => "多个源照片内容相同，需要人工选择",
-            ReferenceMatchState.Modified => "文件名相似但内容不同，不能据此匹配",
-            ReferenceMatchState.ExternalLink => "外链智能对象不可读取",
-            ReferenceMatchState.Unsupported => "智能对象结构不支持自动学习",
-            _ => "未找到内容完全一致的源照片"
-        };
-
-    public string ConfidenceText => $"{Math.Round(Candidate.Confidence * 100):0}%";
-
-    public string RegistrationLabel => !Candidate.IsProduct
-        ? Candidate.ReviewDecision == ReferenceReviewDecision.Rejected
-            ? "保留模板内容"
-            : "未复核"
-        : Candidate.ReviewDecision switch
-        {
-            ReferenceReviewDecision.Accepted => "已确认规则",
-            ReferenceReviewDecision.Rejected => "保留模板内容",
-            ReferenceReviewDecision.ManualCalibration => "需人工校准",
-            _ => "未复核"
-        };
-
-    public string ReviewStatusText => RegistrationLabel;
-
-    public bool IsReviewed => Candidate.ReviewDecision != ReferenceReviewDecision.Pending;
-
-    public bool IsPending => Candidate.ReviewDecision == ReferenceReviewDecision.Pending;
-
-    public bool IsNeedsManualCalibration =>
-        Candidate.ReviewDecision == ReferenceReviewDecision.ManualCalibration;
-
-    public string StatusTone => !Candidate.IsProduct
-        ? "Fixed"
-        : Candidate.ReviewDecision switch
-        {
-            ReferenceReviewDecision.Accepted => "Completed",
-            ReferenceReviewDecision.ManualCalibration => "Blocked",
-            ReferenceReviewDecision.Pending => "Pending",
-            _ => "Fixed"
-        };
-
-    public bool IsSelected => _isSelected;
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    public void SetSelected(bool selected)
-    {
-        if (_isSelected == selected)
-        {
-            return;
-        }
-
-        _isSelected = selected;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
-    }
-}
-
-public sealed record ReferenceLearningPhotoViewModel(
-    string AssetId,
-    string DisplayName,
-    string Meta,
-    string? SourcePath,
-    ImageSource? PreviewSource)
-{
-    public ReferenceLearningPhotoViewModel(ReferencePhotoFingerprint photo, string? sourcePath)
-        : this(
-            photo.AssetId,
-            photo.FileName,
-            $"{photo.Width} × {photo.Height} · {photo.MimeType[6..].ToUpperInvariant()}",
-            sourcePath,
-            LoadPreview(sourcePath))
-    {
-    }
-
-
-    private static BitmapImage? LoadPreview(string? sourcePath)
-    {
-        return string.IsNullOrWhiteSpace(sourcePath)
-            ? null
-            : BoundedPreviewImageCache.Get(sourcePath, BoundedPreviewImageCache.DefaultMaxDimension);
     }
 }

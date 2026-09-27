@@ -46,6 +46,7 @@ internal static class AiTargetMatchPolicy
                 .ThenBy(match => match.AssetId, StringComparer.Ordinal)
                 .FirstOrDefault();
             return legacyTop is null
+                || legacyTop.EvidenceCodes.Contains(AiTargetMatchEvidence.Unsafe, StringComparer.Ordinal)
                 ? AiTargetRequirementAssessment.BusinessError
                 : legacyTop.Confidence < 0.8m
                     ? AiTargetRequirementAssessment.ReviewRequired

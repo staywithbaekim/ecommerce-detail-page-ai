@@ -9,5 +9,7 @@ public enum ContractDocumentKind
     AssetManifest,
     AiAnalysis,
     ReferenceLearning,
-    ReferenceLearningAi
+    ReferenceLearningAi,
+    AdapterTransport,
+    TemplatePackageManifestV2
 }

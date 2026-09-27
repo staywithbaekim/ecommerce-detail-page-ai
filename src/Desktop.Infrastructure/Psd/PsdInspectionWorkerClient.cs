@@ -97,8 +97,9 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         var workerRequest = new WorkerRequest(
             PsdInspectionProtocol.Version,
             request.RequestId,
-            inputPath,
-            previewPath);
+            WorkerFilePath(inputPath),
+            previewPath is null ? null : WorkerFilePath(previewPath),
+            request.IncludeRenderContentEvidence);
 
         // Convert executable path to short path format (8.3) to avoid PyInstaller
         // issues with non-ASCII characters in paths (e.g., Chinese folder names).
@@ -355,6 +356,7 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
                 EmbeddedContentAvailable = layer.SmartObject.EmbeddedContentAvailable
             })
     {
+        ContentEvidence = layer.ContentEvidence,
         PixelEvidence = layer.PixelEvidence is null
             ? new PsdLayerPixelEvidence(false, 0, 0, null)
             : new PsdLayerPixelEvidence(
@@ -451,6 +453,10 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         {
             return false;
         }
+        if (layer.ContentEvidence is { } content &&
+            new[] { content.PixelSha256, content.TextSha256, content.MaskSha256, content.VectorMaskSha256,
+                content.EffectsSha256, content.TextStyleSha256, content.AdjustmentSha256 }
+                .Any(hash => hash is not null && !IsSha256(hash))) return false;
 
         return layer.SmartObject is null ||
             (!string.IsNullOrWhiteSpace(layer.SmartObject.UniqueId) &&
@@ -534,7 +540,15 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         string SchemaVersion,
         string RequestId,
         string InputPath,
-        string? PreviewPath);
+        string? PreviewPath,
+        bool IncludeRenderContentEvidence);
+
+    // Python 3.10 on the supported machine cannot open ordinary paths past
+    // MAX_PATH. Add the Win32 extended syntax only AFTER ownership resolution;
+    // it denotes the same checked file, never a new or less restricted root.
+    private static string WorkerFilePath(string path) => OperatingSystem.IsWindows()
+        && path.Length >= 248 && Path.IsPathFullyQualified(path) && path[1] == ':'
+        ? @"\\?\" + path : path;
 
     private sealed record WorkerResponse(
         string? SchemaVersion,
@@ -599,7 +613,8 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         bool HasVectorMask,
         WorkerClippingBase? ClippingBase,
         WorkerSmartObject? SmartObject,
-        WorkerLayerPixelEvidence? PixelEvidence);
+        WorkerLayerPixelEvidence? PixelEvidence,
+        PsdLayerContentEvidence? ContentEvidence);
 
     private sealed record WorkerLayerPixelEvidence(
         bool Available,

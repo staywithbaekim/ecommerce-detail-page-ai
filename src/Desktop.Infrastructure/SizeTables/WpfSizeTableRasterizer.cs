@@ -15,6 +15,7 @@ public sealed class WpfSizeTableRasterizer(IFileStore files) : ISizeTableRasteri
     private const string ResourceRole = "deterministic_size_table";
     private const string MediaType = "image/png";
     private const string RasterizerVersion = "wpf-size-table-rasterizer/v1";
+    private static readonly SemaphoreSlim ResourceWriteGate = new(1, 1);
 
     public async Task<SizeTableRasterizedResource> RasterizeAsync(
         SizeTableRasterizationRequest request,
@@ -34,7 +35,21 @@ public sealed class WpfSizeTableRasterizer(IFileStore files) : ISizeTableRasteri
         var resourceId = ResourceId(request.Table.DataDigest, request.Style, rendered.FontSignature);
         var relativePath = $"batches/{request.Table.BatchId}/size-tables/{request.Table.StyleId}/" +
             $"{request.Table.PageId}/resources/{resourceId}.png";
-        await files.WriteAtomicallyAsync(relativePath, rendered.Content, cancellationToken).ConfigureAwait(false);
+        // Serialize check/write across rasterizer instances in the single desktop process. Historical content identities
+        // are immutable: an encoder/font discrepancy must fail closed, never replace bytes referenced by an old plan.
+        await ResourceWriteGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var existing = await files.ReadAsync(relativePath, cancellationToken).ConfigureAwait(false);
+            if (existing is not null && !existing.AsSpan().SequenceEqual(rendered.Content))
+                throw new SizeTableRuleViolationException("SIZE_TABLE_RASTER_IDENTITY_CONFLICT");
+            if (existing is null)
+                await files.WriteAtomicallyAsync(relativePath, rendered.Content, cancellationToken).ConfigureAwait(false);
+            var persisted = await files.ReadAsync(relativePath, cancellationToken).ConfigureAwait(false);
+            if (persisted is null || !persisted.AsSpan().SequenceEqual(rendered.Content))
+                throw new SizeTableRuleViolationException("SIZE_TABLE_RASTER_READBACK_MISMATCH");
+        }
+        finally { ResourceWriteGate.Release(); }
         return new SizeTableRasterizedResource(
             resourceId,
             ResourceRole,

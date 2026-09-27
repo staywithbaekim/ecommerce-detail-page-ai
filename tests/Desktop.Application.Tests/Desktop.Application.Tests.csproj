@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\docs\技术方案\schemas\render-plan-v1.valid.example.json"
+          Link="Fixtures\render-plan-v1.valid.example.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Desktop.Application\Desktop.Application.csproj" />
     <ProjectReference Include="..\..\src\Desktop.Domain\Desktop.Domain.csproj" />
     <ProjectReference Include="..\..\src\Desktop.Contracts\Desktop.Contracts.csproj" />

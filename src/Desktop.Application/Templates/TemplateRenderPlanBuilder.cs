@@ -8,7 +8,9 @@ public sealed record TemplateRenderSource(
     string ResourceId,
     string Sha256,
     long Length,
-    string MediaType = "image/jpeg");
+    string MediaType = "image/jpeg",
+    int PixelWidth = 0,
+    int PixelHeight = 0);
 
 public sealed record TemplateRenderSubjectGeometry(
     string AssetResourceId,
@@ -41,7 +43,9 @@ public sealed record TemplateRenderPlanRequest(
     string? PsdFileName,
     DateTimeOffset CreatedAt,
     IReadOnlyList<TemplateRenderSource> Sources,
-    IReadOnlyList<TemplateRenderSelection>? ConfirmedSelections = null);
+    IReadOnlyList<TemplateRenderSelection>? ConfirmedSelections = null,
+    bool RequireAbsolutePlacement = false,
+    string? OutputVariantId = null);
 
 public interface ITemplateRenderPlanBuilder
 {
@@ -54,6 +58,7 @@ public interface ITemplateRenderPlanBuilder
 
 public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : ITemplateRenderPlanBuilder
 {
+    private static readonly string[] BaseCapabilities = ["psd-layer-path/psd-bottom-to-top", "smart-object/replace", "output/jpeg-srgb-icc"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
@@ -109,7 +114,7 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 ?? binding.SelectionRequirement.Criteria.SingleOrDefault(criterion =>
                     string.Equals(criterion.Key, "asset_id", StringComparison.Ordinal))?.Value
                 ?? throw new TemplateRuleViolationException("TPL_CALIBRATION_INCOMPLETE");
-            if (!sources.ContainsKey(assetId))
+            if (!sources.TryGetValue(assetId, out var source))
             {
                 throw new TemplateRuleViolationException("TPL_RENDER_SOURCE_MISSING");
             }
@@ -124,6 +129,20 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 throw new TemplateRuleViolationException("TPL_RENDER_GEOMETRY_INVALID");
             }
 
+            var layout = new Dictionary<string, object>
+            {
+                ["intent"] = binding.LayoutIntent.Intent,
+                ["scale"] = binding.LayoutIntent.Scale,
+                ["offset"] = new { x = binding.LayoutIntent.OffsetX, y = binding.LayoutIntent.OffsetY },
+                ["safe_bounds"] = new
+                {
+                    left = binding.LayoutIntent.SafeBounds.Left, top = binding.LayoutIntent.SafeBounds.Top,
+                    right = binding.LayoutIntent.SafeBounds.Right, bottom = binding.LayoutIntent.SafeBounds.Bottom
+                }
+            };
+            if (request.RequireAbsolutePlacement)
+                layout["placement"] = TemplatePlacementResolver.Resolve(binding, source,
+                    explicitSelection?.SubjectGeometry, templateResource.Inspection);
             return new
             {
                 frame_id = binding.FrameId,
@@ -152,19 +171,7 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                     expected_layer_id = layer.ExpectedLayerId
                 }).ToArray(),
                 asset_resource_id = assetId,
-                layout = new
-                {
-                    intent = binding.LayoutIntent.Intent,
-                    scale = binding.LayoutIntent.Scale,
-                    offset = new { x = binding.LayoutIntent.OffsetX, y = binding.LayoutIntent.OffsetY },
-                    safe_bounds = new
-                    {
-                        left = binding.LayoutIntent.SafeBounds.Left,
-                        top = binding.LayoutIntent.SafeBounds.Top,
-                        right = binding.LayoutIntent.SafeBounds.Right,
-                        bottom = binding.LayoutIntent.SafeBounds.Bottom
-                    }
-                }
+                layout
             };
         }).ToArray();
 
@@ -179,12 +186,8 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             template_revision_id = revision.RevisionId,
             plan_digest = digest,
             created_at = request.CreatedAt,
-            required_capabilities = new[]
-            {
-                "psd-layer-path/psd-bottom-to-top",
-                "smart-object/replace",
-                "output/jpeg-srgb-icc"
-            },
+            required_capabilities = BaseCapabilities
+                .Concat(request.RequireAbsolutePlacement ? new[] { RenderPlanPlacementMigration.Capability } : []).ToArray(),
             resources = new object[]
             {
                 new
@@ -246,6 +249,7 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             JsonOptions);
         var digest = RenderPlanDigest.Compute(digestPreimage);
         var json = JsonSerializer.Serialize(CreateDocument(digest), JsonOptions);
+        json = RenderPlanVariantIdentity.AddToNewPlan(json, request.OutputVariantId);
         var validation = validator.Validate(json);
         if (!validation.IsValid)
         {

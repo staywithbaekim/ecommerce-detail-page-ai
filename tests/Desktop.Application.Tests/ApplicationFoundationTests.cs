@@ -20,6 +20,28 @@ public sealed class ApplicationFoundationTests
         Assert.Equal("Paused", projection.Status);
         Assert.True(projection.CanResume);
         Assert.Equal(3, projection.LastSequence);
+        Assert.Equal(store.Events.Max(item => item.OccurredAt), projection.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task ReadOnlyProjectionUsesLatestRecordedTimeAndEmptyHistoryHasNoInventedTimestamp()
+    {
+        var store = new MemoryTaskStore();
+        var coordinator = new TaskCoordinator(store);
+        var empty = await coordinator.GetProjectionAsync("task-01");
+        Assert.Equal("None", empty.Status);
+        Assert.Null(empty.UpdatedAt);
+        await coordinator.RecordAsync(Event(1, TaskEventType.TaskCreated) with
+        { OccurredAt = DateTimeOffset.UnixEpoch.AddHours(2) });
+        await coordinator.RecordAsync(Event(2, TaskEventType.ReadyToRender) with
+        { OccurredAt = DateTimeOffset.UnixEpoch.AddHours(1) });
+        var before = store.Events.ToArray();
+
+        var projection = await coordinator.GetProjectionAsync("task-01");
+
+        Assert.Equal(DateTimeOffset.UnixEpoch.AddHours(2), projection.UpdatedAt);
+        Assert.Equal("ReadyToRender", projection.Status);
+        Assert.Equal(before, store.Events);
     }
 
     [Fact]

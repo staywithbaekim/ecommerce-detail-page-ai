@@ -7,6 +7,28 @@ namespace Desktop.Application.Tests;
 public sealed class TemplateCalibrationServiceTests
 {
     [Fact]
+    public async Task NewBindingConvertsNestedWorkerPathAndKeepsCanvasPosition()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var group = TemplateGroup.Create("group_cal", "Calibration", now);
+        var revision = TemplateRevision.CreateDraft("revision_cal", group.GroupId, 1, now,
+            [TemplatePage.Create("page_cal", "revision_cal", 0, "位置校准", TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct, null, true, "resource_cal")]);
+        var templates = new MemoryTemplateRepository(group, revision);
+        var resource = Resource();
+        var layer = resource.Inspection.Layers[0] with { Path = [0, 2], Bounds = new(123, 234, 423, 634) };
+        resource = resource with { Inspection = resource.Inspection with { Layers = [layer] } };
+        var service = new TemplateCalibrationService(templates, new MemoryResourceRepository(resource));
+        var session = new TemplateDraftSession(group.GroupId, group.Name, revision.RevisionId, 1, new HashSet<string>());
+        var view = await service.LoadAsync(session, "page_cal", CancellationToken.None);
+        await service.BindAssetAsync(session, "page_cal", Assert.Single(view.Frames).FrameId, "asset_front", CancellationToken.None);
+        var binding = Assert.Single((await templates.GetRevisionAsync(revision.RevisionId, CancellationToken.None))!.FrameBindings);
+        Assert.Equal<int>([1, 3], binding.LayerPath.Segments);
+        Assert.Equal(TemplateRect.Create(123, 234, 423, 634), binding.LayoutIntent.SafeBounds);
+        Assert.Equal([0, 2], layer.Path);
+    }
+
+    [Fact]
     public async Task RegisteredSmartObjectCanBindMoveUndoAndRedo()
     {
         var now = new DateTimeOffset(2026, 8, 28, 2, 0, 0, TimeSpan.Zero);
@@ -391,6 +413,56 @@ public sealed class TemplateCalibrationServiceTests
         Assert.True(frame.HasPersistedBinding);
         Assert.False(Assert.Single(cleared.Frames).HasPersistedBinding);
         Assert.Empty(persisted!.FrameBindings);
+    }
+
+    [Fact]
+    public async Task RuleOnlyRequirementCanBeSavedAndReloadedWithoutInventingAnAsset()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var group = TemplateGroup.Create("group_rule_only", "Rule only", now);
+        var revision = TemplateRevision.CreateDraft(
+            "revision_rule_only",
+            group.GroupId,
+            1,
+            now,
+            [TemplatePage.Create(
+                "page_rule_only",
+                "revision_rule_only",
+                0,
+                "PSD 结构页",
+                TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct,
+                null,
+                enabled: true,
+                "resource_cal")]);
+        var templates = new MemoryTemplateRepository(group, revision);
+        var service = new TemplateCalibrationService(
+            templates,
+            new MemoryResourceRepository(Resource()));
+        var session = new TemplateDraftSession(
+            group.GroupId,
+            group.Name,
+            revision.RevisionId,
+            revision.RevisionNo,
+            new HashSet<string>(StringComparer.Ordinal));
+
+        var initial = await service.LoadAsync(session, "page_rule_only", CancellationToken.None);
+        var frameId = Assert.Single(initial.Frames).FrameId;
+        var saved = await service.SetSelectionRequirementAsync(
+            session,
+            "page_rule_only",
+            frameId,
+            "商品正面图，主体完整且保持同一颜色版本。",
+            CancellationToken.None);
+        var reloaded = await service.LoadAsync(session, "page_rule_only", CancellationToken.None);
+        var binding = Assert.Single((await templates.GetRevisionAsync(
+            revision.RevisionId,
+            CancellationToken.None))!.FrameBindings);
+
+        Assert.False(saved.Frames.Single().IsRegistered);
+        Assert.True(saved.Frames.Single().HasPersistedBinding);
+        Assert.Equal("商品正面图，主体完整且保持同一颜色版本。", reloaded.Frames.Single().SelectionRequirement);
+        Assert.DoesNotContain(binding.SelectionRequirement.Criteria, item => item.Key == "asset_id");
     }
 
     [Fact]

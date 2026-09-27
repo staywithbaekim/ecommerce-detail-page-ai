@@ -10,6 +10,7 @@ namespace Desktop.Infrastructure.Templates;
 
 public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = null) : ITemplatePackagePort
 {
+    private readonly IJsonContractValidator _contracts = contracts ?? new JsonSchemaContractValidator();
     private const int BufferSize = 64 * 1024;
     private const int MaxEntryCount = 1024;
     private const long MaxManifestLength = 4 * 1024 * 1024;
@@ -172,14 +173,14 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         }
 
         TemplatePackageManifest? manifest;
+        string manifestJson;
         try
         {
             await using var manifestStream = manifestEntry.Open();
             await using var bounded = new LengthLimitedReadStream(manifestStream, MaxManifestLength);
-            manifest = await JsonSerializer.DeserializeAsync<TemplatePackageManifest>(
-                bounded,
-                JsonOptions,
-                cancellationToken).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(bounded, cancellationToken: cancellationToken).ConfigureAwait(false);
+            manifestJson = document.RootElement.GetRawText();
+            manifest = JsonSerializer.Deserialize<TemplatePackageManifest>(manifestJson, JsonOptions);
         }
         catch (JsonException exception)
         {
@@ -188,7 +189,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
 
         var value = manifest ?? throw new InvalidDataException("TPL_PACKAGE_INVALID");
         ValidateManifest(value);
-        ValidateSchema(value);
+        ValidateSchema(value, manifestJson);
         var allowedPaths = value.Entries.Select(entry => entry.RelativePath)
             .Append("manifest.json")
             .ToHashSet(StringComparer.Ordinal);
@@ -232,7 +233,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         {
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
         }
-        if (!string.Equals(manifest.Protocol, TemplatePackageProtocol.Version, StringComparison.Ordinal))
+        if (manifest.Protocol is not (TemplatePackageProtocol.Version or TemplatePackageProtocol.CurrentVersion))
         {
             throw new InvalidDataException("TPL_PACKAGE_VERSION_UNSUPPORTED");
         }
@@ -286,6 +287,13 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
             var entry = entriesById[page.ResourceLogicalId];
             var inspection = page.Inspection;
             if (!IsValidInspection(inspection, entry)
+                || manifest.Protocol == TemplatePackageProtocol.Version && page.SizeTableCalibration is not null
+                || manifest.Protocol == TemplatePackageProtocol.Version && inspection!.Layers.Any(layer =>
+                    layer.Path.Any(segment => segment < 1)
+                    || layer.ClippingBase is { } basis && basis.Path.Any(segment => segment < 1))
+                || page.SizeTableCalibration is { } calibration
+                    && (page.ContentType != TemplatePageContentTypeOption.DynamicSizeTable
+                        || inspection is null || !Desktop.Application.SizeTables.SizeTableCalibrationResolver.Matches(calibration, inspection))
                 || (page.Enabled
                     && page.ContentType == TemplatePageContentTypeOption.NormalComposition
                     && (page.Bindings is null || page.Bindings.Count == 0)))
@@ -293,15 +301,18 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                 throw new InvalidDataException("TPL_PACKAGE_INVALID");
             }
 
+            var touchedLayers = new HashSet<int>();
             foreach (var binding in page.Bindings ?? [])
             {
                 var layer = inspection!.Layers.SingleOrDefault(candidate =>
                     candidate.LayerId == binding.LayerId
-                    && candidate.Path.SequenceEqual(binding.LayerPath));
+                    && (manifest.Protocol == TemplatePackageProtocol.Version ? candidate.Path
+                        : candidate.Path.Select(segment => checked(segment + 1))).SequenceEqual(binding.LayerPath));
                 if (!frameIds.Add(binding.FrameId)
                     || !string.Equals(binding.PageId, page.PageId, StringComparison.Ordinal)
                     || !string.Equals(binding.StructureSignature, inspection.StructureSignature, StringComparison.OrdinalIgnoreCase)
                     || layer?.SmartObject is null
+                    || !touchedLayers.Add(layer.LayerId)
                     || !string.Equals(binding.LayerName, layer.Name, StringComparison.Ordinal)
                     || binding.Visible != layer.Visible
                     || binding.Clipping != layer.Clipping
@@ -315,6 +326,27 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                         StringComparison.Ordinal)))
                 {
                     throw new InvalidDataException("TPL_PACKAGE_INVALID");
+                }
+
+                if (binding.SupersededLayers is not null && manifest.Protocol == TemplatePackageProtocol.Version)
+                    throw new InvalidDataException("TPL_PACKAGE_INVALID");
+                foreach (var old in binding.SupersededLayers ?? [])
+                {
+                    if (old?.LayerPath is not { Count: > 0 and <= 64 }
+                        || old.LayerPath.Any(segment => segment <= 0)
+                        || old.ExpectedKind != "smartObject" || !old.ExpectedVisible
+                        || old.ExpectedLayerId is <= 0)
+                        throw new InvalidDataException("TPL_PACKAGE_INVALID");
+                    // Package v2 bindings are one based; stored inspection paths are zero based.
+                    var oldLayer = inspection.Layers.SingleOrDefault(candidate =>
+                        candidate.Path.Select(segment => segment + 1).SequenceEqual(old.LayerPath));
+                    if (oldLayer is null || !touchedLayers.Add(oldLayer.LayerId)
+                        || oldLayer.IsGroup || oldLayer.SmartObject?.Kind != "data"
+                        || !oldLayer.Kind.Replace("_", "", StringComparison.Ordinal).Equals("smartobject", StringComparison.OrdinalIgnoreCase)
+                        || !oldLayer.Visible || !oldLayer.EffectiveVisible
+                        || oldLayer.Clipping != old.ExpectedClipping
+                        || old.ExpectedLayerId is { } expectedId && oldLayer.LayerId != expectedId)
+                        throw new InvalidDataException("TPL_PACKAGE_INVALID");
                 }
             }
         }
@@ -351,13 +383,16 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
 
         return inspection.Layers.All(layer =>
             layer.Path is { Count: > 0 }
+            && layer.Path.All(segment => segment is >= 0 and < int.MaxValue)
             && layer.LayerId > 0
             && !string.IsNullOrWhiteSpace(layer.Name)
             && !string.IsNullOrWhiteSpace(layer.Kind)
             && layer.Opacity is >= 0 and <= 255
             && layer.FillOpacity is >= 0 and <= 255
             && !string.IsNullOrWhiteSpace(layer.BlendMode)
-            && layer.Bounds is not null);
+            && layer.Bounds is not null)
+            && inspection.Layers.Select(layer => layer.LayerId).Distinct().Count() == inspection.Layers.Count
+            && inspection.Layers.Select(layer => string.Join('/', layer.Path)).Distinct(StringComparer.Ordinal).Count() == inspection.Layers.Count;
     }
 
     private static bool IsSafeRelativePath(string path) =>
@@ -429,16 +464,12 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         }
     }
 
-    private void ValidateSchema(TemplatePackageManifest manifest)
+    private void ValidateSchema(TemplatePackageManifest manifest, string? originalJson = null)
     {
-        if (contracts is null)
-        {
-            return;
-        }
-
-        var result = contracts.Validate(
-            ContractDocumentKind.TemplatePackageManifest,
-            JsonSerializer.Serialize(manifest, JsonOptions));
+        var result = _contracts.Validate(
+            manifest.Protocol == TemplatePackageProtocol.CurrentVersion
+                ? ContractDocumentKind.TemplatePackageManifestV2 : ContractDocumentKind.TemplatePackageManifest,
+            originalJson ?? JsonSerializer.Serialize(manifest, JsonOptions));
         if (!result.IsValid)
         {
             throw new InvalidDataException("TPL_PACKAGE_INVALID");

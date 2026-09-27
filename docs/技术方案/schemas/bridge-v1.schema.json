@@ -10,7 +10,8 @@
     "protocol_version": { "const": "ps-bridge/v1" },
     "envelope_kind": { "enum": ["handshake_request", "handshake_response", "request", "response", "event"] },
     "body": {
-      "oneOf": [
+      "$comment": "Rejected handshake and ordinary responses can share a shape. envelope_kind allOf below selects the exact schema; the union must not reject this overlap.",
+      "anyOf": [
         { "$ref": "#/$defs/handshakeRequest" },
         { "$ref": "#/$defs/handshakeResponse" },
         { "$ref": "#/$defs/requestEnvelope" },

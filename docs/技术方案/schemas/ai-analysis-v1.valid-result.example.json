@@ -16,7 +16,13 @@
     "dimension": "商品版本",
     "value": "示例版本一",
     "asset_ids": ["asset_0001"],
-    "is_primary_suggestion": true
+    "is_primary_suggestion": true,
+    "variant_role": "primary",
+    "coverage_requirement_ids": ["frame_0001"],
+    "missing_requirement_ids": [],
+    "is_complete": true,
+    "evidence_codes": ["same_product_color", "required_view_covered"],
+    "primary_suggestion_evidence": "该颜色覆盖本模板所需视角，且完整度最高。"
   }],
   "subject_geometry": [{
     "asset_id": "asset_0001",

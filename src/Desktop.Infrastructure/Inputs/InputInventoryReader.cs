@@ -4,15 +4,18 @@ namespace Desktop.Infrastructure.Inputs;
 
 internal static class InputInventoryReader
 {
-    public static InputDirectoryInventory ReadApprovedLevels(string inputRoot)
+    public static InputDirectoryInventory ReadApprovedLevels(string inputRoot, IReadOnlySet<string>? ownedDirectories = null)
     {
         var root = InputPathGuard.ValidateRoot(inputRoot);
+        if (ownedDirectories?.Contains(root) == true)
+            throw new UnauthorizedAccessException("INPUT_OWNED_OUTPUT_DIRECTORY_REJECTED");
         var rootFiles = EnumerateDirectFiles(root, root);
         var directories = new List<FirstLevelDirectoryInventory>();
         foreach (var directoryPath in Directory.EnumerateDirectories(root)
                      .Order(StringComparer.OrdinalIgnoreCase))
         {
             var approvedDirectory = InputPathGuard.ValidateDirectChild(root, directoryPath, directory: true);
+            if (ownedDirectories?.Contains(approvedDirectory) == true) continue;
             var name = Path.GetFileName(approvedDirectory);
             directories.Add(FirstLevelDirectoryInventory.Create(
                 name,

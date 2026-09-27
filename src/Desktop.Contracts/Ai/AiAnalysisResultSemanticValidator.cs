@@ -75,7 +75,20 @@ public static class AiAnalysisResultSemanticValidator
                 || !HasLength(group.Value, 1, 200)
                 || group.AssetIds is null
                 || group.AssetIds.Count is < 1 or > 20_000
-                || !AreUniqueIds(group.AssetIds))
+                || !AreUniqueIds(group.AssetIds)
+                || group.CoverageRequirementIds is not null
+                    && (group.CoverageRequirementIds.Count > 20_000
+                        || !AreUniqueIds(group.CoverageRequirementIds))
+                || group.MissingRequirementIds is not null
+                    && (group.MissingRequirementIds.Count > 20_000
+                        || !AreUniqueIds(group.MissingRequirementIds))
+                || group.EvidenceCodes is not null
+                    && (group.EvidenceCodes.Count is < 1 or > 32
+                        || !AreUniqueIds(group.EvidenceCodes))
+                || group.VariantRole is not null
+                    && !HasLength(group.VariantRole, 1, 64)
+                || group.PrimarySuggestionEvidence is not null
+                    && !HasLength(group.PrimarySuggestionEvidence, 1, 500))
             {
                 throw Invalid(StructureInvalidCode);
             }

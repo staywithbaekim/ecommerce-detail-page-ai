@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Desktop.Application.Psd;
 
 public static class PsdInspectionProtocol
@@ -15,7 +17,8 @@ public interface IPsdInspectionPort
 public sealed record PsdInspectionRequest(
     string RequestId,
     string InternalPsdRelativePath,
-    string? PreviewRelativePath = null);
+    string? PreviewRelativePath = null,
+    bool IncludeRenderContentEvidence = false);
 
 public sealed record PsdInspectionResult(
     PsdInspectionDocument? Inspection,
@@ -94,6 +97,17 @@ public sealed record PsdLayerInspection(
     /// </summary>
     public PsdLayerPixelEvidence PixelEvidence { get; init; } =
         new(false, 0, 0, null);
+    // Optional inspection evidence; old workers remain readable but cannot validate render output.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PsdLayerContentEvidence? ContentEvidence { get; init; }
+}
+
+public sealed record PsdLayerContentEvidence(bool Available, string? PixelSha256, string? TextSha256,
+    string? MaskSha256, string? VectorMaskSha256, string? EffectsSha256)
+{
+    // Older workers remain readable but cannot authorize editable text preservation.
+    public string? TextStyleSha256 { get; init; }
+    public string? AdjustmentSha256 { get; init; }
 }
 
 public sealed record PsdLayerBounds(

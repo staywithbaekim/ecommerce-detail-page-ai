@@ -107,9 +107,24 @@ public static class AiAnalysisInputProjector
                 binding.SelectionRequirement.Description,
                 binding.LayoutIntent.Intent,
                 true))
-            .ToArray();
+            .ToList();
 
-        if (requirements.Length == 0)
+        // A dynamic size-table page has no PSD image frame by design, but it
+        // still needs an explicit source role in the AI request so the model
+        // can identify a market size chart from the style's full photo set.
+        foreach (var page in templateRevision.Pages
+                     .Where(page => selectedPages.Contains(page.PageId)
+                         && page.ContentType == TemplatePageContentType.DynamicSizeTable)
+                     .OrderBy(page => page.PageId, StringComparer.Ordinal))
+        {
+            requirements.Add(new AiRequirementInputV1(
+                SizeTableRequirementId(page.PageId),
+                "清晰可读的市场尺码表图片",
+                "完整表格区域可读，保留表头、尺码和数值",
+                true));
+        }
+
+        if (requirements.Count == 0)
         {
             throw new InvalidOperationException("AI_INPUT_SELECTION_REQUIREMENTS_MISSING");
         }
@@ -137,6 +152,12 @@ public static class AiAnalysisInputProjector
             requirements);
     }
 
+    public static string SizeTableRequirementId(string pageId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pageId);
+        return $"size_table_{pageId}";
+    }
+
     private static string ComputeRequirementsDigest(
         IReadOnlyList<AiRequirementInputV1> requirements,
         IReadOnlyList<FrameBinding> bindings)
@@ -154,7 +175,7 @@ public static class AiAnalysisInputProjector
             requirement.SelectionRequirement,
             requirement.LayoutIntent,
             requirement.Required,
-            Criteria = bindingCriteria[requirement.RequirementId]
+            Criteria = bindingCriteria.GetValueOrDefault(requirement.RequirementId, [])
         }).ToArray());
         return "sha256:" + Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();

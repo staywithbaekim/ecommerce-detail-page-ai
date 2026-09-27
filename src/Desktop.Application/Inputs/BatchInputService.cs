@@ -30,7 +30,8 @@ public sealed class BatchInputService(
             command.TemplateSnapshot,
             command.SelectionMode,
             command.IncludeEditablePsd,
-            timeProvider.GetUtcNow());
+            timeProvider.GetUtcNow(),
+            command.OutputSelection);
         await batches.SaveAsync(draft, cancellationToken).ConfigureAwait(false);
         return draft;
     }
@@ -88,7 +89,8 @@ public sealed class BatchInputService(
                 snapshot,
                 command.SelectionMode,
                 command.IncludeEditablePsd,
-                now);
+                now,
+                command.OutputSelection);
             await batches.SaveAsync(reconfigured, cancellationToken).ConfigureAwait(false);
             return reconfigured;
         }
@@ -100,7 +102,8 @@ public sealed class BatchInputService(
                 command.OutputRoot,
                 snapshot,
                 command.SelectionMode,
-                command.IncludeEditablePsd),
+                command.IncludeEditablePsd,
+                command.OutputSelection),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -117,6 +120,7 @@ public sealed class BatchInputService(
             .Order(StringComparer.Ordinal);
         return string.Equals(existing.InputRoot, command.InputRoot, StringComparison.Ordinal)
             && string.Equals(existing.OutputRoot, command.OutputRoot, StringComparison.Ordinal)
+            && existing.OutputSelection == command.OutputSelection
             && existing.SelectionMode == command.SelectionMode
             && existing.IncludeEditablePsd == command.IncludeEditablePsd
             && string.Equals(existing.TemplateSnapshot.RevisionId, revisionId, StringComparison.Ordinal)

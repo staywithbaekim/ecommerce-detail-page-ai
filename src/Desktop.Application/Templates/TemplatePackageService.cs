@@ -63,7 +63,7 @@ public sealed class TemplatePackageService(
 
         await packages.ExportAsync(
             new TemplatePackageManifest(
-                TemplatePackageProtocol.Version,
+                TemplatePackageProtocol.CurrentVersion,
                 group.Name,
                 revision.RevisionNo,
                 revision.RevisionId,
@@ -127,7 +127,18 @@ public sealed class TemplatePackageService(
                     packageEntry.Length,
                     packageEntry.Sha256.ToLowerInvariant(),
                     packagePage.Inspection!.StructureSignature.ToLowerInvariant(),
-                    packagePage.Inspection,
+                    manifest.Protocol == TemplatePackageProtocol.Version
+                        ? packagePage.Inspection with
+                        {
+                            // The frozen v1 package uses one-based inspection paths.
+                            // Translate at import into the worker's zero-based representation.
+                            Layers = packagePage.Inspection.Layers.Select(layer => layer with
+                            {
+                                Path = layer.Path.Select(segment => segment - 1).ToArray(),
+                                ClippingBase = layer.ClippingBase is { } basis ? basis with
+                                { Path = basis.Path.Select(segment => segment - 1).ToArray() } : null
+                            }).ToArray()
+                        } : packagePage.Inspection,
                     timeProvider.GetUtcNow());
                 await resources.SaveImportedAsync(NewId("import"), resource, cancellationToken).ConfigureAwait(false);
             }
@@ -144,7 +155,7 @@ public sealed class TemplatePackageService(
                     ToDomain(packagePage.GenerationMode),
                     packagePage.VariantCapacity,
                     packagePage.Enabled,
-                    resourceId));
+                    resourceId, sizeTableCalibration: packagePage.SizeTableCalibration));
             }
 
             foreach (var packagePage in manifest.Pages)
@@ -212,8 +223,18 @@ public sealed class TemplatePackageService(
             page.VariantCapacity,
             page.Enabled,
             resource.ResourceId,
-            resource.Inspection with { Preview = null },
-            bindings.Select(ToPackageBinding).ToArray());
+            resource.Inspection with
+            {
+                Preview = null,
+                // Worker inspections use bare SHA-256; the package contract uses a digest.
+                // Keep the stored evidence unchanged and let the package validator reject malformed values.
+                StructureSignature = resource.Inspection.StructureSignature is { Length: 64 } signature
+                    && signature.All(Uri.IsHexDigit) ? "sha256:" + signature.ToLowerInvariant()
+                    : resource.Inspection.StructureSignature,
+                // Output validation evidence is not a portable template rule or part of template-package/v1.
+                Layers = resource.Inspection.Layers.Select(layer => layer with { ContentEvidence = null }).ToArray()
+            },
+            bindings.Select(ToPackageBinding).ToArray(), page.SizeTableCalibration);
 
     private static TemplatePackageFrameBinding ToPackageBinding(FrameBinding binding) => new(
         binding.FrameId,
@@ -238,7 +259,10 @@ public sealed class TemplatePackageService(
         binding.LayoutIntent.SafeBounds.Left,
         binding.LayoutIntent.SafeBounds.Top,
         binding.LayoutIntent.SafeBounds.Right,
-        binding.LayoutIntent.SafeBounds.Bottom);
+        binding.LayoutIntent.SafeBounds.Bottom,
+        binding.SupersededLayers.IsEmpty ? null : binding.SupersededLayers.Select(layer =>
+            new TemplatePackageSupersededLayer(layer.LayerPath.Segments, "smartObject",
+                layer.ExpectedVisible, layer.ExpectedClipping, layer.ExpectedLayerId)).ToArray());
 
     private static FrameBinding ToDomain(TemplatePackageFrameBinding binding, string pageId) =>
         FrameBinding.Create(
@@ -255,7 +279,8 @@ public sealed class TemplatePackageService(
                 binding.Opacity,
                 binding.BlendMode,
                 LayerStructureSignature.Create(binding.StructureSignature)),
-            [],
+            (binding.SupersededLayers ?? []).Select(layer => SupersededLayerEvidence.Create(
+                LayerPath.Create(layer.LayerPath), layer.ExpectedClipping, layer.ExpectedLayerId)),
             SelectionRequirement.Create(
                 binding.SelectionDescription,
                 binding.SelectionCriteria.Select(item => SelectionCriterion.Create(item.Key, item.Value))),

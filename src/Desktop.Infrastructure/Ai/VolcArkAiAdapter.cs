@@ -1826,7 +1826,8 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                 + AiAnalysisResultReferenceNormalizer.ModelConfigVersionAlias
                 + "，analysis_kind=" + request.AnalysisKind
                 + "。analysis_kind=product_joint_understanding 时把全部图片视为同一目标款候选整组，按每个开放式 selection_requirement 独立排序；同一 asset_id 可以出现在多个图片框的排名中。每个 requirement_matches 的 evidence_codes 必须且只能包含一个匹配类别：精确符合用 exact，不影响用途的安全相近替代用 safe_similar，存在实质差异用 material_difference，错款、错变体、无关素材或不安全候选用 unsafe。不要根据文件名推断语义；没有安全候选时不得编造匹配。analysis_kind=selected_asset_geometry 时只分析请求中的已确认单图并返回其主体几何；analysis_kind=size_table_extraction 时只从清晰可读的尺码来源提取原文行列，缺失、低清或冲突时返回 warning 且 size_table_candidate=null，禁止猜值"
-                + "。每个 image_alias 标签只对应紧随其后的那一张图片。结果中的 request_id、model_config_version、requirement_id、asset_id、asset_ids 和 source_asset_id 必须原样使用本请求给出的短别名；不得猜测、改写或输出源系统真实标识"
+                + "。每个 image_alias 标签只对应紧随其后的那一张图片。结果中的 request_id、model_config_version、requirement_id、coverage_requirement_ids、missing_requirement_ids、asset_id、asset_ids 和 source_asset_id 必须原样使用本请求给出的短别名；不得猜测、改写或输出源系统真实标识"
+                + "。除 requirement_matches 外，请把真实商品配色分成 variant_groups：只按商品本身颜色分组，不要按背景色、光线或后期色调分组；dimension 固定填 color，value 填你观察到的颜色名称。每组返回 coverage_requirement_ids、missing_requirement_ids、is_complete、evidence_codes；完整性按所需视角/姿态/部位是否覆盖判断，不能按照片数量判断。只有一个颜色完整时将其 is_primary_suggestion=true；多个颜色完整时只能建议一个主色并填写 primary_suggestion_evidence，后续生成会保持该主色一致；所有颜色都不完整时建议覆盖最多的一组并明确缺项。variant_role 用 primary 或 secondary 表达相对角色，不能把红、蓝、黄等示例颜色写死为产品规则。"
                 + "。按以下品类中立图片框需求选择素材并给出证据，不要输出 Markdown 或隐藏推理："
                 + requirementSummary
         });
@@ -1881,7 +1882,7 @@ public sealed class VolcArkAiAdapter : IAiServicePort
                 ["provider_request_ref"] = new JsonObject { ["type"] = new JsonArray("string", "null") },
                 ["model_config_version"] = new JsonObject { ["const"] = AiAnalysisResultReferenceNormalizer.ModelConfigVersionAlias },
                 ["requirement_matches"] = ArraySchema(MatchSchema(requirementAliases, assetAliases), 40000),
-                ["variant_groups"] = ArraySchema(VariantSchema(assetAliases), 200),
+                ["variant_groups"] = ArraySchema(VariantSchema(assetAliases, requirementAliases), 200),
                 ["subject_geometry"] = ArraySchema(GeometrySchema(assetAliases), 20000),
                 ["size_table_candidate"] = new JsonObject { ["anyOf"] = new JsonArray(SizeTableSchema(assetAliases), new JsonObject { ["type"] = "null" }) },
                 ["warnings"] = ArraySchema(WarningSchema(), 200),
@@ -1930,7 +1931,9 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             }
         };
 
-    private static JsonObject VariantSchema(IReadOnlyList<string> assetAliases) => new()
+    private static JsonObject VariantSchema(
+        IReadOnlyList<string> assetAliases,
+        IReadOnlyList<string>? requirementAliases = null) => new()
     {
         ["type"] = "object",
         ["additionalProperties"] = false,
@@ -1941,7 +1944,13 @@ public sealed class VolcArkAiAdapter : IAiServicePort
             ["dimension"] = StringSchema(1, 200),
             ["value"] = StringSchema(1, 200),
             ["asset_ids"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 20000, ["uniqueItems"] = true, ["items"] = AllowedReferenceSchema(assetAliases) },
-            ["is_primary_suggestion"] = new JsonObject { ["type"] = "boolean" }
+            ["is_primary_suggestion"] = new JsonObject { ["type"] = "boolean" },
+            ["variant_role"] = new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("primary", "secondary") }, new JsonObject { ["type"] = "null" }) },
+            ["coverage_requirement_ids"] = new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "array", ["uniqueItems"] = true, ["maxItems"] = 20000, ["items"] = AllowedReferenceSchema(requirementAliases ?? []) }, new JsonObject { ["type"] = "null" }) },
+            ["missing_requirement_ids"] = new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "array", ["uniqueItems"] = true, ["maxItems"] = 20000, ["items"] = AllowedReferenceSchema(requirementAliases ?? []) }, new JsonObject { ["type"] = "null" }) },
+            ["is_complete"] = new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "boolean" }, new JsonObject { ["type"] = "null" }) },
+            ["evidence_codes"] = new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 32, ["uniqueItems"] = true, ["items"] = IdSchema() }, new JsonObject { ["type"] = "null" }) },
+            ["primary_suggestion_evidence"] = new JsonObject { ["anyOf"] = new JsonArray(StringSchema(1, 500), new JsonObject { ["type"] = "null" }) }
         }
     };
 

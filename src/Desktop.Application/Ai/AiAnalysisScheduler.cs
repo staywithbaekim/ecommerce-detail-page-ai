@@ -2,6 +2,7 @@ using Desktop.Contracts.Ai;
 using Desktop.Domain.Ai;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.Templates;
+using System.Collections.Immutable;
 
 namespace Desktop.Application.Ai;
 
@@ -32,6 +33,7 @@ public sealed class AiAnalysisScheduler : IDisposable
     private readonly HashSet<string> _automaticRefillSuppressedItems = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AiAnalysisRequestV1> _historicalRequests = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _terminalErrors = new(StringComparer.Ordinal);
+    private ImmutableHashSet<string> _recoveredInFlightRequestIds = ImmutableHashSet<string>.Empty;
     private readonly SemaphoreSlim _statePersistenceGate = new(1, 1);
     private readonly SemaphoreSlim _processingGate;
     private readonly SemaphoreSlim _copyPreparationGate;
@@ -147,6 +149,19 @@ public sealed class AiAnalysisScheduler : IDisposable
     /// must never use <see cref="PendingCount"/> as a dequeue count.
     /// </summary>
     public int ReadyCount => _queue.Count;
+
+    internal bool IsIdleForRepair => PendingCount == 0 && ReadyCount == 0
+        && _processingGate.CurrentCount == _queueOptions.MaxConcurrentRequests
+        && _copyPreparationGate.CurrentCount == _queueOptions.MaxConcurrentCopyPreparations;
+
+    /// <summary>Requests retained after restart whose provider outcome cannot be inferred.</summary>
+    public ImmutableHashSet<string> RecoveredInFlightRequestIds
+    {
+        get
+        {
+            lock (_pendingGate) return _recoveredInFlightRequestIds;
+        }
+    }
 
     /// <summary>Durable terminal or unknown provider error codes keyed by request id.</summary>
     public IReadOnlyDictionary<string, string> TerminalErrorsSnapshot
@@ -645,6 +660,7 @@ public sealed class AiAnalysisScheduler : IDisposable
             _automaticRefillSuppressedItems.Clear();
             _historicalRequests.Clear();
             _terminalErrors.Clear();
+            _recoveredInFlightRequestIds = ImmutableHashSet<string>.Empty;
             foreach (var historical in state.HistoricalRequests ?? [])
             {
                 _historicalRequests[historical.RequestId] = historical;
@@ -682,6 +698,14 @@ public sealed class AiAnalysisScheduler : IDisposable
                 }
 
                 continue;
+            }
+
+            if (ledger.Status is "Uploading" or "Analysing")
+            {
+                // Preserve the ledger and checkpoint evidence. The projection
+                // must distinguish this abandoned work from a live provider call.
+                lock (_pendingGate)
+                    _recoveredInFlightRequestIds = _recoveredInFlightRequestIds.Add(item.Request.RequestId);
             }
 
             if (state.ControlState is AiAnalysisSchedulingControlState.CancelRequested

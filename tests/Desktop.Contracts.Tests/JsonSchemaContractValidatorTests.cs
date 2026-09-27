@@ -278,6 +278,27 @@ public sealed class JsonSchemaContractValidatorTests
     }
 
     [Fact]
+    public void TemplatePackageV2UsesZeroBasedInspectionWithoutWeakeningV1OrBindingPaths()
+    {
+        var package = JsonNode.Parse(LoadValidTemplatePackageManifest())!.AsObject();
+        package["protocol"] = "template-package/v2";
+        package["pages"]![0]!["inspection"]!["layers"]![0]!["path"]![0] = 0;
+        Assert.True(_validator.Validate(ContractDocumentKind.TemplatePackageManifestV2, package.ToJsonString()).IsValid);
+        Assert.False(_validator.Validate(ContractDocumentKind.TemplatePackageManifest, package.ToJsonString()).IsValid);
+        package["pages"]![0]!["inspection"]!["layers"]![0]!["path"]![0] = -1;
+        Assert.False(_validator.Validate(ContractDocumentKind.TemplatePackageManifestV2, package.ToJsonString()).IsValid);
+        package["pages"]![0]!["inspection"]!["layers"]![0]!["path"]![0] = 0;
+        package["pages"]![0]!["bindings"]![0]!["layerPath"]![0] = 0;
+        Assert.False(_validator.Validate(ContractDocumentKind.TemplatePackageManifestV2, package.ToJsonString()).IsValid);
+        package["pages"]![0]!["bindings"]![0]!["layerPath"]![0] = 1;
+        package["pages"]![0]!["inspection"]!["layers"]![0]!["contentEvidence"] = null;
+        Assert.False(_validator.Validate(ContractDocumentKind.TemplatePackageManifestV2, package.ToJsonString()).IsValid);
+        var legacy = JsonNode.Parse(LoadValidTemplatePackageManifest())!.AsObject();
+        legacy["pages"]![0]!["sizeTableCalibration"] = null;
+        Assert.False(_validator.Validate(ContractDocumentKind.TemplatePackageManifest, legacy.ToJsonString()).IsValid);
+    }
+
+    [Fact]
     public void AssetManifestSchemaAcceptsUnicodeRelativeSources()
     {
         var result = _validator.Validate(ContractDocumentKind.AssetManifest, LoadValidAssetManifest());

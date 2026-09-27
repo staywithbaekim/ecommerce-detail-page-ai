@@ -5,6 +5,7 @@ using Desktop.Application.Psd;
 public static class TemplatePackageProtocol
 {
     public const string Version = "template-package/v1";
+    public const string CurrentVersion = "template-package/v2";
 }
 
 public sealed record TemplatePackageEntry(
@@ -32,7 +33,9 @@ public sealed record TemplatePackagePage(
     bool Enabled,
     string ResourceLogicalId,
     PsdInspectionDocument? Inspection,
-    IReadOnlyList<TemplatePackageFrameBinding>? Bindings = null);
+    IReadOnlyList<TemplatePackageFrameBinding>? Bindings = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Desktop.Domain.Templates.SizeTableTemplateCalibration? SizeTableCalibration = null);
 
 public sealed record TemplatePackageFrameBinding(
     string FrameId,
@@ -56,7 +59,16 @@ public sealed record TemplatePackageFrameBinding(
     double SafeLeft,
     double SafeTop,
     double SafeRight,
-    double SafeBottom);
+    double SafeBottom,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<TemplatePackageSupersededLayer>? SupersededLayers = null);
+
+public sealed record TemplatePackageSupersededLayer(
+    IReadOnlyList<int> LayerPath,
+    string ExpectedKind,
+    bool ExpectedVisible,
+    bool ExpectedClipping,
+    int? ExpectedLayerId);
 
 public sealed record TemplatePackageSelectionCriterion(string Key, string Value);
 

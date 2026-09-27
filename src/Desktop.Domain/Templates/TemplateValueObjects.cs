@@ -89,6 +89,22 @@ public static partial class TemplateValueRules
         return value.Trim();
     }
 
+    public static string? OptionalText(string? value, int maxLength, string code)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (value.Length > maxLength)
+        {
+            throw new TemplateRuleViolationException(code);
+        }
+
+        var normalized = value.Trim();
+        return normalized.Length == 0 ? null : normalized;
+    }
+
     public static string Digest(string value, string code)
     {
         var normalized = RequiredText(value, 128, code);
@@ -216,7 +232,7 @@ public sealed record ExpectedLayerEvidence
         LayerStructureSignature structureSignature)
     {
         ArgumentNullException.ThrowIfNull(structureSignature);
-        if (layerId <= 0 || !visible)
+        if (layerId <= 0 || !visible || string.IsNullOrWhiteSpace(nameBefore) || nameBefore.Length > 256)
         {
             throw new TemplateRuleViolationException("TPL_FRAME_STRUCTURE_EVIDENCE_INCOMPLETE");
         }
@@ -224,7 +240,8 @@ public sealed record ExpectedLayerEvidence
         return new ExpectedLayerEvidence(
             layerId,
             TemplateLayerKind.SmartObject,
-            TemplateValueRules.RequiredText(nameBefore, 256, "TPL_FRAME_STRUCTURE_EVIDENCE_INCOMPLETE"),
+            // This is exact PSD identity evidence, not a user-facing label.
+            nameBefore,
             visible,
             clipping,
             userMask,

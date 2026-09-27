@@ -31,6 +31,20 @@ public sealed class AiAnalysisInputProjectorTests
     }
 
     [Fact]
+    public void DynamicSizeTablePageAddsSourceRequirementWithoutAProductFrame()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var revision = DynamicSizeTableRevision(now);
+        var request = AiAnalysisInputProjector.Project(
+            ReadyBatch(revision, now), revision, "style_01", Options());
+
+        var requirement = Assert.Single(request.Requirements);
+        Assert.Equal(AiAnalysisInputProjector.SizeTableRequirementId("page_01"), requirement.RequirementId);
+        Assert.Equal("清晰可读的市场尺码表图片", requirement.SelectionRequirement);
+        Assert.Empty(revision.FrameBindings);
+    }
+
+    [Fact]
     public void RequirementsDigestIsIndependentFromManifestAndChangesWithRequirements()
     {
         var now = DateTimeOffset.UtcNow;
@@ -186,6 +200,17 @@ public sealed class AiAnalysisInputProjectorTests
 
     private static TemplateRevision CommittedRevision(DateTimeOffset now)
         => RevisionWithRequirement("选择完整商品图", "主体完整", now);
+
+    private static TemplateRevision DynamicSizeTableRevision(DateTimeOffset now)
+    {
+        var page = TemplatePage.Create(
+            "page_01", "revision_01", 0, "尺码表", TemplatePageContentType.DynamicSizeTable,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource_01");
+        return TemplateRevision.Restore(
+            "revision_01", "group_01", 1, TemplateRevisionState.Committed,
+            "templates/revision_01/manifest.json", "sha256:" + new string('d', 64), now,
+            [page], []);
+    }
 
     private static TemplateRevision RevisionWithRequirement(string selection, string layout, DateTimeOffset now)
     {

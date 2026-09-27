@@ -20,7 +20,8 @@ public sealed record BatchDraft
         string? manifestDigest,
         ScanBlockReason? blockReason,
         DateTimeOffset createdAt,
-        DateTimeOffset updatedAt)
+        DateTimeOffset updatedAt,
+        BatchOutputSelection? outputSelection = null)
     {
         BatchId = batchId;
         ScanStatus = scanStatus;
@@ -37,6 +38,7 @@ public sealed record BatchDraft
         BlockReason = blockReason;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
+        OutputSelection = outputSelection;
     }
 
     public string BatchId { get; }
@@ -48,6 +50,8 @@ public sealed record BatchDraft
     public string InputRoot { get; }
 
     public string OutputRoot { get; }
+
+    public BatchOutputSelection? OutputSelection { get; }
 
     public BatchTemplateSnapshot TemplateSnapshot { get; }
 
@@ -76,7 +80,8 @@ public sealed record BatchDraft
         BatchTemplateSnapshot templateSnapshot,
         BatchSelectionMode selectionMode,
         bool includeEditablePsd,
-        DateTimeOffset createdAt)
+        DateTimeOffset createdAt,
+        BatchOutputSelection? outputSelection = null)
     {
         ArgumentNullException.ThrowIfNull(templateSnapshot);
         var validBatchId = InputValueRules.Identifier(batchId, "INPUT_BATCH_ID_INVALID");
@@ -100,7 +105,8 @@ public sealed record BatchDraft
             null,
             null,
             createdAt,
-            createdAt);
+            createdAt,
+            outputSelection);
     }
 
     public static BatchDraft Restore(
@@ -118,7 +124,8 @@ public sealed record BatchDraft
         string? manifestDigest,
         ScanBlockReason? blockReason,
         DateTimeOffset createdAt,
-        DateTimeOffset updatedAt)
+        DateTimeOffset updatedAt,
+        BatchOutputSelection? outputSelection = null)
     {
         var draft = new BatchDraft(
             InputValueRules.Identifier(batchId, "INPUT_BATCH_ID_INVALID"),
@@ -135,7 +142,8 @@ public sealed record BatchDraft
             manifestDigest,
             blockReason,
             createdAt,
-            updatedAt);
+            updatedAt,
+            outputSelection);
         draft.ValidateState();
         return draft;
     }
@@ -162,7 +170,8 @@ public sealed record BatchDraft
             null,
             null,
             CreatedAt,
-            EnsureTimestamp(updatedAt));
+            EnsureTimestamp(updatedAt),
+            OutputSelection);
     }
 
     public BatchDraft Reconfigure(
@@ -171,7 +180,8 @@ public sealed record BatchDraft
         BatchTemplateSnapshot templateSnapshot,
         BatchSelectionMode selectionMode,
         bool includeEditablePsd,
-        DateTimeOffset updatedAt)
+        DateTimeOffset updatedAt,
+        BatchOutputSelection? outputSelection = null)
     {
         ArgumentNullException.ThrowIfNull(templateSnapshot);
         if (ScanStatus is not (BatchScanStatus.Draft or BatchScanStatus.ScanBlocked))
@@ -199,7 +209,8 @@ public sealed record BatchDraft
             null,
             null,
             CreatedAt,
-            EnsureTimestamp(updatedAt));
+            EnsureTimestamp(updatedAt),
+            outputSelection);
     }
 
     public BatchDraft Block(
@@ -228,7 +239,8 @@ public sealed record BatchDraft
             null,
             reason,
             CreatedAt,
-            EnsureTimestamp(updatedAt));
+            EnsureTimestamp(updatedAt),
+            OutputSelection);
     }
 
     public BatchDraft MarkScanReady(
@@ -259,7 +271,8 @@ public sealed record BatchDraft
             InputValueRules.ManifestDigest(manifestDigest),
             null,
             CreatedAt,
-            EnsureTimestamp(updatedAt));
+            EnsureTimestamp(updatedAt),
+            OutputSelection);
         ready.ValidateState();
         return ready;
     }

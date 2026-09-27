@@ -693,8 +693,11 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         });
     }
 
-    [Fact]
-    public async Task SelectedAssetGeometryRefinementClosesOnlyTheCurrentSelectionAndRenderPlan()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SelectedAssetGeometryRefinementClosesOnlyTheCurrentSelectionAndRenderPlan(
+        bool delayRequestProjection)
     {
         using var directory = new TestDirectory();
         var now = new DateTimeOffset(2026, 8, 31, 10, 50, 0, TimeSpan.Zero);
@@ -721,7 +724,8 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         var plans = new AiRenderPlanFactory(
             new TemplateRenderPlanBuilder(new RenderPlanValidator(new JsonSchemaContractValidator())),
             new UnavailablePhotoshopAvailabilityPort());
-        using var workflow = Workflow(store, resultStore, provider, store, plans);
+        var schedulingReads = new DelayedSchedulingReads(store) { DelayReads = delayRequestProjection };
+        using var workflow = Workflow(store, resultStore, provider, store, plans, schedulingReads: schedulingReads);
 
         await workflow.GrantUploadConsentAsync(CancellationToken.None);
         _ = await workflow.StartAsync(fixture.Batch.BatchId, CancellationToken.None);
@@ -734,12 +738,20 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.False(awaitingPage.RequiresManualConfiguration);
         Assert.Contains(awaitingPage.WarningTexts, text => text.Contains("主体边界", StringComparison.Ordinal));
 
+        schedulingReads.DelayReads = false;
         _ = await workflow.AnalyzeSelectedAssetAsync(
             fixture.Batch.BatchId,
             "style_render_integration",
             "asset_front",
             includeSizeTableSource: false,
             CancellationToken.None);
+        var state = await store.LoadSchedulingStateAsync(
+            $"render-integration-{fixture.Batch.BatchId}", CancellationToken.None);
+        var parent = Assert.Single(state!.HistoricalRequests!,
+            request => request.AnalysisKind == AiAnalysisKind.ProductJointUnderstanding);
+        var child = Assert.Single(state.HistoricalRequests!,
+            request => request.AnalysisKind == AiAnalysisKind.SelectedAssetGeometry);
+        Assert.Equal(parent.ConsentId, child.ConsentId);
         var ready = await WaitForProjectionAsync(
             workflow,
             fixture.Batch.BatchId,
@@ -754,8 +766,10 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.Equal(2, provider.Calls);
     }
 
-    [Fact]
-    public async Task TrustedSizeCandidatePersistsRasterizesAndBuildsDynamicRenderPlan()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TrustedSizeCandidatePersistsRasterizesAndBuildsDynamicRenderPlan(bool inheritedTemplate)
     {
         using var directory = new TestDirectory();
         var now = new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero);
@@ -763,7 +777,16 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         var options = new DesktopDataOptions(directory.Path);
         await using var store = new SqliteDesktopStore(options);
         await store.InitializeAsync();
-        await SeedAsync(store, fixture, "import_size_vertical");
+        await store.SaveGroupAsync(fixture.Group, default);
+        await store.CommitRevisionAsync(fixture.Revision, null, default);
+        await store.SaveImportedAsync("import_size_vertical", fixture.Resource, default);
+        if (inheritedTemplate)
+        {
+            var previous = fixture.Revision;
+            fixture = IncrementFixture(fixture, now);
+            await store.CommitRevisionAsync(fixture.Revision, previous.RevisionId, default);
+        }
+        await store.SaveAsync(fixture.Batch, default);
 
         var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
         var resultStore = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
@@ -780,7 +803,7 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         var plans = new AiRenderPlanFactory(
             new TemplateRenderPlanBuilder(validator),
             new UnavailablePhotoshopAvailabilityPort(),
-            new SizeTableRenderPlanBuilder(validator));
+            new SizeTableRenderPlanBuilder(validator), store);
         using var sizeRepository = new SizeTableFileRepository(files);
         var rasterizer = new WpfSizeTableRasterizer(files);
         using var workflow = Workflow(
@@ -799,15 +822,21 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
             fixture.Batch.BatchId,
             projection => projection.Styles.SelectMany(style => style.Pages)
                 .Any(page => page.PageId == "page_render_size"
-                    && page.Status == AiPageUiStatus.ReviewRequired));
+                    && page.Status == AiPageUiStatus.Ready));
         var preparation = await workflow.PrepareRenderingAsync(
             fixture.Batch.BatchId,
             CancellationToken.None);
 
         Assert.Equal(AiRenderPreparationStatus.WaitingForPhotoshop, preparation.Status);
-        Assert.All(preparation.Pages, page => Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status));
+        Assert.Equal(1, preparation.ReadyPageCount);
+        Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender,
+            preparation.Pages.Single(page => page.PageId == "page_render_integration").Status);
         var sizePage = preparation.Pages.Single(page => page.PageId == "page_render_size");
+        Assert.Equal(AiRenderPagePreparationStatus.BusinessBlocked, sizePage.Status);
+        Assert.Equal("SIZE_TABLE_RENDER_TARGET_REQUIRED", sizePage.ReasonCode);
+        Assert.True(sizePage.HasPlan);
         using var document = JsonDocument.Parse(sizePage.RenderPlanJson!);
+        Assert.Empty(document.RootElement.GetProperty("targets").EnumerateArray());
         Assert.Equal("dynamic_size_table", document.RootElement.GetProperty("document")
             .GetProperty("content_type").GetString());
         Assert.Equal("/", document.RootElement.GetProperty("size_table")
@@ -927,11 +956,13 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
             fixture.Batch.BatchId,
             candidate => candidate.Styles.SelectMany(style => style.Pages)
                 .Any(page => page.PageId == "page_render_size"
-                    && page.Status == AiPageUiStatus.ReviewRequired));
+                    && page.Status == AiPageUiStatus.Ready));
         var uniquePages = Assert.Single(unique.Styles).Pages.ToDictionary(page => page.PageId);
         Assert.Equal(AiPageUiStatus.Ready, uniquePages["page_render_integration"].Status);
-        Assert.True(uniquePages["page_render_size"].RequiresManualConfiguration);
-        Assert.Contains(uniquePages["page_render_size"].WarningTexts, text => text.Contains("SIZE-01", StringComparison.Ordinal));
+        Assert.False(uniquePages["page_render_size"].RequiresManualConfiguration);
+        Assert.True(unique.CanEnterGeneration);
+        Assert.Equal(2, unique.ExecutablePageCount);
+        Assert.Empty(uniquePages["page_render_size"].WarningTexts);
 
         _ = await workflow.AnalyzeSelectedAssetAsync(
             fixture.Batch.BatchId,
@@ -1260,12 +1291,13 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         ISizeTableRepository? sizeTables = null,
         ISizeTableRasterizer? sizeTableRasterizer = null,
         IAiAnalysisCheckpointPort? checkpointPort = null,
-        IAiAnalysisCopyPreparer? copyPreparer = null) => new(
+        IAiAnalysisCopyPreparer? copyPreparer = null,
+        IAiAnalysisSchedulingStateStore? schedulingReads = null) => new(
             store,
             store,
             store,
             results,
-            store,
+            schedulingReads ?? store,
             new TestSchedulerFactory(store, results, provider, checkpointPort, copyPreparer),
             store,
             templateResources,
@@ -1390,7 +1422,7 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                     LayerStructureSignature.Create("sha256:" + new string('a', 64))),
                 [],
                 Requirement("模特站姿背身全身，商品轮廓完整", learnedRequirements),
-                LayoutIntent.Create("back_complete", 1.2, 10, 20, TemplateRect.Create(10, 20, 700, 1000))));
+                LayoutIntent.Create("subject_complete", 1.2, 10, 20, TemplateRect.Create(10, 20, 700, 1000))));
         }
         if (includeDynamicSizePage)
         {
@@ -1432,7 +1464,7 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                 128,
                 new string('b', 64),
                 1000,
-                1200,
+                1600,
                 SourceImageFormat.Jpeg,
                 "image/jpeg")
         };
@@ -1489,7 +1521,73 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
                 null,
                 []),
             now);
+        // Learned production placement needs the exact registered transform; use feasible
+        // portrait source geometry so these workflow tests do not accidentally request an impossible crop.
+        var inspectedLayers = bindings.Select(item =>
+        {
+            var bounds = item.LayoutIntent.SafeBounds;
+            return new PsdLayerInspection(item.LayerPath.Segments.Select(value => value - 1).ToArray(),
+                item.ExpectedLayer.LayerId, item.ExpectedLayer.NameBefore, "smartobject", false, true, true, false,
+                255, 255, "norm", new((int)bounds.Left, (int)bounds.Top, (int)bounds.Right, (int)bounds.Bottom), false, false,
+                null, new("uuid", "reference.jpg", "data", "jpg", "jpg", 64, false,
+                    [bounds.Left, bounds.Top, bounds.Right, bounds.Top, bounds.Right, bounds.Bottom, bounds.Left, bounds.Bottom]));
+        }).ToArray();
+        resource = resource with { Inspection = resource.Inspection with
+            { Layers = inspectedLayers, LayerCount = inspectedLayers.Length, SmartObjectCount = inspectedLayers.Length } };
         return new IntegrationFixture(group, revision, batch, resource);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("draft")]
+    [InlineData("foreign-group")]
+    [InlineData("later-revision")]
+    [InlineData("unreferenced")]
+    public async Task InheritedTemplateRequiresEarlierCommittedOriginWithSameGroupAndResource(string mutation)
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 9, 21, 6, 0, 0, TimeSpan.Zero);
+        var original = Fixture(directory.Path, now);
+        var fixture = IncrementFixture(original, now);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await store.SaveGroupAsync(original.Group, default);
+        var origin = original.Revision;
+        if (mutation != "missing")
+        {
+            var group = mutation == "foreign-group" ? "group_foreign" : origin.GroupId;
+            if (group != origin.GroupId) await store.SaveGroupAsync(TemplateGroup.Create(group, "foreign", now), default);
+            var draft = TemplateRevision.CreateDraft(origin.RevisionId, group,
+                mutation == "later-revision" ? 3 : 1, now,
+                [TemplatePage.Create("origin_page", origin.RevisionId, 0, "origin",
+                    TemplatePageContentType.DynamicSizeTable, TemplateGenerationMode.OncePerProduct, null, true,
+                    mutation == "unreferenced" ? "other_resource" : fixture.Resource.ResourceId)]);
+            if (mutation == "draft") await store.SaveDraftRevisionAsync(draft, default);
+            else await store.CommitRevisionAsync(Commit(draft), null, default);
+        }
+        var validator = new RenderPlanValidator(new JsonSchemaContractValidator());
+        var factory = new AiRenderPlanFactory(new TemplateRenderPlanBuilder(validator),
+            new UnavailablePhotoshopAvailabilityPort(), templates: store);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => factory.PrepareAsync(new(
+            fixture.Batch, fixture.Revision, [fixture.Resource],
+            [new("style_render_integration", [])], now), default));
+        Assert.Equal("AI_RENDER_TEMPLATE_RESOURCE_OWNERSHIP_MISMATCH", error.Message);
+        Assert.False(Directory.Exists(fixture.Batch.OutputRoot));
+    }
+
+    private static IntegrationFixture IncrementFixture(IntegrationFixture fixture, DateTimeOffset now)
+    {
+        var revision = Commit(TemplateRevision.CreateIncrement("revision_increment", fixture.Revision,
+            fixture.Revision.RevisionNo + 1, now, []));
+        var previous = fixture.Batch;
+        var snapshot = BatchTemplateSnapshot.Create("snapshot_increment", previous.BatchId, revision,
+            revision.Pages.Select(page => page.PageId), now);
+        var batch = BatchDraft.Create(previous.BatchId, previous.InputRoot, previous.OutputRoot, snapshot,
+                previous.SelectionMode, previous.IncludeEditablePsd, now)
+            .BeginScanning(now.AddTicks(1))
+            .MarkScanReady(previous.InputType!.Value, previous.Styles, previous.Assets,
+                previous.ManifestReference!, previous.ManifestDigest!, now.AddTicks(2));
+        return fixture with { Revision = revision, Batch = batch };
     }
 
     private static IntegrationFixture TwoStyleFixture(string root, DateTimeOffset now)
@@ -1590,6 +1688,24 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         TemplateRevision Revision,
         BatchDraft Batch,
         ImportedTemplateResource Resource);
+
+    // Models a projection using a scheduler snapshot read before admission,
+    // while its later result read already sees the completed first layer.
+    private sealed class DelayedSchedulingReads(IAiAnalysisSchedulingStateStore inner)
+        : IAiAnalysisSchedulingStateStore
+    {
+        public bool DelayReads { get; set; }
+
+        public Task<AiAnalysisSchedulingState?> LoadSchedulingStateAsync(
+            string stateKey, CancellationToken cancellationToken) =>
+            DelayReads
+                ? Task.FromResult<AiAnalysisSchedulingState?>(null)
+                : inner.LoadSchedulingStateAsync(stateKey, cancellationToken);
+
+        public Task SaveSchedulingStateAsync(
+            string stateKey, AiAnalysisSchedulingState state, CancellationToken cancellationToken) =>
+            inner.SaveSchedulingStateAsync(stateKey, state, cancellationToken);
+    }
 
     private sealed class TestSchedulerFactory(
         SqliteDesktopStore store,

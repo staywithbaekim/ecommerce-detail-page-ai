@@ -1,0 +1,55 @@
+<Window x:Class="Desktop.App.SizeTableCalibrationDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="尺码表区域与样式" Width="880" Height="760" MinWidth="720" MinHeight="600"
+        WindowStartupLocation="CenterOwner" Background="#FFF6F7F9">
+    <Grid Margin="20">
+        <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="设置新表格区域，并选择需要隐藏的旧表图层。" FontSize="18" FontWeight="SemiBold" />
+                <TextBlock Text="表格会完整等比缩放并居中放入所选区域；保留模板标题和其他图层。" Margin="0,8,0,16" TextWrapping="Wrap" />
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Image x:Name="TemplatePreview" Height="280" Stretch="Uniform" Margin="0,0,16,0" />
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Text="将新表格放在此图层上方" />
+                        <ComboBox x:Name="Anchor" DisplayMemberPath="Label" Margin="0,6,0,12" AutomationProperties.AutomationId="SizeCalibrationAnchor" />
+                        <TextBlock Text="隐藏的旧表图层（可多选，保留原内容）" />
+                        <ListBox x:Name="HiddenLayers" DisplayMemberPath="Label" SelectionMode="Multiple" Height="210" Margin="0,6,0,0"
+                                 AutomationProperties.AutomationId="SizeCalibrationHiddenLayers" />
+                    </StackPanel>
+                </Grid>
+                <TextBlock Text="表格区域（模板像素）" FontWeight="SemiBold" Margin="0,18,0,8" />
+                <UniformGrid Columns="4">
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="左" /><TextBox x:Name="LeftInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="上" /><TextBox x:Name="TopInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="右" /><TextBox x:Name="RightInput" /></StackPanel>
+                    <StackPanel><TextBlock Text="下" /><TextBox x:Name="BottomInput" /></StackPanel>
+                </UniformGrid>
+                <TextBlock Text="表格样式" FontWeight="SemiBold" Margin="0,18,0,8" />
+                <UniformGrid Columns="3">
+                    <StackPanel Margin="0,0,8,8"><TextBlock Text="字体" /><TextBox x:Name="FontInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,8"><TextBlock Text="字号（栅格像素）" /><TextBox x:Name="FontSizeInput" /></StackPanel>
+                    <StackPanel Margin="0,0,0,8"><TextBlock Text="表格栅格宽度" /><TextBox x:Name="WidthInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,8"><TextBlock Text="最小行高" /><TextBox x:Name="RowHeightInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,8"><TextBlock Text="左右留白" /><TextBox x:Name="HorizontalPaddingInput" /></StackPanel>
+                    <StackPanel Margin="0,0,0,8"><TextBlock Text="上下留白" /><TextBox x:Name="VerticalPaddingInput" /></StackPanel>
+                </UniformGrid>
+                <TextBlock Text="颜色（#AARRGGBB）" Margin="0,6,0,8" />
+                <UniformGrid Columns="4">
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="背景" /><TextBox x:Name="BackgroundInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="表头" /><TextBox x:Name="HeaderInput" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="文字" /><TextBox x:Name="TextColorInput" /></StackPanel>
+                    <StackPanel><TextBlock Text="线条" /><TextBox x:Name="GridColorInput" /></StackPanel>
+                </UniformGrid>
+                <TextBlock Text="新表格图层名称" Margin="0,12,0,6" /><TextBox x:Name="LayerNameInput" />
+                <TextBlock x:Name="ValidationMessage" Foreground="#FFB42318" TextWrapping="Wrap" Margin="0,12,0,0" />
+            </StackPanel>
+        </ScrollViewer>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="取消" IsCancel="True" MinWidth="80" Margin="0,0,12,0" />
+            <Button Content="保存到模板草稿" Click="Save_Click" MinWidth="140" AutomationProperties.AutomationId="SaveSizeCalibration" />
+        </StackPanel>
+    </Grid>
+</Window>

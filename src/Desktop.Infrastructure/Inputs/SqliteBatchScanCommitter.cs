@@ -16,6 +16,8 @@ public sealed class SqliteBatchScanCommitter(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.ScanningDraft.OutputSelection is not null && journals is null)
+            throw new InvalidOperationException("INPUT_OUTPUT_SELECTION_JOURNAL_REQUIRED");
         if (request.ScanningDraft.ScanStatus != BatchScanStatus.Scanning
             || !string.Equals(request.Manifest.BatchId, request.ScanningDraft.BatchId, StringComparison.Ordinal))
         {

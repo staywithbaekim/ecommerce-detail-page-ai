@@ -389,6 +389,115 @@ public sealed partial class SqliteDesktopStore
 
             CREATE INDEX IF NOT EXISTS IX_ai_upload_consent_events_scope_time
                 ON ai_upload_consent_events(scope, occurred_at);
+            """),
+        new(13, "desktop-v13-template-canvas-page-state-001", """
+            ALTER TABLE template_pages ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+            ALTER TABLE template_pages ADD COLUMN canvas_x REAL NOT NULL DEFAULT 0;
+            ALTER TABLE template_pages ADD COLUMN canvas_y REAL NOT NULL DEFAULT 0;
+            """),
+        new(14, "desktop-v14-size-table-template-calibration-001", """
+            ALTER TABLE template_pages ADD COLUMN size_table_calibration_json TEXT NULL;
+            """),
+        new(15, "desktop-v15-render-page-variant-attempt-checkpoints-001", """
+            CREATE TABLE render_page_checkpoints (
+                task_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                page_id TEXT NOT NULL,
+                output_variant_id TEXT NOT NULL DEFAULT '',
+                stage TEXT NOT NULL CHECK(stage = 'render_output'),
+                attempt INTEGER NOT NULL CHECK(attempt > 0),
+                plan_digest TEXT NOT NULL UNIQUE,
+                bridge_execution_id TEXT NOT NULL,
+                output_commit_state TEXT NOT NULL CHECK(output_commit_state IN ('Verified','Committed')),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(task_id, style_id, page_id, output_variant_id, attempt),
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+            );
+            INSERT INTO render_page_checkpoints(task_id,style_id,page_id,stage,attempt,plan_digest,
+                bridge_execution_id,output_commit_state,updated_at)
+            SELECT task_id,style_id,page_id,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at
+                FROM checkpoints WHERE stage='render_output';
+            """),
+        new(16, "desktop-v16-render-batch-intent-journal-001", """
+            CREATE TABLE render_batch_journals (
+                batch_id TEXT NOT NULL,
+                revision INTEGER NOT NULL CHECK(revision > 0),
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                PRIMARY KEY(batch_id, revision)
+            );
+            """),
+        new(17, "desktop-v17-render-page-regeneration-origin-001", """
+            CREATE TABLE render_batch_attempt_origins (
+                batch_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL CHECK(page_index > 0),
+                birth_revision INTEGER NOT NULL CHECK(birth_revision > 1),
+                event_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY(batch_id, page_index),
+                FOREIGN KEY(batch_id, birth_revision) REFERENCES render_batch_journals(batch_id, revision),
+                FOREIGN KEY(event_id) REFERENCES task_events(event_id)
+            );
+            """),
+        new(18, "desktop-v18-size-page-repair-request-001", """
+            CREATE TABLE render_page_repairs (
+                batch_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL CHECK(page_index > 0),
+                birth_revision INTEGER NOT NULL CHECK(birth_revision > 1),
+                request_digest TEXT NOT NULL,
+                PRIMARY KEY(batch_id, request_id),
+                UNIQUE(batch_id, page_index),
+                FOREIGN KEY(batch_id, page_index) REFERENCES render_batch_attempt_origins(batch_id, page_index),
+                FOREIGN KEY(batch_id, birth_revision) REFERENCES render_batch_journals(batch_id, revision)
+            );
+            """),
+        new(19, "desktop-v19-input-output-selection-001", """
+            CREATE TABLE input_output_selections (
+                batch_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL CHECK(mode IN ('UnifiedDirectory', 'StyleSourceDirectories')),
+                unified_root TEXT NULL,
+                CHECK((mode = 'UnifiedDirectory' AND unified_root IS NOT NULL AND length(unified_root) > 0)
+                    OR (mode = 'StyleSourceDirectories' AND unified_root IS NULL)),
+                FOREIGN KEY(batch_id) REFERENCES input_batches(batch_id) ON DELETE CASCADE
+            );
+            """),
+        new(20, "desktop-v20-render-output-registration-001", """
+            CREATE TABLE render_output_registrations (
+                batch_id TEXT PRIMARY KEY,
+                render_revision INTEGER NOT NULL CHECK(render_revision = 1),
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                FOREIGN KEY(batch_id) REFERENCES input_batches(batch_id),
+                FOREIGN KEY(batch_id, render_revision) REFERENCES render_batch_journals(batch_id, revision)
+            );
+            CREATE TABLE render_output_stages (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id),
+                FOREIGN KEY(batch_id) REFERENCES render_output_registrations(batch_id)
+            );
+            """),
+        new(21, "desktop-v21-render-output-publication-001", """
+            CREATE TABLE render_output_publications (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('Copying','Verified','Committed')),
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id),
+                FOREIGN KEY(batch_id, style_id) REFERENCES render_output_stages(batch_id, style_id)
+            );
+            CREATE TABLE render_output_publication_files (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id, file_name),
+                FOREIGN KEY(batch_id, style_id) REFERENCES render_output_publications(batch_id, style_id)
+            );
             """)
     ];
 
@@ -437,8 +546,16 @@ public sealed partial class SqliteDesktopStore
                 throw new InvalidOperationException("DESKTOP_MIGRATION_SEQUENCE_INVALID");
             }
 
-            await using (var command = connection.CreateCommand())
+            if (migration.Version == 13)
             {
+                await EnsureTemplateCanvasColumnsAsync(
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = migration.Sql;
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -458,6 +575,43 @@ public sealed partial class SqliteDesktopStore
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureTemplateCanvasColumnsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.Transaction = transaction;
+            pragma.CommandText = "PRAGMA table_info(template_pages);";
+            await using var reader = await pragma.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                existing.Add(reader.GetString(1));
+            }
+        }
+
+        foreach (var definition in new[]
+        {
+            (Name: "notes", Sql: "ALTER TABLE template_pages ADD COLUMN notes TEXT NOT NULL DEFAULT '';"),
+            (Name: "canvas_x", Sql: "ALTER TABLE template_pages ADD COLUMN canvas_x REAL NOT NULL DEFAULT 0;"),
+            (Name: "canvas_y", Sql: "ALTER TABLE template_pages ADD COLUMN canvas_y REAL NOT NULL DEFAULT 0;")
+        })
+        {
+            if (existing.Contains(definition.Name))
+            {
+                continue;
+            }
+
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = definition.Sql;
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            existing.Add(definition.Name);
+        }
     }
 
     private static async Task<Dictionary<int, string>> ReadAppliedMigrationsAsync(

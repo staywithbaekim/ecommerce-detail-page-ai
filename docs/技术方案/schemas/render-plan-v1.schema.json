@@ -66,6 +66,90 @@
     {
       "if": {
         "properties": {
+          "required_capabilities": {
+            "contains": {
+              "const": "size-table/insert-layer-v1"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "required_capabilities": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "layout/absolute-placement-v1"
+                }
+              },
+              {
+                "not": {
+                  "contains": {
+                    "const": "size-table/calibrated-target-v1"
+                  }
+                }
+              }
+            ]
+          },
+          "document": {
+            "properties": {
+              "content_type": {
+                "const": "dynamic_size_table"
+              }
+            }
+          },
+          "targets": {
+            "maxItems": 0
+          },
+          "size_table": {
+            "type": "object",
+            "required": [
+              "insertion"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "size_table": {
+            "not": {
+              "type": "object",
+              "required": [
+                "insertion"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "required_capabilities": { "contains": { "const": "size-table/calibrated-target-v1" } } }
+      },
+      "then": {
+        "properties": {
+          "required_capabilities": { "contains": { "const": "layout/absolute-placement-v1" } },
+          "document": { "properties": { "content_type": { "const": "dynamic_size_table" } } },
+          "targets": {
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "properties": {
+                "layout": { "required": ["placement"], "properties": { "intent": { "const": "size_table_complete" } } },
+                "expected_layer": { "properties": {
+                  "clipping": { "const": false }, "user_mask": { "const": false },
+                  "vector_mask": { "const": false }, "opacity": { "const": 255 },
+                  "blend_mode": { "enum": ["norm", "normal"] }
+                } }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
           "document": {
             "properties": { "content_type": { "const": "ordinary_set" } }
           }
@@ -155,6 +239,7 @@
       "properties": {
         "template_resource_id": { "$ref": "#/$defs/id" },
         "page_id": { "$ref": "#/$defs/id" },
+        "output_variant_id": { "$ref": "#/$defs/id" },
         "content_type": { "enum": ["ordinary_set", "dynamic_size_table"] },
         "canvas": { "$ref": "#/$defs/canvas" }
       }
@@ -237,7 +322,23 @@
             "y": { "type": "number", "minimum": -100000, "maximum": 100000 }
           }
         },
-        "safe_bounds": { "$ref": "#/$defs/rect" }
+        "safe_bounds": { "$ref": "#/$defs/rect" },
+        "placement": { "$ref": "#/$defs/placement" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coordinate_space", "source_width", "source_height", "left", "top", "width", "height", "clipping"],
+      "properties": {
+        "coordinate_space": { "const": "document_pixels" },
+        "source_width": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "source_height": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "left": { "type": "number", "minimum": -100000, "maximum": 100000 },
+        "top": { "type": "number", "minimum": -100000, "maximum": 100000 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "clipping": { "const": "preserve_template_masks_and_canvas" }
       }
     },
     "target": {
@@ -286,6 +387,87 @@
         }
       }
     },
+    "sizeLayerReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer_path",
+        "layer_path_order",
+        "layer_id",
+        "kind",
+        "name",
+        "structure_signature"
+      ],
+      "properties": {
+        "layer_path": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "layer_path_order": {
+          "const": "psd_bottom_to_top"
+        },
+        "layer_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "group",
+            "pixel",
+            "type"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "structure_signature": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "sizeInsertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer_name",
+        "above_layer",
+        "hidden_layers",
+        "safe_bounds",
+        "placement"
+      ],
+      "properties": {
+        "layer_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "above_layer": {
+          "$ref": "#/$defs/sizeLayerReference"
+        },
+        "hidden_layers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/sizeLayerReference"
+          }
+        },
+        "safe_bounds": {
+          "$ref": "#/$defs/rect"
+        },
+        "placement": {
+          "$ref": "#/$defs/placement"
+        }
+      }
+    },
     "sizeTable": {
       "type": "object",
       "additionalProperties": false,
@@ -319,7 +501,8 @@
         },
         "render_resource_id": { "$ref": "#/$defs/id" },
         "structured_data_digest": { "$ref": "#/$defs/digest" },
-        "embed_as": { "const": "smart_object" }
+        "embed_as": { "const": "smart_object" },
+        "insertion": { "$ref": "#/$defs/sizeInsertion" }
       }
     },
     "jpgOutput": {

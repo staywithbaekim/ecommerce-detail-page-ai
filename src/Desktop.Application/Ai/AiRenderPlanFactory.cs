@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -29,19 +30,26 @@ public sealed record AiConfirmedRenderSelection(
     string FrameId,
     string AssetId,
     AiSubjectGeometryV1? SubjectGeometry,
-    long SelectionRevision);
+    long SelectionRevision,
+    string? VariantId = null,
+    string? SelectionRequirement = null,
+    string? SelectionConflictCode = null);
 
 public sealed record AiRenderStyleInput(
     string StyleId,
     IReadOnlyList<AiConfirmedRenderSelection> Selections,
     AiSizeTableCandidateV1? SizeTableCandidate = null,
     IReadOnlyList<AiPreparedSizeTablePage>? PreparedSizeTablePages = null,
-    string? SizeTableReasonCode = null);
+    string? SizeTableReasonCode = null,
+    IReadOnlyList<AiOutputVariantPlan>? VariantPlans = null,
+    IReadOnlyDictionary<string, AiSubjectGeometryV1>? SubjectGeometryByAsset = null);
 
 public sealed record AiPreparedSizeTablePage(
     string PageId,
     Desktop.Domain.SizeTables.SizeTable Table,
-    SizeTableRasterizedResource RasterizedResource);
+    SizeTableRasterizedResource RasterizedResource,
+    SizeTableRenderTarget? CalibratedTarget = null,
+    SizeTableInsertionTarget? CalibratedInsertion = null);
 
 public sealed record AiRenderPlanPreparationRequest(
     BatchDraft Batch,
@@ -56,7 +64,9 @@ public sealed record AiRenderPagePreparation(
     AiRenderPagePreparationStatus Status,
     string ReasonCode,
     string? RenderPlanJson = null,
-    string? PlanDigest = null)
+    string? PlanDigest = null,
+    string? OutputVariantId = null,
+    string? OutputVariantName = null)
 {
     public bool HasPlan => RenderPlanJson is not null && PlanDigest is not null;
 }
@@ -87,7 +97,8 @@ public interface IAiRenderPlanFactory
 public sealed class AiRenderPlanFactory(
     ITemplateRenderPlanBuilder planBuilder,
     IPhotoshopAvailabilityPort photoshopAvailability,
-    ISizeTableRenderPlanBuilder? sizeTablePlanBuilder = null) : IAiRenderPlanFactory
+    ISizeTableRenderPlanBuilder? sizeTablePlanBuilder = null,
+    ITemplateRepository? templates = null) : IAiRenderPlanFactory
 {
     public async Task<AiRenderPlanPreparation> PrepareAsync(
         AiRenderPlanPreparationRequest request,
@@ -165,6 +176,11 @@ public sealed class AiRenderPlanFactory(
                 ValidateSourceAsset(asset);
             }
 
+            var geometryByAsset = styleInput.SubjectGeometryByAsset;
+            if (geometryByAsset?.Any(item => item.Value is null || !styleAssetIds.Contains(item.Key)
+                || !string.Equals(item.Key, item.Value.AssetId, StringComparison.Ordinal)) == true)
+                throw new InvalidOperationException("AI_RENDER_GEOMETRY_ASSET_MISMATCH");
+
             if (styleInput.SizeTableCandidate is not null)
             {
                 ValidateSizeTableCandidate(styleInput.SizeTableCandidate, style, styleAssetIds, assets);
@@ -188,16 +204,41 @@ public sealed class AiRenderPlanFactory(
                 throw new InvalidOperationException("AI_RENDER_SELECTION_DUPLICATE");
             }
 
-            var selections = styleInput.Selections.ToDictionary(
+            var baseSelections = styleInput.Selections.ToDictionary(
                 selection => selection.FrameId,
                 StringComparer.Ordinal);
-            if (selections.Keys.Any(frameId => !selectedSnapshotFrameIds.Contains(frameId)))
+            if (baseSelections.Keys.Any(frameId => !selectedSnapshotFrameIds.Contains(frameId)))
             {
                 throw new InvalidOperationException("AI_RENDER_SELECTION_FRAME_MISMATCH");
             }
 
-            foreach (var snapshotPage in request.Batch.TemplateSnapshot.Pages.OrderBy(page => page.Order))
+            var outputVariants = styleInput.VariantPlans is { Count: > 0 }
+                ? styleInput.VariantPlans.Cast<AiOutputVariantPlan?>().ToArray()
+                : new AiOutputVariantPlan?[] { null };
+            var outputNames = CreateOutputBaseNames(request.Batch.TemplateSnapshot.Pages
+                .Select(snapshotPage => revisionPages[snapshotPage.PageId]), outputVariants);
+            foreach (var outputVariant in outputVariants)
             {
+                var variantSelections = outputVariant is null
+                    ? baseSelections
+                    : styleInput.Selections
+                        .Where(selection => outputVariant.RequirementAssets.ContainsKey(selection.FrameId))
+                        .Select(selection =>
+                        {
+                            var assetId = outputVariant.RequirementAssets[selection.FrameId];
+                            return selection with
+                            {
+                                AssetId = assetId,
+                                SubjectGeometry = geometryByAsset?.GetValueOrDefault(assetId)
+                                    ?? (string.Equals(selection.AssetId, assetId, StringComparison.Ordinal)
+                                        ? selection.SubjectGeometry : null),
+                                VariantId = outputVariant.VariantId
+                            };
+                        })
+                        .ToDictionary(selection => selection.FrameId, StringComparer.Ordinal);
+
+                foreach (var snapshotPage in request.Batch.TemplateSnapshot.Pages.OrderBy(page => page.Order))
+                {
                 if (!revisionPages.TryGetValue(snapshotPage.PageId, out var page))
                 {
                     throw new InvalidOperationException("AI_RENDER_SNAPSHOT_PAGE_MISMATCH");
@@ -208,11 +249,37 @@ public sealed class AiRenderPlanFactory(
                     throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_NOT_FOUND");
                 }
 
-                ValidateTemplateResourceOwnership(
+                await ValidateTemplateResourceOwnershipAsync(
                     templateResource,
                     request.TemplateRevision,
                     page,
-                    snapshotPage);
+                    snapshotPage,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (page.GenerationMode == TemplateGenerationMode.OncePerProduct
+                    && !ReferenceEquals(outputVariant, outputVariants[0])) continue;
+
+                var pageVariant = outputVariant is not null
+                    && page.GenerationMode != TemplateGenerationMode.OncePerProduct
+                    ? outputVariant
+                    : null;
+                var outputBaseName = outputNames[(page.PageId, pageVariant?.VariantId)];
+                var selections = pageVariant is null ? baseSelections : variantSelections;
+                var selectionConflict = snapshotPage.FrameIds
+                    .Select(frameId => selections.GetValueOrDefault(frameId)?.SelectionConflictCode)
+                    .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code));
+                if (page.ContentType != TemplatePageContentType.DynamicSizeTable
+                    && (pageVariant?.ConflictCode is not null || selectionConflict is not null))
+                {
+                    pages.Add(new AiRenderPagePreparation(
+                        style.StyleId,
+                        snapshotPage.PageId,
+                        AiRenderPagePreparationStatus.BusinessBlocked,
+                        pageVariant?.ConflictCode ?? selectionConflict!,
+                        OutputVariantId: pageVariant?.VariantId,
+                        OutputVariantName: pageVariant?.VariantName));
+                    continue;
+                }
 
                 if (page.ContentType == TemplatePageContentType.DynamicSizeTable)
                 {
@@ -230,12 +297,20 @@ public sealed class AiRenderPlanFactory(
                             throw new InvalidOperationException("AI_SIZE_TABLE_RENDER_PLAN_BUILDER_MISSING");
                         }
 
-                        var sizeIdentity = CreateSizeTablePlanIdentity(
+                        var sizeIdentity = pageVariant is null
+                            ? CreateSizeTablePlanIdentity(
+                                request.Batch,
+                                page,
+                                style,
+                                prepared,
+                                request.CreatedAt, outputBaseName)
+                            : CreateSizeTablePlanIdentity(
                             request.Batch,
                             page,
                             style,
                             prepared,
-                            request.CreatedAt);
+                            request.CreatedAt,
+                            pageVariant.VariantId, outputBaseName);
                         var sizeJson = sizeTablePlanBuilder.Build(
                             request.TemplateRevision,
                             page,
@@ -247,22 +322,28 @@ public sealed class AiRenderPlanFactory(
                                 request.Batch.BatchId,
                                 style.StyleId,
                                 sizeIdentity.ArtifactSetId,
-                                $"{style.Order + 1:D3}-{page.Order + 1:D2}.jpg",
+                                outputBaseName + ".jpg",
                                 request.Batch.IncludeEditablePsd,
                                 request.Batch.IncludeEditablePsd
-                                    ? $"{style.Order + 1:D3}-{page.Order + 1:D2}.psd"
+                                    ? outputBaseName + ".psd"
                                     : null,
                                 request.CreatedAt,
                                 prepared.Table,
-                                prepared.RasterizedResource));
+                                prepared.RasterizedResource,
+                                prepared.CalibratedTarget,
+                                prepared.CalibratedInsertion, pageVariant?.VariantId));
                         using var sizeDocument = JsonDocument.Parse(sizeJson);
                         pages.Add(new AiRenderPagePreparation(
                             style.StyleId,
                             page.PageId,
-                            AiRenderPagePreparationStatus.ReadyToRender,
-                            "AI_RENDER_PLAN_VALID",
+                            prepared.CalibratedTarget is null && prepared.CalibratedInsertion is null
+                                ? AiRenderPagePreparationStatus.BusinessBlocked : AiRenderPagePreparationStatus.ReadyToRender,
+                            prepared.CalibratedTarget is null && prepared.CalibratedInsertion is null
+                                ? "SIZE_TABLE_RENDER_TARGET_REQUIRED" : "AI_RENDER_PLAN_VALID",
                             sizeJson,
-                            sizeDocument.RootElement.GetProperty("plan_digest").GetString()));
+                            sizeDocument.RootElement.GetProperty("plan_digest").GetString(),
+                            pageVariant?.VariantId,
+                            pageVariant?.VariantName));
                         continue;
                     }
 
@@ -270,7 +351,9 @@ public sealed class AiRenderPlanFactory(
                         style.StyleId,
                         page.PageId,
                         SizeTablePageStatus(styleInput),
-                        SizeTablePageReason(styleInput)));
+                        SizeTablePageReason(styleInput),
+                        OutputVariantId: pageVariant?.VariantId,
+                        OutputVariantName: pageVariant?.VariantName));
                     continue;
                 }
 
@@ -282,7 +365,9 @@ public sealed class AiRenderPlanFactory(
                         style.StyleId,
                         page.PageId,
                         AiRenderPagePreparationStatus.BusinessBlocked,
-                        "AI_RENDER_REQUIRED_SELECTION_MISSING"));
+                        "AI_RENDER_REQUIRED_SELECTION_MISSING",
+                        OutputVariantId: pageVariant?.VariantId,
+                        OutputVariantName: pageVariant?.VariantName));
                     continue;
                 }
 
@@ -322,12 +407,22 @@ public sealed class AiRenderPlanFactory(
                     .DistinctBy(asset => asset.AssetId)
                     .OrderBy(asset => asset.AssetId, StringComparer.Ordinal)
                     .ToArray();
-                var identity = CreatePlanIdentity(
-                    request.Batch,
-                    page,
-                    style,
-                    selected,
-                    request.CreatedAt);
+                var identity = pageVariant is null
+                    ? CreatePlanIdentity(
+                        request.Batch,
+                        page,
+                        style,
+                        selected,
+                        selectedAssets,
+                        request.CreatedAt, outputBaseName)
+                    : CreatePlanIdentity(
+                        request.Batch,
+                        page,
+                        style,
+                        selected,
+                        selectedAssets,
+                        request.CreatedAt,
+                        pageVariant!.VariantId, outputBaseName);
                 var renderRequest = new TemplateRenderPlanRequest(
                     identity.PlanId,
                     identity.IdempotencyKey,
@@ -335,21 +430,28 @@ public sealed class AiRenderPlanFactory(
                     request.Batch.BatchId,
                     style.StyleId,
                     identity.ArtifactSetId,
-                    $"{style.Order + 1:D3}-{page.Order + 1:D2}.jpg",
+                    outputBaseName + ".jpg",
                     request.Batch.IncludeEditablePsd,
-                    request.Batch.IncludeEditablePsd ? $"{style.Order + 1:D3}-{page.Order + 1:D2}.psd" : null,
+                    request.Batch.IncludeEditablePsd ? outputBaseName + ".psd" : null,
                     request.CreatedAt,
                     selectedAssets.Select(asset => new TemplateRenderSource(
                         asset.AssetId,
                         asset.Sha256,
                         asset.Length,
-                        asset.MimeType)).ToArray(),
-                    explicitSelections);
-                var json = planBuilder.Build(
+                        asset.MimeType, asset.PixelWidth, asset.PixelHeight)).ToArray(),
+                    explicitSelections, RequireAbsolutePlacement: true, OutputVariantId: pageVariant?.VariantId);
+                string json;
+                try { json = planBuilder.Build(
                     request.TemplateRevision,
                     page,
                     templateResource,
-                    renderRequest);
+                    renderRequest); }
+                catch (TemplateRuleViolationException error) when (error.Code == "TPL_RENDER_LAYOUT_REVIEW_REQUIRED")
+                {
+                    pages.Add(new(style.StyleId, page.PageId, AiRenderPagePreparationStatus.BusinessBlocked,
+                        error.Code, OutputVariantId: pageVariant?.VariantId, OutputVariantName: pageVariant?.VariantName));
+                    continue;
+                }
                 using var document = JsonDocument.Parse(json);
                 pages.Add(new AiRenderPagePreparation(
                     style.StyleId,
@@ -359,11 +461,14 @@ public sealed class AiRenderPlanFactory(
                         ? "AI_RENDER_PLAN_VALID_LAYOUT_FALLBACK"
                         : "AI_RENDER_PLAN_VALID",
                     json,
-                    document.RootElement.GetProperty("plan_digest").GetString()));
+                    document.RootElement.GetProperty("plan_digest").GetString(),
+                    pageVariant?.VariantId,
+                    pageVariant?.VariantName));
+                }
             }
         }
 
-        var readyPages = pages.Where(page => page.HasPlan).ToArray();
+        var readyPages = pages.Where(page => page.HasPlan && page.Status == AiRenderPagePreparationStatus.ReadyToRender).ToArray();
         if (readyPages.Length == 0)
         {
             return new AiRenderPlanPreparation(
@@ -421,29 +526,46 @@ public sealed class AiRenderPlanFactory(
         }
     }
 
-    private static void ValidateTemplateResourceOwnership(
+    private async Task ValidateTemplateResourceOwnershipAsync(
         ImportedTemplateResource resource,
         TemplateRevision revision,
         TemplatePage page,
-        BatchTemplatePageSnapshot snapshotPage)
+        BatchTemplatePageSnapshot snapshotPage,
+        CancellationToken cancellationToken)
     {
         if (!string.Equals(resource.ResourceId, page.TemplateResourceId, StringComparison.Ordinal)
             || !string.Equals(resource.ResourceId, snapshotPage.TemplateResourceId, StringComparison.Ordinal)
             || !string.Equals(resource.GroupId, revision.GroupId, StringComparison.Ordinal)
-            || !string.Equals(resource.DraftId, revision.RevisionId, StringComparison.Ordinal)
             || resource.Inspection is null
             || resource.Length <= 0
             || resource.Inspection.SizeBytes != resource.Length
             || !string.Equals(resource.Inspection.FileSha256, resource.Sha256, StringComparison.OrdinalIgnoreCase)
             || !IsSha256(resource.Sha256)
-            || !IsDigest(resource.StructureSignature)
-            || !string.Equals(
-                resource.StructureSignature,
-                resource.Inspection.StructureSignature,
-                StringComparison.OrdinalIgnoreCase))
+            || !SameStructureDigest(resource.StructureSignature, resource.Inspection.StructureSignature))
         {
             throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_OWNERSHIP_MISMATCH");
         }
+
+        // Incremental template revisions retain immutable PSD resources imported by
+        // an earlier revision. Verify that origin instead of rewriting its identity.
+        if (!string.Equals(resource.DraftId, revision.RevisionId, StringComparison.Ordinal))
+        {
+            var origin = templates is null ? null
+                : await templates.GetRevisionAsync(resource.DraftId, cancellationToken).ConfigureAwait(false);
+            if (origin is not { State: TemplateRevisionState.Committed }
+                || origin.RevisionId != resource.DraftId || origin.GroupId != revision.GroupId
+                || origin.RevisionNo >= revision.RevisionNo
+                || !origin.Pages.Any(candidate => candidate.TemplateResourceId == resource.ResourceId))
+                throw new InvalidOperationException("AI_RENDER_TEMPLATE_RESOURCE_OWNERSHIP_MISMATCH");
+        }
+    }
+
+    private static bool SameStructureDigest(string left, string right)
+    {
+        static string Bare(string value) => value.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? value[7..] : value;
+        var leftBare = Bare(left); var rightBare = Bare(right);
+        return IsSha256(leftBare) && IsSha256(rightBare)
+            && string.Equals(leftBare, rightBare, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ValidateSourceAsset(SourceAssetMetadata asset)
@@ -496,7 +618,7 @@ public sealed class AiRenderPlanFactory(
         input.SizeTableReasonCode switch
         {
             "SIZE_TABLE_REVIEW_REQUIRED" or "SIZE_TABLE_INVALID" or "SIZE_TABLE_SOURCE_CONFLICT"
-                or "SIZE_TABLE_STATE_CORRUPT" or "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED" =>
+                or "SIZE_TABLE_STATE_CORRUPT" or "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED" or "SIZE_TABLE_CALIBRATION_INVALID" =>
                 AiRenderPagePreparationStatus.BusinessBlocked,
             _ when input.SizeTableCandidate is null => AiRenderPagePreparationStatus.BusinessBlocked,
             _ => AiRenderPagePreparationStatus.AwaitingSizeTableRasterization
@@ -510,6 +632,7 @@ public sealed class AiRenderPlanFactory(
             "SIZE_TABLE_SOURCE_CONFLICT" => "SIZE_TABLE_SOURCE_CONFLICT",
             "SIZE_TABLE_STATE_CORRUPT" => "SIZE_TABLE_STATE_CORRUPT",
             "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED" => "SIZE_TABLE_SOURCE_CHANGE_REVIEW_REQUIRED",
+            "SIZE_TABLE_CALIBRATION_INVALID" => "SIZE_TABLE_CALIBRATION_INVALID",
             _ when input.SizeTableCandidate is null => "AI_SIZE_TABLE_CANDIDATE_MISSING",
             _ => "AI_SIZE_TABLE_RASTERIZER_PENDING"
         };
@@ -556,10 +679,17 @@ public sealed class AiRenderPlanFactory(
         TemplatePage page,
         StyleDraft style,
         IReadOnlyList<AiConfirmedRenderSelection> selections,
-        DateTimeOffset createdAt)
+        IReadOnlyList<SourceAssetMetadata> sources,
+        DateTimeOffset createdAt,
+        string outputBaseName)
     {
         var preimage = JsonSerializer.Serialize(new
         {
+            output_base_name = outputBaseName,
+            placement_version = TemplatePlacementResolver.Version,
+            batch.IncludeEditablePsd,
+            sources = sources.Select(source => new { source.AssetId, source.Sha256, source.Length,
+                source.MimeType, source.PixelWidth, source.PixelHeight }),
             batch_id = batch.BatchId,
             snapshot_id = batch.TemplateSnapshot.SnapshotId,
             rules_digest = batch.TemplateSnapshot.RulesDigest,
@@ -593,15 +723,68 @@ public sealed class AiRenderPlanFactory(
             $"artifact_{digest[40..64]}");
     }
 
+    private static PlanIdentity CreatePlanIdentity(
+        BatchDraft batch,
+        TemplatePage page,
+        StyleDraft style,
+        IReadOnlyList<AiConfirmedRenderSelection> selections,
+        IReadOnlyList<SourceAssetMetadata> sources,
+        DateTimeOffset createdAt,
+        string variantId,
+        string outputBaseName)
+    {
+        var preimage = JsonSerializer.Serialize(new
+        {
+            output_base_name = outputBaseName,
+            placement_version = TemplatePlacementResolver.Version,
+            batch.IncludeEditablePsd,
+            sources = sources.Select(source => new { source.AssetId, source.Sha256, source.Length,
+                source.MimeType, source.PixelWidth, source.PixelHeight }),
+            batch_id = batch.BatchId,
+            snapshot_id = batch.TemplateSnapshot.SnapshotId,
+            rules_digest = batch.TemplateSnapshot.RulesDigest,
+            style_id = style.StyleId,
+            page_id = page.PageId,
+            variant_id = variantId,
+            selections = selections.OrderBy(selection => selection.FrameId, StringComparer.Ordinal)
+                .Select(selection => new
+                {
+                    selection.FrameId,
+                    selection.AssetId,
+                    selection.SelectionRevision,
+                    geometry = selection.SubjectGeometry is null
+                        ? null
+                        : new
+                        {
+                            selection.SubjectGeometry.Left,
+                            selection.SubjectGeometry.Top,
+                            selection.SubjectGeometry.Right,
+                            selection.SubjectGeometry.Bottom,
+                            selection.SubjectGeometry.Confidence
+                        }
+                }),
+            created_at = createdAt
+        });
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(preimage)))
+            .ToLowerInvariant();
+        return new PlanIdentity(
+            $"plan_{digest[..24]}",
+            $"render/{batch.BatchId}/{style.StyleId}/{page.PageId}/{variantId}/{digest[..16]}",
+            $"corr_{digest[24..48]}",
+            $"artifact_{digest[40..64]}");
+    }
+
     private static PlanIdentity CreateSizeTablePlanIdentity(
         BatchDraft batch,
         TemplatePage page,
         StyleDraft style,
         AiPreparedSizeTablePage prepared,
-        DateTimeOffset createdAt)
+        DateTimeOffset createdAt,
+        string outputBaseName)
     {
         var preimage = JsonSerializer.Serialize(new
         {
+            output_base_name = outputBaseName,
             batch_id = batch.BatchId,
             snapshot_id = batch.TemplateSnapshot.SnapshotId,
             rules_digest = batch.TemplateSnapshot.RulesDigest,
@@ -621,6 +804,110 @@ public sealed class AiRenderPlanFactory(
             $"render/{batch.BatchId}/{style.StyleId}/{page.PageId}/{digest[..16]}",
             $"corr_{digest[24..48]}",
             $"artifact_{digest[40..64]}");
+    }
+
+    private static PlanIdentity CreateSizeTablePlanIdentity(
+        BatchDraft batch,
+        TemplatePage page,
+        StyleDraft style,
+        AiPreparedSizeTablePage prepared,
+        DateTimeOffset createdAt,
+        string variantId,
+        string outputBaseName)
+    {
+        var preimage = JsonSerializer.Serialize(new
+        {
+            output_base_name = outputBaseName,
+            batch_id = batch.BatchId,
+            snapshot_id = batch.TemplateSnapshot.SnapshotId,
+            rules_digest = batch.TemplateSnapshot.RulesDigest,
+            style_id = style.StyleId,
+            page_id = page.PageId,
+            variant_id = variantId,
+            size_table_id = prepared.Table.TableId,
+            size_table_revision = prepared.Table.Revision,
+            structured_data_digest = prepared.Table.DataDigest,
+            raster_resource_id = prepared.RasterizedResource.ResourceId,
+            raster_sha256 = prepared.RasterizedResource.Sha256,
+            created_at = createdAt
+        });
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(preimage)))
+            .ToLowerInvariant();
+        return new PlanIdentity(
+            $"plan_{digest[..24]}",
+            $"render/{batch.BatchId}/{style.StyleId}/{page.PageId}/{variantId}/{digest[..16]}",
+            $"corr_{digest[24..48]}",
+            $"artifact_{digest[40..64]}");
+    }
+
+    private static Dictionary<(string PageId, string? VariantId), string> CreateOutputBaseNames(
+        IEnumerable<TemplatePage> pages,
+        IReadOnlyList<AiOutputVariantPlan?> variants)
+    {
+        var proposed = new Dictionary<(string PageId, string? VariantId), string>();
+        foreach (var page in pages.OrderBy(page => page.Order).ThenBy(page => page.PageId, StringComparer.Ordinal))
+        {
+            // A numeric prefix also keeps Windows device names such as CON out of the leaf-name position.
+            var prefix = ((long)page.Order + 1).ToString("D2", CultureInfo.InvariantCulture)
+                + "-" + OutputNamePart(page.Name, 80, "页面");
+            var pageVariants = page.GenerationMode == TemplateGenerationMode.OncePerProduct
+                ? new AiOutputVariantPlan?[] { null } : variants;
+            foreach (var variant in pageVariants)
+            {
+                var name = prefix + (variant is null ? string.Empty : "-" + OutputNamePart(variant.VariantName, 48, "变体"));
+                proposed.Add((page.PageId, variant?.VariantId), name);
+            }
+        }
+
+        // Reserve literal names first, including blocked outputs. Suffixes cannot steal a sibling's
+        // name; the result depends on frozen identities, not enumeration order or render readiness.
+        var reserved = new HashSet<string>(proposed.Values, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<(string PageId, string? VariantId), string>();
+        foreach (var group in proposed.GroupBy(item => item.Value, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            if (group.Count() == 1)
+            {
+                var item = group.Single();
+                result.Add(item.Key, item.Value);
+                continue;
+            }
+            long suffix = 1;
+            foreach (var item in group.OrderBy(item => item.Key.PageId, StringComparer.Ordinal)
+                .ThenBy(item => item.Key.VariantId, StringComparer.Ordinal))
+            {
+                string name;
+                do { name = item.Value + "-" + (suffix++).ToString("D2", CultureInfo.InvariantCulture); }
+                while (!reserved.Add(name));
+                result.Add(item.Key, name);
+            }
+        }
+        return result;
+    }
+
+    private static string OutputNamePart(string value, int maxLength, string fallback)
+    {
+        var cleaned = new StringBuilder();
+        foreach (var rune in value.EnumerateRunes())
+        {
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.LineSeparator
+                or UnicodeCategory.ParagraphSeparator || rune.Value == Rune.ReplacementChar.Value
+                || (rune.IsAscii && "\\/:*?\"<>|".Contains((char)rune.Value)))
+                cleaned.Append('_');
+            else cleaned.Append(rune.ToString());
+        }
+        var normalized = cleaned.ToString().Normalize(NormalizationForm.FormC).Trim(' ', '.', '_');
+        var elements = StringInfo.GetTextElementEnumerator(normalized);
+        var bounded = new StringBuilder();
+        while (elements.MoveNext())
+        {
+            var element = elements.GetTextElement();
+            if (bounded.Length + element.Length > maxLength) break;
+            bounded.Append(element);
+        }
+        var result = bounded.ToString().TrimEnd(' ', '.', '_');
+        return result.Length == 0 ? fallback : result;
     }
 
     private sealed record PlanIdentity(

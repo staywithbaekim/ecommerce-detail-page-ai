@@ -98,6 +98,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             cancellationToken).ConfigureAwait(false);
         var assets = await LoadInputAssetsAsync(connection, batchId, cancellationToken).ConfigureAwait(false);
         var styles = await LoadInputStylesAsync(connection, batchId, assets, cancellationToken).ConfigureAwait(false);
+        var outputSelection = await ReadInputOutputSelectionAsync(connection, null, batchId, cancellationToken).ConfigureAwait(false);
         var blockReason = row.BlockReasonCode is null
             ? null
             : ScanBlockReason.Create(
@@ -119,7 +120,8 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             row.ManifestDigest,
             blockReason,
             row.CreatedAt,
-            row.UpdatedAt);
+            row.UpdatedAt,
+            outputSelection);
     }
 
     public async Task<IReadOnlyList<BatchDraft>> ListRecoverableAsync(
@@ -200,6 +202,18 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
         BatchDraft draft,
         CancellationToken cancellationToken)
     {
+        // Check before updating the base row: a direct repository call must not change frozen intent.
+        await using (var existing = connection.CreateCommand())
+        {
+            existing.Transaction = transaction;
+            existing.CommandText = "SELECT scan_status FROM input_batches WHERE batch_id = $id;";
+            existing.Parameters.AddWithValue("$id", draft.BatchId);
+            var status = (string?)await existing.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (status is "Scanning" or "ScanReady"
+                && await ReadInputOutputSelectionAsync(connection, transaction, draft.BatchId, cancellationToken).ConfigureAwait(false)
+                    != draft.OutputSelection)
+                throw new InputRuleViolationException("INPUT_OUTPUT_SELECTION_FROZEN");
+        }
         await EnsureInputSnapshotAsync(
             connection,
             transaction,
@@ -238,6 +252,24 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
                 """;
             AddBatchParameters(command, draft);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using (var choice = connection.CreateCommand())
+        {
+            choice.Transaction = transaction;
+            choice.Parameters.AddWithValue("$batch_id", draft.BatchId);
+            if (draft.OutputSelection is { } selection)
+            {
+                choice.CommandText = """
+                    INSERT INTO input_output_selections(batch_id, mode, unified_root)
+                    VALUES($batch_id, $mode, $root)
+                    ON CONFLICT(batch_id) DO UPDATE SET mode=excluded.mode, unified_root=excluded.unified_root;
+                    """;
+                choice.Parameters.AddWithValue("$mode", selection.Mode.ToString());
+                choice.Parameters.AddWithValue("$root", (object?)selection.UnifiedRoot ?? DBNull.Value);
+            }
+            else choice.CommandText = "DELETE FROM input_output_selections WHERE batch_id = $batch_id;";
+            await choice.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await ExecuteBatchDeleteAsync(
@@ -296,6 +328,21 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             command.Parameters.AddWithValue("$readability", asset.Readability.ToString());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static async Task<BatchOutputSelection?> ReadInputOutputSelectionAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, string batchId, CancellationToken token)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT mode, unified_root FROM input_output_selections WHERE batch_id=$id;";
+        command.Parameters.AddWithValue("$id", batchId);
+        await using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        if (!await reader.ReadAsync(token).ConfigureAwait(false)) return null;
+        var text = reader.GetString(0);
+        if (!Enum.TryParse<BatchOutputMode>(text, out var mode) || mode.ToString() != text)
+            throw new InvalidDataException("INPUT_OUTPUT_SELECTION_INVALID");
+        return BatchOutputSelection.Create(mode, reader.IsDBNull(1) ? null : reader.GetString(1));
     }
 
     private static async Task EnsureInputSnapshotAsync(

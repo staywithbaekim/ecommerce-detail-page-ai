@@ -182,6 +182,25 @@ public sealed class PsdInspectionWorkerClientTests
         Assert.NotNull(result.Inspection);
     }
 
+    [Fact]
+    public async Task LongOwnedPathIsPassedAsTheSameExtendedWindowsPath()
+    {
+        using var directory = new TestDirectory();
+        var relative = Path.Combine(new string('a', 80), new string('b', 80), "中文文件夹", "internal.psd");
+        var input = Path.Combine(directory.Path, relative);
+        Assert.True(input.Length >= 260);
+        Directory.CreateDirectory(Path.GetDirectoryName(input)!);
+        await File.WriteAllBytesAsync(input, [1, 2, 3]);
+        var response = Convert.ToBase64String(Encoding.UTF8.GetBytes(ValidResponse("long_path", TenByTenBounds)));
+        var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes(@"\\?\" + input));
+        var script = "$request = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
+            + $"$expected = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{expected}')); "
+            + "if ($request.input_path -cne $expected) { exit 3 }; "
+            + $"[Console]::Out.Write([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{response}')))";
+        var result = await CreateScriptClient(directory.Path, script).InspectAsync(new("long_path", relative), default);
+        Assert.True(result.IsSuccess);
+    }
+
     private static PsdInspectionWorkerClient CreateClient(string root) => new(
         new LocalAppPathPolicy(root),
         new PsdInspectionWorkerOptions(

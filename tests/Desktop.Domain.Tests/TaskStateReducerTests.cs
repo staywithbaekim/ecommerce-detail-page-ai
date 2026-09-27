@@ -4,6 +4,35 @@ namespace Desktop.Domain.Tests;
 
 public sealed class TaskStateReducerTests
 {
+    [Theory]
+    [InlineData(TaskEventType.RenderPageRegenerationRequested)]
+    [InlineData(TaskEventType.RenderPageRepairRequested)]
+    public void ExplicitRenderRegenerationReopensTerminalAndRetainsOutputAndIssueHistory(TaskEventType kind)
+    {
+        var state = Replay(TaskEventType.TaskCreated, TaskEventType.ReadyToRender, TaskEventType.RenderingStarted);
+        state = TaskStateReducer.Apply(state, Event(state.TaskId, 4, TaskEventType.PageCommitted, "style/page"));
+        state = TaskStateReducer.Apply(state, Event(state.TaskId, 5, TaskEventType.IssueRecorded));
+        state = TaskStateReducer.Apply(state, Event(state.TaskId, 6, TaskEventType.CompletedWithIssues));
+        Assert.Throws<TaskRuleViolationException>(() => TaskStateReducer.Apply(state, Event(state.TaskId, 7, TaskEventType.RenderingStarted)));
+        var requested = TaskEvent.Create(state.TaskId, 7, kind, "style/page", "sha256:" + new string('a', 64));
+        var reopened = TaskStateReducer.Apply(state, requested);
+        Assert.Equal(Desktop.Domain.Tasks.TaskStatus.ReadyToRender, reopened.Status);
+        Assert.Equal(state.CommittedPageIds, reopened.CommittedPageIds);
+        Assert.Equal(state.IssueCount, reopened.IssueCount);
+        Assert.Same(reopened, TaskStateReducer.Apply(reopened, requested));
+    }
+
+    [Theory]
+    [InlineData(null, "sha256:bad")]
+    [InlineData("style/page", "sha256:bad")]
+    [InlineData("", "")]
+    public void RegenerationRequiresPageAndPlanIdentity(string? page, string digest)
+    {
+        var state = Replay(TaskEventType.TaskCreated, TaskEventType.Cancelled);
+        Assert.Throws<TaskRuleViolationException>(() => TaskStateReducer.Apply(state,
+            TaskEvent.Create(state.TaskId, 3, TaskEventType.RenderPageRegenerationRequested, page, digest)));
+    }
+
     [Fact]
     public void ZeroOutputCannotBecomeCompleted()
     {

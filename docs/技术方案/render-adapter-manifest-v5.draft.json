@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 5,
+  "id": "local.ecommerce.detail-renderer",
+  "name": "电商详情页渲染适配器",
+  "version": "0.1.0",
+  "main": "index.html",
+  "host": [
+    {
+      "app": "PS",
+      "minVersion": "26.8.1",
+      "data": { "apiVersion": 2 }
+    }
+  ],
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "renderer-status",
+      "label": { "default": "详情页渲染连接" },
+      "minimumSize": { "width": 320, "height": 360 },
+      "preferredDockedSize": { "width": 320, "height": 360 },
+      "preferredFloatingSize": { "width": 360, "height": 400 }
+    }
+  ],
+  "requiredPermissions": {
+    "localFileSystem": "request",
+    "network": { "domains": ["http://127.0.0.1"] }
+  }
+}

@@ -200,6 +200,7 @@ public sealed record AssetManifestInspection(
 public static class InputCommitJournalProtocol
 {
     public const string Version = "input-commit-journal/v1";
+    public const string OutputSelectionVersion = "input-commit-journal/v2";
 }
 
 public enum InputCommitJournalState
@@ -228,7 +229,8 @@ public sealed record InputCommitJournal(
         StagedAssetManifest stagedManifest,
         BatchDraft readyDraft,
         DateTimeOffset updatedAt) => new(
-        InputCommitJournalProtocol.Version,
+        readyDraft.OutputSelection is null ? InputCommitJournalProtocol.Version
+            : InputCommitJournalProtocol.OutputSelectionVersion,
         readyDraft.BatchId,
         InputCommitJournalState.Staged,
         stagedManifest,
@@ -335,7 +337,8 @@ public sealed record CreateBatchDraftCommand(
     string OutputRoot,
     BatchTemplateSnapshot TemplateSnapshot,
     BatchSelectionMode SelectionMode,
-    bool IncludeEditablePsd);
+    bool IncludeEditablePsd,
+    BatchOutputSelection? OutputSelection = null);
 
 public sealed record CreateBatchFromTemplateCommand(
     string BatchId,
@@ -344,7 +347,8 @@ public sealed record CreateBatchFromTemplateCommand(
     string OutputRoot,
     IReadOnlyList<string> SelectedPageIds,
     BatchSelectionMode SelectionMode,
-    bool IncludeEditablePsd);
+    bool IncludeEditablePsd,
+    BatchOutputSelection? OutputSelection = null);
 
 public sealed record BatchScanOptions
 {

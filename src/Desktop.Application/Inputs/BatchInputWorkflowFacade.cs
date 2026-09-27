@@ -1,3 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
+using Desktop.Application.Files;
+
 namespace Desktop.Application.Inputs;
 
 public enum BatchInputWorkflowStatus
@@ -20,6 +24,9 @@ public enum BatchInputWorkflowSelectionMode
     Manual
 }
 
+public enum BatchInputWorkflowOutputMode { UnifiedDirectory, StyleSourceDirectories }
+public sealed record BatchInputWorkflowPublicOutput(BatchInputWorkflowOutputMode Mode, string? UnifiedRoot);
+
 public sealed record BatchInputWorkflowCommand(
     string? BatchId,
     string TemplateGroupId,
@@ -27,7 +34,8 @@ public sealed record BatchInputWorkflowCommand(
     string OutputRoot,
     IReadOnlyList<string> SelectedPageIds,
     BatchInputWorkflowSelectionMode SelectionMode,
-    bool IncludeEditablePsd);
+    bool IncludeEditablePsd,
+    BatchInputWorkflowPublicOutput? PublicOutput = null);
 
 public sealed record BatchInputWorkflowState(
     string BatchId,
@@ -42,9 +50,10 @@ public sealed record BatchInputWorkflowState(
     int StyleCount,
     int AssetCount,
     string? BlockUserAction,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    BatchInputWorkflowPublicOutput? PublicOutput = null);
 
-public sealed class BatchInputWorkflowFacade(BatchInputService service)
+public sealed class BatchInputWorkflowFacade(BatchInputService service, IPathPolicy? paths = null)
 {
     public async Task<BatchInputWorkflowState> SaveDraftAsync(
         BatchInputWorkflowCommand command,
@@ -52,17 +61,35 @@ public sealed class BatchInputWorkflowFacade(BatchInputService service)
     {
         ArgumentNullException.ThrowIfNull(command);
         var batchId = command.BatchId ?? $"batch-{Guid.NewGuid():N}";
+        Domain.Inputs.BatchOutputSelection? outputSelection = null;
+        var evidenceRoot = command.OutputRoot;
+        if (command.PublicOutput is { } output)
+        {
+            if (paths is null || !string.IsNullOrEmpty(command.OutputRoot))
+                throw new InvalidOperationException("INPUT_PUBLIC_OUTPUT_CONFIGURATION_INVALID");
+            outputSelection = Domain.Inputs.BatchOutputSelection.Create(output.Mode switch
+            {
+                BatchInputWorkflowOutputMode.UnifiedDirectory => Domain.Inputs.BatchOutputMode.UnifiedDirectory,
+                BatchInputWorkflowOutputMode.StyleSourceDirectories => Domain.Inputs.BatchOutputMode.StyleSourceDirectories,
+                _ => throw new InvalidOperationException("INPUT_PUBLIC_OUTPUT_CONFIGURATION_INVALID")
+            }, output.UnifiedRoot);
+            // Internal receipts never use the selected source/public directory. This stable mapping
+            // survives draft saves/restores without creating directories or touching source material.
+            evidenceRoot = paths.ResolveOwnedPath("render/publication-evidence/id-"
+                + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(batchId))));
+        }
         var draft = await service.CreateDraftFromTemplateAsync(
             new CreateBatchFromTemplateCommand(
                 batchId,
                 command.TemplateGroupId,
                 command.InputRoot,
-                command.OutputRoot,
+                evidenceRoot,
                 command.SelectedPageIds,
                 command.SelectionMode == BatchInputWorkflowSelectionMode.Automatic
                     ? Domain.Inputs.BatchSelectionMode.Automatic
                     : Domain.Inputs.BatchSelectionMode.Manual,
-                command.IncludeEditablePsd),
+                command.IncludeEditablePsd,
+                outputSelection),
             cancellationToken).ConfigureAwait(false);
         return await ProjectAsync(draft, cancellationToken).ConfigureAwait(false);
     }
@@ -126,6 +153,10 @@ public sealed class BatchInputWorkflowFacade(BatchInputService service)
             draft.Styles.Length,
             draft.Assets.Length,
             draft.BlockReason?.UserAction,
-            draft.UpdatedAt);
+            draft.UpdatedAt,
+            draft.OutputSelection is null ? null : new(
+                draft.OutputSelection.Mode == Domain.Inputs.BatchOutputMode.UnifiedDirectory
+                    ? BatchInputWorkflowOutputMode.UnifiedDirectory : BatchInputWorkflowOutputMode.StyleSourceDirectories,
+                draft.OutputSelection.UnifiedRoot));
     }
 }

@@ -119,8 +119,10 @@ public sealed class JsonSchemaContractValidator : IJsonContractDiagnosticValidat
     {
         [ContractDocumentKind.RenderPlan] = LoadSchema("render-plan-v1.schema.json"),
         [ContractDocumentKind.BridgeEnvelope] = LoadSchema("bridge-v1.schema.json"),
+        [ContractDocumentKind.AdapterTransport] = LoadSchema("adapter-transport-v1.schema.json"),
         [ContractDocumentKind.TemplateRevisionManifest] = LoadSchema("template-revision-v1.schema.json"),
         [ContractDocumentKind.TemplatePackageManifest] = LoadSchema("template-package-v1.schema.json"),
+        [ContractDocumentKind.TemplatePackageManifestV2] = LoadSchema("template-package-v2.schema.json"),
         [ContractDocumentKind.AssetManifest] = LoadSchema("asset-manifest-v1.schema.json"),
         [ContractDocumentKind.AiAnalysis] = LoadSchema("ai-analysis-v1.schema.json"),
         [ContractDocumentKind.ReferenceLearning] = LoadSchema("reference-learning-v1.schema.json"),

@@ -388,14 +388,32 @@ public sealed class TemplateCalibrationService(
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
         var binding = FindPersistedBinding(revision, state, frameId)
-            ?? throw new InvalidOperationException("TPL_FRAME_NOT_FOUND");
-        await templates.SaveDraftRevisionAsync(
-            revision.UpdateFrameBinding(
-                binding.FrameId,
-                selectionRequirement: SelectionRequirement.Create(
-                    normalized,
-                    binding.SelectionRequirement.Criteria)),
-            cancellationToken).ConfigureAwait(false);
+            ;
+        if (binding is null)
+        {
+            // A template can be authored from PSD structure alone.  A rule-only
+            // binding is deliberate and is resolved against a product's photos
+            // later during batch analysis; it never fabricates an asset id.
+            state.SelectionRequirements[frameId] = normalized;
+            binding = state.BuildFrameBinding(pageId, frameId);
+            await templates.SaveDraftRevisionAsync(
+                revision.AddFrameBinding(binding),
+                cancellationToken).ConfigureAwait(false);
+            state.PersistedBindingIds[frameId] = frameId;
+            state.RegisteredFrames.Add(frameId);
+        }
+        else
+        {
+            await templates.SaveDraftRevisionAsync(
+                revision.UpdateFrameBinding(
+                    binding.FrameId,
+                    selectionRequirement: SelectionRequirement.Create(
+                        normalized,
+                        binding.SelectionRequirement.Criteria)),
+                cancellationToken).ConfigureAwait(false);
+            state.PersistedBindingIds[frameId] = binding.FrameId;
+            state.RegisteredFrames.Add(frameId);
+        }
         state.SelectionRequirements[frameId] = normalized;
         state.SelectedFrameId = frameId;
         await PersistDraftAsync(session, pageId, state, cancellationToken).ConfigureAwait(false);
@@ -608,7 +626,11 @@ public sealed class TemplateCalibrationService(
                 geometry.Scale,
                 geometry.OffsetX,
                 geometry.OffsetY,
-                TemplateRect.Create(0, 0, frame.Width, frame.Height));
+                TemplateRect.Create(
+                    Math.Max(0, frame.Left),
+                    Math.Max(0, frame.Top),
+                    Math.Min(CanvasWidth, frame.Left + frame.Width),
+                    Math.Min(CanvasHeight, frame.Top + frame.Height)));
         }
 
         public SelectionRequirement BuildSelectionRequirement(
@@ -645,7 +667,7 @@ public sealed class TemplateCalibrationService(
             return FrameBinding.Create(
                 frameId,
                 pageId,
-                LayerPath.Create(frame.LayerPath),
+                LayerPath.Create(frame.LayerPath.Select(segment => checked(segment + 1))),
                 ExpectedLayerEvidence.Create(
                     frame.LayerId,
                     frame.LayerName,
@@ -754,7 +776,7 @@ public sealed class TemplateCalibrationService(
                         NormalizeStructureSignature(frame.StructureSignature),
                         NormalizeStructureSignature(binding.ExpectedLayer.StructureSignature.Value),
                         StringComparison.OrdinalIgnoreCase)
-                    && frame.LayerPath.SequenceEqual(binding.LayerPath.Segments))
+                    && frame.LayerPath.Select(segment => segment + 1).SequenceEqual(binding.LayerPath.Segments))
                 .ToArray();
             if (byEvidence.Length == 1)
             {

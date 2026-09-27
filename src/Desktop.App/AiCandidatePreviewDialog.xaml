@@ -1,0 +1,56 @@
+<UserControl x:Class="Desktop.App.AiCandidatePreviewDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             HorizontalContentAlignment="Stretch"
+             VerticalContentAlignment="Stretch"
+             >
+    <Grid>
+        <Grid Grid.Row="0"
+              Panel.ZIndex="41"
+              Background="{StaticResource ModalOverlayBrush}"
+              Visibility="{Binding IsAiCandidatePreviewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              AutomationProperties.AutomationId="AiCandidatePreviewDialog"
+              AutomationProperties.Name="查看候选图片">
+            <Border Width="760"
+                    MaxWidth="760"
+                    MaxHeight="720"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource DialogCardStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="16" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="16" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="20" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="查看候选图片" />
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource BodyTextStyle}" Text="{Binding AiCandidatePreview.UsageText}" />
+                    </StackPanel>
+                    <Border Grid.Row="2" MinHeight="280" MaxHeight="440" Background="{StaticResource SurfaceStrongBrush}" CornerRadius="8">
+                        <Image Source="{Binding AiCandidatePreview.PreviewPath, Converter={StaticResource BoundedPreviewImageConverter}, ConverterParameter=1200}" Stretch="Uniform" AutomationProperties.Name="候选商品图预览" />
+                    </Border>
+                    <StackPanel Grid.Row="4">
+                        <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="这个图片框需要" />
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource BodyTextStyle}" Text="{Binding AiCandidatePreview.SelectionLabel}" ToolTip="{Binding AiCandidatePreview.SelectionRequirement}" TextWrapping="Wrap" />
+                        <TextBlock Margin="0,10,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding AiCandidatePreview.EvidenceText}" TextWrapping="Wrap" />
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource CaptionTextStyle}" Text="{Binding AiCandidatePreview.AnalysisHint}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Margin="0,0,8,0" Style="{StaticResource SecondaryButtonStyle}" Content="关闭" Command="{Binding CloseAiCandidatePreviewCommand}" AutomationProperties.AutomationId="CloseAiCandidatePreviewButton" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+        
+    </Grid>
+</UserControl>
+

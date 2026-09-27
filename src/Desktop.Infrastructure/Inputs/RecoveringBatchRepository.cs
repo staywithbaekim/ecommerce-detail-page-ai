@@ -60,6 +60,10 @@ public sealed class RecoveringBatchRepository(
                     journal,
                     cancellationToken).ConfigureAwait(false);
             }
+            else if (draft.ScanStatus == BatchScanStatus.ScanReady && draft.OutputSelection is not null)
+            {
+                throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
+            }
 
             return await RecoverAsync(draft, cancellationToken).ConfigureAwait(false);
         }
@@ -168,7 +172,8 @@ public sealed class RecoveringBatchRepository(
         CancellationToken cancellationToken)
     {
         if (!string.Equals(draft.BatchId, journal.BatchId, StringComparison.Ordinal)
-            || !string.Equals(journal.ReadyDraft.BatchId, journal.BatchId, StringComparison.Ordinal))
+            || !string.Equals(journal.ReadyDraft.BatchId, journal.BatchId, StringComparison.Ordinal)
+            || draft.OutputSelection != journal.ReadyDraft.OutputSelection)
         {
             throw new InvalidOperationException("INPUT_MANIFEST_DATABASE_MISMATCH");
         }
@@ -289,14 +294,15 @@ public sealed class RecoveringBatchRepository(
             null,
             ScanBlockReason.ManifestDatabaseMismatch(),
             draft.CreatedAt,
-            timeProvider.GetUtcNow());
+            timeProvider.GetUtcNow(),
+            draft.OutputSelection);
         await store.SaveAsync(blocked, cancellationToken).ConfigureAwait(false);
         return blocked;
     }
 
     private async Task MarkCommittedAsync(InputCommitJournal journal)
     {
-        if (journals is null)
+        if (journals is null || journal.State == InputCommitJournalState.Committed)
         {
             return;
         }

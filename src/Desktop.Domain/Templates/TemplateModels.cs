@@ -96,7 +96,11 @@ public sealed record TemplatePage
         TemplateGenerationMode generationMode,
         int? variantCapacity,
         bool enabled,
-        string templateResourceId)
+        string templateResourceId,
+        string notes,
+        double canvasX,
+        double canvasY,
+        SizeTableTemplateCalibration? sizeTableCalibration)
     {
         PageId = pageId;
         RevisionId = revisionId;
@@ -107,6 +111,10 @@ public sealed record TemplatePage
         VariantCapacity = variantCapacity;
         Enabled = enabled;
         TemplateResourceId = templateResourceId;
+        Notes = notes;
+        CanvasX = canvasX;
+        CanvasY = canvasY;
+        SizeTableCalibration = sizeTableCalibration;
     }
 
     public string PageId { get; }
@@ -127,6 +135,16 @@ public sealed record TemplatePage
 
     public string TemplateResourceId { get; }
 
+    /// <summary>Optional human-authored page notes and selection guidance.</summary>
+    public string Notes { get; }
+
+    /// <summary>Canvas position in logical pixels; it never affects output order.</summary>
+    public double CanvasX { get; }
+
+    public double CanvasY { get; }
+
+    public SizeTableTemplateCalibration? SizeTableCalibration { get; }
+
     public static TemplatePage Create(
         string pageId,
         string revisionId,
@@ -136,7 +154,11 @@ public sealed record TemplatePage
         TemplateGenerationMode generationMode,
         int? variantCapacity,
         bool enabled,
-        string templateResourceId)
+        string templateResourceId,
+        string? notes = null,
+        double canvasX = 0,
+        double canvasY = 0,
+        SizeTableTemplateCalibration? sizeTableCalibration = null)
     {
         if (order < 0)
         {
@@ -155,6 +177,12 @@ public sealed record TemplatePage
             throw new TemplateRuleViolationException("TPL_PAGE_VARIANT_CAPACITY_FORBIDDEN");
         }
 
+        if (sizeTableCalibration is not null)
+        {
+            if (contentType != TemplatePageContentType.DynamicSizeTable)
+                throw new TemplateRuleViolationException("SIZE_TABLE_CALIBRATION_INVALID");
+            sizeTableCalibration.Validate();
+        }
         return new TemplatePage(
             TemplateValueRules.Identifier(pageId, "TPL_PAGE_ID_INVALID"),
             TemplateValueRules.Identifier(revisionId, "TPL_REVISION_ID_INVALID"),
@@ -164,7 +192,11 @@ public sealed record TemplatePage
             generationMode,
             variantCapacity,
             enabled,
-            TemplateValueRules.Identifier(templateResourceId, "TPL_TEMPLATE_RESOURCE_ID_INVALID"));
+            TemplateValueRules.Identifier(templateResourceId, "TPL_TEMPLATE_RESOURCE_ID_INVALID"),
+            TemplateValueRules.OptionalText(notes, 2_000, "TPL_PAGE_NOTES_INVALID") ?? string.Empty,
+            double.IsFinite(canvasX) ? canvasX : throw new TemplateRuleViolationException("TPL_PAGE_CANVAS_POSITION_INVALID"),
+            double.IsFinite(canvasY) ? canvasY : throw new TemplateRuleViolationException("TPL_PAGE_CANVAS_POSITION_INVALID"),
+            sizeTableCalibration);
     }
 
     public TemplatePage InheritTo(string revisionId, int? order = null) => Create(
@@ -176,7 +208,15 @@ public sealed record TemplatePage
         GenerationMode,
         VariantCapacity,
         Enabled,
-        TemplateResourceId);
+        TemplateResourceId,
+        Notes,
+        CanvasX,
+        CanvasY,
+        SizeTableCalibration);
+
+    public TemplatePage WithSizeTableCalibration(SizeTableTemplateCalibration calibration) => Create(
+        PageId, RevisionId, Order, Name, ContentType, GenerationMode, VariantCapacity, Enabled,
+        TemplateResourceId, Notes, CanvasX, CanvasY, calibration);
 
     public TemplatePage Reconfigure(
         int order,
@@ -184,7 +224,10 @@ public sealed record TemplatePage
         TemplatePageContentType contentType,
         TemplateGenerationMode generationMode,
         int? variantCapacity,
-        bool enabled) => Create(
+        bool enabled,
+        string? notes = null,
+        double? canvasX = null,
+        double? canvasY = null) => Create(
             PageId,
             RevisionId,
             order,
@@ -193,7 +236,11 @@ public sealed record TemplatePage
             generationMode,
             variantCapacity,
             enabled,
-            TemplateResourceId);
+            TemplateResourceId,
+            notes ?? Notes,
+            canvasX ?? CanvasX,
+            canvasY ?? CanvasY,
+            contentType == TemplatePageContentType.DynamicSizeTable ? SizeTableCalibration : null);
 }
 
 public sealed record FrameBinding
@@ -501,7 +548,10 @@ public sealed record TemplateRevision
         TemplatePageContentType contentType,
         TemplateGenerationMode generationMode,
         int? variantCapacity,
-        bool enabled)
+        bool enabled,
+        string? notes = null,
+        double? canvasX = null,
+        double? canvasY = null)
     {
         EnsureDraftEditable();
         var index = -1;
@@ -524,7 +574,10 @@ public sealed record TemplateRevision
             contentType,
             generationMode,
             variantCapacity,
-            enabled);
+            enabled,
+            notes,
+            canvasX,
+            canvasY);
         return CreateValidated(
             RevisionId,
             GroupId,
@@ -535,6 +588,15 @@ public sealed record TemplateRevision
             CreatedAt,
             Pages.SetItem(index, configured),
             FrameBindings);
+    }
+
+    public TemplateRevision CalibrateSizeTable(string pageId, SizeTableTemplateCalibration calibration)
+    {
+        EnsureDraftEditable();
+        var page = Pages.SingleOrDefault(item => item.PageId == pageId)
+            ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        return CreateValidated(RevisionId, GroupId, RevisionNo, State, ManifestRef, RuleDigest,
+            CreatedAt, Pages.Replace(page, page.WithSizeTableCalibration(calibration)), FrameBindings);
     }
 
     public TemplateRevision ReorderPages(IEnumerable<string> orderedPageIds)

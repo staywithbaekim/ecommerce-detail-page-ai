@@ -16,8 +16,292 @@ public sealed class BatchInputInfrastructureTests
     private const string RuleDigest =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+    [Theory]
+    [InlineData("legacy")]
+    [InlineData("source")]
+    [InlineData("unified")]
+    public async Task WorkflowFacadeKeepsPublicChoiceSeparateFromPrivateEvidenceThroughSaveScanRestoreAndFreeze(string mode)
+    {
+        using var directory = new TestDirectory();
+        var app = Path.Combine(directory.Path, "app");
+        await using var store = new SqliteDesktopStore(new(app));
+        var (service, repository, seed) = await OutputIntentScenario(directory.Path, store);
+        var unified = Directory.CreateDirectory(Path.Combine(directory.Path, "public")).FullName;
+        var choice = mode == "legacy" ? null : new BatchInputWorkflowPublicOutput(mode == "source"
+            ? BatchInputWorkflowOutputMode.StyleSourceDirectories : BatchInputWorkflowOutputMode.UnifiedDirectory,
+            mode == "source" ? null : unified);
+        var command = new BatchInputWorkflowCommand(seed.BatchId, seed.TemplateGroupId, seed.InputRoot,
+            choice is null ? seed.OutputRoot : "", seed.SelectedPageIds, BatchInputWorkflowSelectionMode.Automatic, false, choice);
+        var facade = new BatchInputWorkflowFacade(service, new LocalAppPathPolicy(app));
+        var draft = await facade.SaveDraftAsync(command, default);
+        Assert.Equal(choice, draft.PublicOutput);
+        if (choice is null) Assert.Equal(seed.OutputRoot, draft.OutputRoot);
+        else
+        {
+            Assert.StartsWith(app + Path.DirectorySeparatorChar, draft.OutputRoot, StringComparison.OrdinalIgnoreCase);
+            Assert.NotEqual(unified, draft.OutputRoot);
+            Assert.NotEqual(seed.InputRoot, draft.OutputRoot);
+        }
+        Assert.False(Directory.Exists(draft.OutputRoot));
+        Assert.Equal(draft.OutputRoot, (await facade.SaveDraftAsync(command, default)).OutputRoot);
+        var ready = await facade.ScanAsync(command, default);
+        Assert.Equal(BatchInputWorkflowStatus.ScanReady, ready.Status);
+        Assert.Equal(choice, ready.PublicOutput);
+        Assert.Equal(draft.OutputRoot, ready.OutputRoot);
+        var restored = Assert.Single(await new BatchInputWorkflowFacade(service, new LocalAppPathPolicy(app)).ListRecoverableAsync(default));
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(ready), System.Text.Json.JsonSerializer.Serialize(restored));
+        Assert.Equal(ready.OutputRoot, (await repository.GetAsync(seed.BatchId, default))!.OutputRoot);
+        Assert.False(Directory.Exists(ready.OutputRoot));
+        var changed = command with { OutputRoot = "", PublicOutput = new(BatchInputWorkflowOutputMode.UnifiedDirectory, unified + "-other") };
+        await Assert.ThrowsAsync<InputRuleViolationException>(() => facade.SaveDraftAsync(changed, default));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(unified));
+    }
+
+    [Theory]
+    [InlineData("missing_db")]
+    [InlineData("missing_journal")]
+    [InlineData("different_db")]
+    [InlineData("old_version")]
+    [InlineData("missing_choice")]
+    [InlineData("unknown_choice_field")]
+    [InlineData("unknown_mode")]
+    [InlineData("numeric_mode")]
+    [InlineData("unexpected_root")]
+    [InlineData("duplicate_mode")]
+    [InlineData("duplicate_version")]
+    [InlineData("unknown_top_field")]
+    public async Task OutputIntentCorruptionNeverFallsBackToLegacyLayout(string corruption)
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(Path.Combine(directory.Path, "app"));
+        await using var store = new SqliteDesktopStore(options);
+        var (service, repository, command) = await OutputIntentScenario(directory.Path, store);
+        var draft = await service.CreateDraftFromTemplateAsync(command);
+        var ready = await service.ScanAsync(draft.BatchId);
+        Assert.Equal(BatchScanStatus.ScanReady, ready.ScanStatus);
+        var journalPath = Path.Combine(options.RootDirectory, "batches", draft.BatchId, "asset-manifest", "commit.journal.json");
+        var original = await File.ReadAllTextAsync(journalPath);
+        if (corruption == "missing_journal")
+        {
+            // Remove only this fixture's own journal, never a live application record.
+            File.Delete(journalPath);
+            Assert.Equal("INPUT_MANIFEST_DATABASE_MISMATCH", (await Assert.ThrowsAsync<InvalidOperationException>(
+                () => repository.GetAsync(draft.BatchId, default))).Message);
+            Assert.False(File.Exists(journalPath));
+            return;
+        }
+        if (corruption.EndsWith("_db", StringComparison.Ordinal))
+            await ExecuteIntentSql(options, corruption == "missing_db"
+                ? "DELETE FROM input_output_selections;"
+                : "UPDATE input_output_selections SET mode='UnifiedDirectory', unified_root='D:\\other';");
+        else
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(original)!;
+            switch (corruption)
+            {
+                case "old_version": node["schema_version"] = InputCommitJournalProtocol.Version; break;
+                case "missing_choice": node.AsObject().Remove("output_selection"); break;
+                case "unknown_choice_field": node["output_selection"]!["override"] = true; break;
+                case "unknown_mode": node["output_selection"]!["mode"] = "FutureMode"; break;
+                case "numeric_mode": node["output_selection"]!["mode"] = "1"; break;
+                case "unexpected_root": node["output_selection"]!["unified_root"] = @"D:\guessed"; break;
+                case "unknown_top_field": node["override"] = true; break;
+            }
+            var changed = node.ToJsonString();
+            if (corruption == "duplicate_mode") changed = changed.Replace("\"mode\":", "\"mode\":\"StyleSourceDirectories\",\"mode\":");
+            if (corruption == "duplicate_version") changed = changed.Replace("\"schema_version\":", "\"schema_version\":\"input-commit-journal/v1\",\"schema_version\":");
+            await File.WriteAllTextAsync(journalPath, changed);
+        }
+        var evidence = await File.ReadAllBytesAsync(journalPath);
+        var error = await Record.ExceptionAsync(() => repository.GetAsync(draft.BatchId, default));
+        Assert.True(error is InvalidDataException or InvalidOperationException, error?.ToString() ?? "No rejection");
+        Assert.Equal(evidence, await File.ReadAllBytesAsync(journalPath));
+        Assert.Equal(BatchScanStatus.ScanReady, (await store.GetAsync(draft.BatchId, default))!.ScanStatus);
+        Assert.False(Directory.Exists(command.OutputRoot));
+        Assert.False(Directory.Exists(Path.Combine(command.InputRoot, "生成详情页")));
+    }
+
     [Fact]
-    public async Task CommittedManifestAndJournalRebuildMissingSqliteBatchGraph()
+    public async Task OutputIntentCanChangeOnlyBeforeScanAndRepositoryAlsoEnforcesFreeze()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new(Path.Combine(directory.Path, "app")));
+        var (service, _, command) = await OutputIntentScenario(directory.Path, store);
+        var source = await service.CreateDraftFromTemplateAsync(command);
+        var unifiedCommand = command with { OutputSelection = BatchOutputSelection.Create(BatchOutputMode.UnifiedDirectory, @"D:\公开成品") };
+        var unified = await service.CreateDraftFromTemplateAsync(unifiedCommand);
+        Assert.Equal(source.BatchId, unified.BatchId);
+        Assert.Equal(source.CreatedAt, unified.CreatedAt);
+        Assert.Equal(unifiedCommand.OutputSelection, (await store.GetAsync(source.BatchId, default))!.OutputSelection);
+        await store.SaveAsync(unified.BeginScanning(DateTimeOffset.UtcNow), default);
+        var error = await Assert.ThrowsAsync<InputRuleViolationException>(() => store.SaveAsync(source, default));
+        Assert.Equal("INPUT_OUTPUT_SELECTION_FROZEN", error.Code);
+        var ready = await service.ScanAsync(source.BatchId);
+        Assert.Equal(unified.OutputSelection, ready.OutputSelection);
+        Assert.Equal("INPUT_DRAFT_CONFIGURATION_FROZEN", (await Assert.ThrowsAsync<InputRuleViolationException>(
+            () => service.CreateDraftFromTemplateAsync(command))).Code);
+        var same = await service.CreateDraftFromTemplateAsync(unifiedCommand);
+        Assert.Equal(ready.ManifestDigest, same.ManifestDigest);
+    }
+
+    [Fact]
+    public async Task OutputIntentWriteFailureRollsBackBaseRowAndSnapshotAndCanRetry()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(Path.Combine(directory.Path, "app"));
+        await using var store = new SqliteDesktopStore(options);
+        var (service, _, command) = await OutputIntentScenario(directory.Path, store);
+        await ExecuteIntentSql(options, "CREATE TRIGGER fail_choice BEFORE INSERT ON input_output_selections BEGIN SELECT RAISE(ABORT,'TEST_CHOICE_FAILURE'); END;");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateDraftFromTemplateAsync(command));
+        Assert.Null(await store.GetAsync(command.BatchId, default));
+        await ExecuteIntentSql(options, "DROP TRIGGER fail_choice;");
+        Assert.Equal(command.OutputSelection, (await service.CreateDraftFromTemplateAsync(command)).OutputSelection);
+        var ready = await service.ScanAsync(command.BatchId);
+        Assert.Equal(BatchScanStatus.ScanReady, ready.ScanStatus);
+    }
+
+    [Fact]
+    public async Task NewOutputIntentCannotEnterLegacyRendererOrCreateOutputDirectory()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new(Path.Combine(directory.Path, "app")));
+        var (service, _, command) = await OutputIntentScenario(directory.Path, store);
+        await service.CreateDraftFromTemplateAsync(command);
+        await service.ScanAsync(command.BatchId);
+        // Deliberately unavailable dependencies: admission must reject before using any renderer/secret owner.
+        var factory = new Desktop.Infrastructure.Bridge.BridgeRenderBatchSessionFactory(store, null!, null!, null!, null!, store);
+        var journal = new Desktop.Application.Rendering.RenderBatchJournal(1, command.BatchId, 1,
+            Desktop.Application.Rendering.RenderBatchStatus.Prepared, false, false, []);
+        Assert.Equal("RENDER_OUTPUT_PUBLICATION_NOT_AVAILABLE", (await Assert.ThrowsAsync<InvalidOperationException>(
+            () => factory.OpenAsync(journal, default))).Message);
+        Assert.False(Directory.Exists(command.OutputRoot));
+    }
+
+    [Fact]
+    public async Task OutputIntentRequiresRecoveryJournalBeforeAnyScanCommitFiles()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new(Path.Combine(directory.Path, "app")));
+        var (service, _, command) = await OutputIntentScenario(directory.Path, store);
+        var draft = await service.CreateDraftFromTemplateAsync(command);
+        var scanning = draft.BeginScanning(DateTimeOffset.UtcNow);
+        var committer = new SqliteBatchScanCommitter(store, CreateManifestStore(Path.Combine(directory.Path, "app")), TimeProvider.System);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => committer.CommitAsync(
+            new(scanning, BatchInputType.SingleStyle, [], [], null!), default));
+        Assert.Equal("INPUT_OUTPUT_SELECTION_JOURNAL_REQUIRED", error.Message);
+        Assert.False(Directory.Exists(Path.Combine(directory.Path, "app", "batches", draft.BatchId)));
+    }
+
+    private static async Task<(BatchInputService Service, RecoveringBatchRepository Repository, CreateBatchFromTemplateCommand Command)>
+        OutputIntentScenario(string root, SqliteDesktopStore store)
+    {
+        var appRoot = Path.Combine(root, "app");
+        var source = Directory.CreateDirectory(Path.Combine(root, "真实款", "新建文件夹")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(source, "front.png"), CreatePng(4, 3));
+        await store.InitializeAsync();
+        var (group, revision) = await SeedCommittedTemplateAsync(store);
+        var manifests = CreateManifestStore(appRoot);
+        var journals = CreateInputJournalStore(appRoot);
+        var repository = new RecoveringBatchRepository(store, manifests, TimeProvider.System, journals);
+        var service = new BatchInputService(new ReadOnlyFileInventory(), new StreamingAssetMetadataReader(), repository,
+            new SqliteBatchScanCommitter(store, manifests, TimeProvider.System, journals), TimeProvider.System, templates: store);
+        return (service, repository, new("batch_output_choice", group.GroupId, source, Path.Combine(root, "internal-evidence"),
+            [revision.Pages[0].PageId], BatchSelectionMode.Automatic, false,
+            BatchOutputSelection.Create(BatchOutputMode.StyleSourceDirectories)));
+    }
+
+    private static async Task ExecuteIntentSql(DesktopDataOptions options, string sql)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OutputIntentMigrationPreservesLegacyRowsAndRollsBackOnFailure(bool fail)
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(Path.Combine(directory.Path, "app"));
+        string before;
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            var (service, _, command) = await OutputIntentScenario(directory.Path, store);
+            await service.CreateDraftFromTemplateAsync(command with { OutputSelection = null });
+            await service.ScanAsync(command.BatchId);
+            before = System.Text.Json.JsonSerializer.Serialize(await store.GetAsync(command.BatchId, default));
+        }
+        await ExecuteIntentSql(options, "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DELETE FROM schema_migrations WHERE version>=19;"
+            + (fail ? "CREATE TRIGGER fail_v19 BEFORE INSERT ON schema_migrations WHEN NEW.version=19 BEGIN SELECT RAISE(ABORT,'TEST_V19_FAILURE'); END;" : ""));
+        var migrations = await ReadIntentScalar(options,
+            "SELECT group_concat(version || ':' || checksum || ':' || applied_at, '|') FROM (SELECT * FROM schema_migrations ORDER BY version);");
+        await using (var reopened = new SqliteDesktopStore(options))
+        {
+            if (fail) await Assert.ThrowsAsync<SqliteException>(() => reopened.InitializeAsync());
+            else
+            {
+                await reopened.InitializeAsync();
+                Assert.Equal(before, System.Text.Json.JsonSerializer.Serialize(await reopened.GetAsync("batch_output_choice", default)));
+                Assert.Equal("0", await ReadIntentScalar(options, "SELECT count(*) FROM input_output_selections;"));
+            }
+        }
+        Assert.Equal(migrations, await ReadIntentScalar(options,
+            "SELECT group_concat(version || ':' || checksum || ':' || applied_at, '|') FROM (SELECT * FROM schema_migrations WHERE version<=18 ORDER BY version);"));
+        Assert.Equal(fail ? "18" : "21", await ReadIntentScalar(options, "SELECT max(version) FROM schema_migrations;"));
+        if (fail) Assert.Equal("0", await ReadIntentScalar(options,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='input_output_selections';"));
+    }
+
+    [Fact]
+    public async Task SourceModeRetainsExactMultiStyleSourceMappingWithoutCreatingPublicFolders()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(Path.Combine(directory.Path, "app"));
+        string before;
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            var (service, _, command) = await OutputIntentScenario(directory.Path, store);
+            var input = Directory.CreateDirectory(Path.Combine(directory.Path, "多款")).FullName;
+            foreach (var name in new[] { "款A", "款B" })
+            {
+                var style = Directory.CreateDirectory(Path.Combine(input, name)).FullName;
+                await File.WriteAllBytesAsync(Path.Combine(style, "front.png"), CreatePng(4, 3));
+            }
+            await service.CreateDraftFromTemplateAsync(command with { InputRoot = input });
+            var ready = await service.ScanAsync(command.BatchId);
+            Assert.Equal(BatchScanStatus.ScanReady, ready.ScanStatus);
+            Assert.Equal(["款A", "款B"], ready.Styles.Select(s => s.SourceDirectoryRelativePath));
+            Assert.Equal(2, ready.Styles.Select(s => s.StyleId).Distinct().Count());
+            Assert.All(ready.Styles, s => Assert.False(Directory.Exists(Path.Combine(input, s.SourceDirectoryRelativePath, "生成详情页"))));
+            before = System.Text.Json.JsonSerializer.Serialize(ready);
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var repository = new RecoveringBatchRepository(reopened, CreateManifestStore(options.RootDirectory), TimeProvider.System,
+            CreateInputJournalStore(options.RootDirectory));
+        var restored = await repository.GetAsync("batch_output_choice", default);
+        Assert.Equal(before, System.Text.Json.JsonSerializer.Serialize(restored));
+    }
+
+    private static async Task<string?> ReadIntentScalar(DesktopDataOptions options, string sql)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToString(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(BatchOutputMode.UnifiedDirectory)]
+    [InlineData(BatchOutputMode.StyleSourceDirectories)]
+    public async Task CommittedManifestAndJournalRebuildMissingSqliteBatchGraph(BatchOutputMode? mode)
     {
         using var directory = new TestDirectory();
         var sourceRoot = Path.Combine(directory.Path, "source");
@@ -27,6 +311,9 @@ public sealed class BatchInputInfrastructureTests
         Directory.CreateDirectory(outputRoot);
         await File.WriteAllBytesAsync(Path.Combine(sourceRoot, "front.png"), CreatePng(4, 3));
         var options = new DesktopDataOptions(appRoot);
+        var selection = mode is null ? null : BatchOutputSelection.Create(mode.Value,
+            mode == BatchOutputMode.UnifiedDirectory ? Path.Combine(directory.Path, "公开成品") : null);
+        byte[]? journalBefore = null;
 
         await using (var store = new SqliteDesktopStore(options))
         {
@@ -57,13 +344,20 @@ public sealed class BatchInputInfrastructureTests
                 outputRoot,
                 [revision.Pages[0].PageId],
                 BatchSelectionMode.Automatic,
-                false));
+                false, selection));
 
             var ready = await service.ScanAsync(draft.BatchId);
             Assert.Equal(BatchScanStatus.ScanReady, ready.ScanStatus);
             var journal = await journals.GetAsync(ready.BatchId, CancellationToken.None);
             Assert.NotNull(journal);
             Assert.Equal(InputCommitJournalState.Committed, journal!.State);
+            Assert.Equal(selection, ready.OutputSelection);
+            Assert.Equal(selection, journal.ReadyDraft.OutputSelection);
+            Assert.Equal(mode is null ? InputCommitJournalProtocol.Version
+                : InputCommitJournalProtocol.OutputSelectionVersion, journal.SchemaVersion);
+            journalBefore = await File.ReadAllBytesAsync(Path.Combine(appRoot,
+                "batches", draft.BatchId, "asset-manifest", "commit.journal.json"));
+            if (mode is null) Assert.DoesNotContain("output_selection", System.Text.Encoding.UTF8.GetString(journalBefore));
         }
 
         await using (var connection = new SqliteConnection(
@@ -97,6 +391,10 @@ public sealed class BatchInputInfrastructureTests
         Assert.NotNull(recovered);
         Assert.Equal(BatchScanStatus.ScanReady, recovered!.ScanStatus);
         Assert.Single(recovered.Assets);
+        Assert.Equal(selection, recovered.OutputSelection);
+        Assert.Equal(selection, (await reopenedStore.GetAsync(recovered.BatchId, default))!.OutputSelection);
+        Assert.Equal(journalBefore, await File.ReadAllBytesAsync(Path.Combine(appRoot,
+            "batches", recovered.BatchId, "asset-manifest", "commit.journal.json")));
         Assert.Equal(
             recovered.ManifestDigest,
             (await reopenedManifests.InspectAsync(
@@ -389,6 +687,70 @@ public sealed class BatchInputInfrastructureTests
         Assert.Equal(200, recovered.Assets.Length);
         Assert.NotNull(await reopenedStore.GetGroupAsync("group_input", CancellationToken.None));
         Assert.Equal(hashesBefore, await HashFilesAsync(sourceFiles));
+    }
+
+    [Fact]
+    public async Task ReaderAcceptsProgressiveJpegWithoutChangingSourceBytes()
+    {
+        using var directory = new TestDirectory();
+        var bytes = CreateProgressiveJpeg();
+        var path = Path.Combine(directory.Path, "渐进式.jpg");
+        await File.WriteAllBytesAsync(path, bytes);
+
+        var result = await new StreamingAssetMetadataReader().ReadAsync(
+            directory.Path, Path.GetFileName(path), CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Failure?.Code);
+        Assert.Equal((16, 12, SourceImageFormat.Jpeg),
+            (result.Metadata!.PixelWidth, result.Metadata.PixelHeight, result.Metadata.Format));
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), result.Metadata.Sha256);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(path));
+    }
+
+    [Theory]
+    [InlineData("missing-eoi")]
+    [InlineData("truncated-marker")]
+    [InlineData("short-later-segment")]
+    [InlineData("oversized-later-segment")]
+    [InlineData("short-scan-header")]
+    [InlineData("no-scan")]
+    [InlineData("extension-mismatch")]
+    public async Task ReaderStillRejectsDamagedProgressiveJpeg(string damage)
+    {
+        using var directory = new TestDirectory();
+        var bytes = CreateProgressiveJpeg();
+        var scan = bytes.AsSpan().IndexOf(new byte[] { 0xff, 0xda });
+        var nextTable = scan + 2 + bytes.AsSpan(scan + 2).IndexOf(new byte[] { 0xff, 0xc4 });
+        Assert.True(nextTable > scan);
+        switch (damage)
+        {
+            case "missing-eoi": bytes = bytes[..^2]; break;
+            case "truncated-marker": bytes = bytes[..(nextTable + 1)]; break;
+            case "short-later-segment": bytes[nextTable + 2] = 0; bytes[nextTable + 3] = 1; break;
+            case "oversized-later-segment": bytes[nextTable + 2] = 0xff; bytes[nextTable + 3] = 0xff; break;
+            case "short-scan-header": bytes[scan + 2] = 0; bytes[scan + 3] = 1; break;
+            case "no-scan": bytes = [.. CreateJpeg(3, 2)[..15], 0xff, 0xd9]; break;
+        }
+        var path = Path.Combine(directory.Path, damage == "extension-mismatch" ? "image.png" : "image.jpg");
+        await File.WriteAllBytesAsync(path, bytes);
+        var result = await new StreamingAssetMetadataReader().ReadAsync(
+            directory.Path, Path.GetFileName(path), CancellationToken.None);
+        Assert.Equal("INPUT_ASSET_CORRUPT", result.Failure!.Code);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(path));
+    }
+
+    [Fact]
+    public async Task ReaderKeepsJpegStuffedBytesRestartAndFillInsideEntropyScan()
+    {
+        using var directory = new TestDirectory();
+        // Structural marker fixture, not a claim of a fully decoded image.
+        byte[] bytes = [.. CreateJpeg(3, 2)[..^2], 0xff, 0x00, 0x12, 0xff, 0xd0, 0x34, 0xff, 0xff, 0xd9];
+        var path = Path.Combine(directory.Path, "markers.jpg");
+        await File.WriteAllBytesAsync(path, bytes);
+        var result = await new StreamingAssetMetadataReader().ReadAsync(
+            directory.Path, Path.GetFileName(path), CancellationToken.None);
+        Assert.True(result.IsSuccess, result.Failure?.Code);
+        Assert.Equal((3, 2), (result.Metadata!.PixelWidth, result.Metadata.PixelHeight));
     }
 
     [Fact]
@@ -734,6 +1096,10 @@ public sealed class BatchInputInfrastructureTests
         }
         return [.. results];
     }
+
+    // Original 16x12 RGB gradient encoded with Pillow, progressive=True; no customer media.
+    private static byte[] CreateProgressiveJpeg() => Convert.FromBase64String(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wgARCAAMABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAABgX/xAAVAQEBAAAAAAAAAAAAAAAAAAABA//aAAwDAQACEAMQAAABGJr6Yj//xAAXEAEBAQEAAAAAAAAAAAAAAAAEAAID/9oACAEBAAEFAjhjhj8sR+WL/8QAFxEAAwEAAAAAAAAAAAAAAAAAAAMFIf/aAAgBAwEBPwGLaZh//8QAFhEBAQEAAAAAAAAAAAAAAAAAAwAB/9oACAECAQE/ARbb/8QAFRABAQAAAAAAAAAAAAAAAAAAADH/2gAIAQEABj8CiIj/xAAWEAEBAQAAAAAAAAAAAAAAAAAAITH/2gAIAQEAAT8hzc2cnP/aAAwDAQACAAMAAAAQr//EABURAQEAAAAAAAAAAAAAAAAAAABR/9oACAEDAQE/ELD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EE//xAAWEAEBAQAAAAAAAAAAAAAAAADxABD/2gAIAQEAAT8QIiNzn//Z");
 
     private static byte[] CreateJpeg(ushort width, ushort height) =>
     [

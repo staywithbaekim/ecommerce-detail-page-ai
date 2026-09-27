@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body { padding: 8px; color: #e8e8e8; font-size: 12px; overflow: auto; }
+h2 { font-size: 14px; margin-bottom: 8px; }
+sp-textfield { width: 100%; margin: 8px 0; }
+sp-button { margin: 6px 8px 6px 0; }
+#status { margin: 12px 0; } #error { color: #ffc2c2; }
+</style></head><body>
+<div id="status">未连接</div>
+<div id="error"></div>
+<div id="host"></div>
+<sp-textfield id="pairing" type="password" placeholder="设备配对码或一次性码"></sp-textfield>
+<sp-checkbox id="remember">记住此设备（一次性码请勿勾选）</sp-checkbox>
+<sp-button id="connect" disabled>连接 / 恢复等待</sp-button>
+<sp-button id="disconnect">断开并暂停等待</sp-button>
+<sp-button id="recover">重新检查并恢复</sp-button>
+<script src="main.js"></script>
+</body></html>

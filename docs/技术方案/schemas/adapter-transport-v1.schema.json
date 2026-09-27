@@ -1,0 +1,558 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/ecommerce-detail/contracts/ps-adapter/v1",
+  "title": "UXP active connection transport supplement v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "transport_version",
+    "kind",
+    "body"
+  ],
+  "properties": {
+    "transport_version": {
+      "const": "ps-adapter/v1"
+    },
+    "kind": {
+      "enum": [
+        "challenge_request",
+        "challenge_response",
+        "claim_request",
+        "claim_response",
+        "claim_ack",
+        "event_report",
+        "event_receipt",
+        "resource_read",
+        "resource_chunk",
+        "output_write",
+        "output_seal",
+        "output_receipt"
+      ]
+    },
+    "body": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "output_write" } } },
+      "then": { "properties": { "body": { "$ref": "#/$defs/output_write" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "output_seal" } } },
+      "then": { "properties": { "body": { "$ref": "#/$defs/output_seal" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "output_receipt" } } },
+      "then": { "properties": { "body": { "$ref": "#/$defs/output_receipt" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "resource_read" } } },
+      "then": { "properties": { "body": { "$ref": "#/$defs/resource_read" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "resource_chunk" } } },
+      "then": { "properties": { "body": { "$ref": "#/$defs/resource_chunk" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "challenge_request"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/challenge_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "challenge_response"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/challenge_response"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "claim_request"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/claim_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "claim_response"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/claim_response"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "claim_ack"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/claim_ack"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "event_report"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/event_report"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "event_receipt"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "$ref": "#/$defs/event_receipt"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "output_write": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "execution_id", "plan_digest", "output_root_handle", "artifact_set_id", "output_kind", "byte_length", "offset", "count", "sha256", "data"],
+      "properties": {
+        "claim_id": { "$ref": "#/$defs/identifier" },
+        "execution_id": { "$ref": "#/$defs/identifier" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "output_root_handle": { "$ref": "#/$defs/handle" },
+        "artifact_set_id": { "$ref": "#/$defs/identifier" },
+        "output_kind": { "enum": ["jpg", "editable_psd", "verification_psd"] },
+        "byte_length": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+        "count": { "type": "integer", "minimum": 1, "maximum": 131072 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "minLength": 2, "maxLength": 174763 }
+      }
+    },
+    "output_seal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "execution_id", "plan_digest", "output_root_handle", "artifact_set_id", "output_kind", "byte_length", "sha256"],
+      "properties": {
+        "claim_id": { "$ref": "#/$defs/identifier" },
+        "execution_id": { "$ref": "#/$defs/identifier" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "output_root_handle": { "$ref": "#/$defs/handle" },
+        "artifact_set_id": { "$ref": "#/$defs/identifier" },
+        "output_kind": { "enum": ["jpg", "editable_psd", "verification_psd"] },
+        "byte_length": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "output_receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["execution_id", "artifact_set_id", "output_kind", "next_offset", "sealed"],
+      "properties": {
+        "execution_id": { "$ref": "#/$defs/identifier" },
+        "artifact_set_id": { "$ref": "#/$defs/identifier" },
+        "output_kind": { "enum": ["jpg", "editable_psd", "verification_psd"] },
+        "next_offset": { "type": "integer", "minimum": 0, "maximum": 2147483648 },
+        "sealed": { "type": "boolean" }
+      }
+    },
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-fA-F]{64}$" },
+    "handle": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "resource_read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "execution_id", "plan_digest", "session_handle", "offset", "count"],
+      "properties": {
+        "claim_id": { "$ref": "#/$defs/identifier" },
+        "execution_id": { "$ref": "#/$defs/identifier" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "session_handle": { "$ref": "#/$defs/handle" },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "count": { "type": "integer", "minimum": 1, "maximum": 131072 }
+      }
+    },
+    "resource_chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_id", "plan_digest", "session_handle", "offset", "count", "sha256", "data"],
+      "properties": {
+        "execution_id": { "$ref": "#/$defs/identifier" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "session_handle": { "$ref": "#/$defs/handle" },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "count": { "type": "integer", "minimum": 1, "maximum": 131072 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "minLength": 2, "maxLength": 174763 }
+      }
+    },
+    "challenge_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "client_nonce",
+        "plugin_instance_id",
+        "plugin_id",
+        "plugin_version",
+        "photoshop_build",
+        "uxp_runtime_version",
+        "capabilities"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "client_nonce": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "plugin_instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "plugin_id": {
+          "const": "local.ecommerce.detail-renderer"
+        },
+        "plugin_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "photoshop_build": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "uxp_runtime_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._/-]{1,127}$"
+          }
+        }
+      }
+    },
+    "challenge_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "client_nonce",
+        "plugin_instance_id",
+        "plugin_id",
+        "plugin_version",
+        "photoshop_build",
+        "uxp_runtime_version",
+        "capabilities",
+        "nonce",
+        "session_id",
+        "task_binding",
+        "app_version",
+        "issued_at_unix_seconds",
+        "expires_at_unix_seconds",
+        "server_proof"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "client_nonce": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "plugin_instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "plugin_id": {
+          "const": "local.ecommerce.detail-renderer"
+        },
+        "plugin_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "photoshop_build": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "uxp_runtime_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._/-]{1,127}$"
+          }
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "task_binding": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "app_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "issued_at_unix_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 253402300799
+        },
+        "expires_at_unix_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 253402300799
+        },
+        "server_proof": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "claim_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {}
+    },
+    "claim_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "has_work"
+      ],
+      "properties": {
+        "has_work": {
+          "type": "boolean"
+        },
+        "claim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "claim_id",
+            "execution_id",
+            "plan_digest",
+            "state",
+            "cancel_requested"
+          ],
+          "properties": {
+            "claim_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "execution_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "plan_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-fA-F]{64}$"
+            },
+            "state": {
+              "enum": [
+                "claimed",
+                "authorized",
+                "running",
+                "completed",
+                "failed",
+                "cancelled",
+                "unknown"
+              ]
+            },
+            "cancel_requested": {
+              "type": "boolean"
+            },
+            "plan": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "has_work": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "claim"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "claim"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "claim_ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "execution_id",
+        "plan_digest"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$"
+        }
+      }
+    },
+    "event_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "event"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "event": {
+          "type": "object"
+        }
+      }
+    },
+    "event_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "event_seq"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "event_seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    }
+  }
+}

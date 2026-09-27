@@ -1,6 +1,7 @@
 using System.Reflection;
 using Desktop.Application.Ai;
 using Desktop.Application.Diagnostics;
+using Desktop.Application.Rendering;
 using Desktop.Contracts.Validation;
 using Desktop.Infrastructure.Ai;
 using Desktop.Infrastructure.Persistence;
@@ -10,6 +11,51 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class DesktopServicesTests
 {
+    [Fact]
+    public async Task ProductionPublisherAndCoordinatorRecoverPublicFilesWithoutPhotoshopSelectionOrNewExecutions()
+    {
+        using var fixture = new RenderStyleOutputRegistryTests.Fixture();
+        await using (var seed = await fixture.Open())
+            await RenderStyleOutputPublicationTests.Prepare(fixture, seed);
+        var services = new ServiceCollection(); services.AddDesktopFoundation(fixture.Options);
+        await using var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<SqliteDesktopStore>(); await store.InitializeAsync();
+        Assert.Same(provider.GetRequiredService<Desktop.Infrastructure.Bridge.RenderStyleOutputPublisher>(),
+            provider.GetRequiredService<IRenderStyleOutputPublisher>());
+        var before = (await store.LoadRenderBatchAsync("batch_test", default))!;
+        var result = await provider.GetRequiredService<IRenderBatchWorkflow>().RunAsync("batch_test", default);
+        Assert.Equal(RenderBatchStatus.CompletedWithIssues, result.Status);
+        Assert.Equal(before.Pages, result.Pages);
+        Assert.Equal("2", await fixture.Scalar("SELECT count(*) FROM render_output_publications WHERE state='Committed';"));
+        var reader = provider.GetRequiredService<IRenderBatchOutputReader>();
+        Assert.NotNull(await reader.GetStyleOutputDirectoryAsync("batch_test", "style_a", default));
+        Assert.NotNull(await reader.GetStyleOutputDirectoryAsync("batch_test", "style_b", default));
+        Assert.Null(provider.GetRequiredService<IPhotoshopConnectionCheckPort>().Latest);
+    }
+
+    [Fact]
+    public async Task RepairAndRenderingPortsShareOneCoordinatorAndAiAdmissionInstanceAndDisposeSafely()
+    {
+        using var directory = new TestDirectory();
+        var services = new ServiceCollection();
+        services.AddDesktopFoundation(new DesktopDataOptions(directory.Path));
+        await using var provider = services.BuildServiceProvider();
+        var coordinator = provider.GetRequiredService<IRenderBatchWorkflow>();
+        Assert.Same(coordinator, provider.GetRequiredService<ISizeTablePageRepairWorkflow>());
+        Assert.Same(coordinator, provider.GetRequiredService<RenderBatchCoordinator>());
+        Assert.Same(provider.GetRequiredService<IAiBatchAnalysisWorkflow>(), provider.GetRequiredService<ISizeTableRepairAdmission>());
+        Assert.NotNull(provider.GetRequiredService<ISizeTablePageRepairPreparer>());
+        Assert.IsType<Desktop.Infrastructure.Diagnostics.LocalDiagnosticPackageExporter>(provider.GetRequiredService<IDiagnosticPackageExporter>());
+        Assert.IsType<Desktop.Infrastructure.Diagnostics.WindowsPhotoshopEnvironmentProbe>(provider.GetRequiredService<IPhotoshopEnvironmentProbe>());
+        var connectionCheck = provider.GetRequiredService<IPhotoshopConnectionCheckPort>();
+        Assert.Same(provider.GetRequiredService<IPhotoshopPairingPort>(), connectionCheck);
+        Assert.Null(connectionCheck.Latest);
+        Assert.Same(provider.GetRequiredService<Desktop.Infrastructure.Bridge.PhotoshopHostSelectionService>(),
+            provider.GetRequiredService<IPhotoshopHostSelectionPort>());
+        var owners = provider.GetRequiredService<Desktop.Infrastructure.Bridge.BridgeSessionOwnerFactory>();
+        Assert.Equal("PHOTOSHOP_HOST_SELECTION_USE_ASYNC_OWNER",
+            Assert.Throws<InvalidOperationException>(() => owners.CreateTaskOwner("task_must_not_bypass_selection")).Message);
+    }
     [Fact]
     public async Task ReferenceLearningUploadAdmissionUsesDurableConsentStore()
     {

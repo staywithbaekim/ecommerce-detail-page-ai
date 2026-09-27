@@ -18,7 +18,29 @@ public sealed record SizeTableRenderPlanRequest(
     string? PsdFileName,
     DateTimeOffset CreatedAt,
     SizeTable Table,
-    SizeTableRasterizedResource RasterizedResource);
+    SizeTableRasterizedResource RasterizedResource,
+    SizeTableRenderTarget? CalibratedTarget = null,
+    SizeTableInsertionTarget? CalibratedInsertion = null,
+    string? OutputVariantId = null);
+
+/// <summary>An explicit size-table binding, never inferred from a product binding or the only smart object.</summary>
+public sealed record SizeTableRenderTarget(
+    string TemplateRevisionId,
+    string TemplateSha256,
+    FrameBinding Binding,
+    RenderTargetPlacement Placement);
+
+public sealed record SizeTableLayerReference(IReadOnlyList<int> LayerPath, int LayerId,
+    string Kind, string Name, string StructureSignature)
+{
+    public string LayerPathOrder { get; } = "psd_bottom_to_top";
+}
+
+public sealed record SizeTableInsertion(string LayerName, SizeTableLayerReference AboveLayer,
+    IReadOnlyList<SizeTableLayerReference> HiddenLayers, TemplateRect SafeBounds, RenderTargetPlacement Placement);
+
+public sealed record SizeTableInsertionTarget(string TemplateRevisionId, string TemplateSha256,
+    string PageId, SizeTableInsertion Insertion);
 
 public interface ISizeTableRenderPlanBuilder
 {
@@ -31,6 +53,7 @@ public interface ISizeTableRenderPlanBuilder
 
 public sealed class SizeTableRenderPlanBuilder(IRenderPlanValidator validator) : ISizeTableRenderPlanBuilder
 {
+    private static readonly string[] BaseCapabilities = ["psd-layer-path/psd-bottom-to-top", "smart-object/replace", "output/jpeg-srgb-icc"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
@@ -48,6 +71,12 @@ public sealed class SizeTableRenderPlanBuilder(IRenderPlanValidator validator) :
         ArgumentNullException.ThrowIfNull(request);
         Validate(revision, page, templateResource, request);
 
+        var capabilities = BaseCapabilities.AsEnumerable();
+        if (request.CalibratedTarget is not null) capabilities = capabilities
+            .Append(RenderPlanPlacementMigration.Capability).Append(RenderPlanPlacementMigration.SizeTableCapability);
+        var targets = request.CalibratedTarget is { } calibrated
+            ? new[] { CreateTarget(calibrated, request.RasterizedResource.ResourceId) } : Array.Empty<object>();
+
         object CreateDocument(string planDigest) => new
         {
             schema_version = "render-plan/v1",
@@ -59,12 +88,7 @@ public sealed class SizeTableRenderPlanBuilder(IRenderPlanValidator validator) :
             template_revision_id = revision.RevisionId,
             plan_digest = planDigest,
             created_at = request.CreatedAt,
-            required_capabilities = new[]
-            {
-                "psd-layer-path/psd-bottom-to-top",
-                "smart-object/replace",
-                "output/jpeg-srgb-icc"
-            },
+            required_capabilities = capabilities.ToArray(),
             resources = new object[]
             {
                 new
@@ -97,7 +121,7 @@ public sealed class SizeTableRenderPlanBuilder(IRenderPlanValidator validator) :
                     bits = 8
                 }
             },
-            targets = Array.Empty<object>(),
+            targets,
             size_table = new
             {
                 size_table_id = request.Table.TableId,
@@ -151,12 +175,58 @@ public sealed class SizeTableRenderPlanBuilder(IRenderPlanValidator validator) :
             JsonOptions);
         var digest = RenderPlanDigest.Compute(preimage);
         var json = JsonSerializer.Serialize(CreateDocument(digest), JsonOptions);
+        if (request.CalibratedInsertion is { } insertion)
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["required_capabilities"]!.AsArray().Add(RenderPlanPlacementMigration.Capability);
+            node["required_capabilities"]!.AsArray().Add(RenderPlanPlacementMigration.SizeInsertionCapability);
+            node["size_table"]!["insertion"] = JsonSerializer.SerializeToNode(insertion.Insertion, JsonOptions);
+            node["plan_digest"] = RenderPlanDigest.Compute(node.ToJsonString());
+            json = node.ToJsonString();
+        }
+        json = RenderPlanVariantIdentity.AddToNewPlan(json, request.OutputVariantId);
         var validation = validator.Validate(json);
         if (!validation.IsValid)
         {
             throw new SizeTableRuleViolationException("SIZE_TABLE_RENDER_PLAN_SCHEMA_REJECTED");
         }
+        if ((request.CalibratedTarget is not null || request.CalibratedInsertion is not null)
+            && !RenderTemplateEvidenceValidator.Matches(json, templateResource.Inspection))
+            throw new SizeTableRuleViolationException("SIZE_TABLE_RENDER_TARGET_INVALID");
         return json;
+    }
+
+    internal static object CreateTarget(SizeTableRenderTarget calibrated, string resourceId)
+    {
+        var binding = calibrated.Binding;
+        return new
+        {
+            frame_id = binding.FrameId,
+            layer_path = binding.LayerPath.Segments,
+            layer_path_order = binding.LayerPath.Order,
+            expected_layer = new
+            {
+                layer_id = binding.ExpectedLayer.LayerId, kind = "smartObject",
+                name_before = binding.ExpectedLayer.NameBefore, visible = binding.ExpectedLayer.Visible,
+                clipping = binding.ExpectedLayer.Clipping, user_mask = binding.ExpectedLayer.UserMask,
+                vector_mask = binding.ExpectedLayer.VectorMask, opacity = binding.ExpectedLayer.Opacity,
+                blend_mode = binding.ExpectedLayer.BlendMode,
+                structure_signature = binding.ExpectedLayer.StructureSignature.Value
+            },
+            superseded_layers = binding.SupersededLayers.Select(layer => new
+            {
+                layer_path = layer.LayerPath.Segments, layer_path_order = layer.LayerPath.Order,
+                expected_kind = "smartObject", expected_visible = layer.ExpectedVisible,
+                expected_clipping = layer.ExpectedClipping, expected_layer_id = layer.ExpectedLayerId
+            }).ToArray(),
+            asset_resource_id = resourceId,
+            layout = new
+            {
+                intent = "size_table_complete", scale = 1, offset = new { x = 0, y = 0 },
+                safe_bounds = binding.LayoutIntent.SafeBounds,
+                placement = calibrated.Placement
+            }
+        };
     }
 
     private static void Validate(
@@ -167,6 +237,19 @@ public sealed class SizeTableRenderPlanBuilder(IRenderPlanValidator validator) :
     {
         var table = request.Table;
         var raster = request.RasterizedResource;
+        if (request.CalibratedInsertion is { } insertion && (request.CalibratedTarget is not null
+            || insertion.TemplateRevisionId != revision.RevisionId || insertion.PageId != page.PageId
+            || !string.Equals(insertion.TemplateSha256, templateResource.Sha256, StringComparison.OrdinalIgnoreCase)
+            || insertion.Insertion.Placement.SourceWidth != raster.PixelWidth
+            || insertion.Insertion.Placement.SourceHeight != raster.PixelHeight))
+            throw new SizeTableRuleViolationException("SIZE_TABLE_RENDER_TARGET_INVALID");
+        if (request.CalibratedTarget is { } calibrated
+            && (calibrated.TemplateRevisionId != revision.RevisionId
+                || !string.Equals(calibrated.TemplateSha256, templateResource.Sha256, StringComparison.OrdinalIgnoreCase)
+                || calibrated.Binding.PageId != page.PageId
+                || calibrated.Placement.SourceWidth != raster.PixelWidth
+                || calibrated.Placement.SourceHeight != raster.PixelHeight))
+            throw new SizeTableRuleViolationException("SIZE_TABLE_RENDER_TARGET_INVALID");
         if (revision.State != TemplateRevisionState.Committed
             || page.ContentType != TemplatePageContentType.DynamicSizeTable
             || !revision.Pages.Any(candidate => string.Equals(candidate.PageId, page.PageId, StringComparison.Ordinal))

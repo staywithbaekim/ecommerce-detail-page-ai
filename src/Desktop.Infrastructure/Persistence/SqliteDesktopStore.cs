@@ -2,6 +2,7 @@ using System.Globalization;
 using Desktop.Application.Diagnostics;
 using Desktop.Application.Ai;
 using Desktop.Application.Tasks;
+using Desktop.Application.Rendering;
 using Desktop.Domain.Tasks;
 using Microsoft.Data.Sqlite;
 
@@ -10,6 +11,8 @@ namespace Desktop.Infrastructure.Persistence;
 public sealed partial class SqliteDesktopStore :
     ITaskEventStore,
     ICheckpointStore,
+    IRenderPageCommitStore,
+    IRenderBatchStore,
     IAppInstanceStore,
     IAiAnalysisStore,
     IAiAnalysisSchedulingStateStore,
@@ -50,7 +53,14 @@ public sealed partial class SqliteDesktopStore :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadTaskEventsAsync(connection, null, taskId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyList<TaskEvent>> ReadTaskEventsAsync(SqliteConnection connection,
+        SqliteTransaction? transaction, string taskId, CancellationToken cancellationToken)
+    {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT event_id, sequence_no, event_type, occurred_at, page_id, payload_digest
             FROM task_events
@@ -83,6 +93,8 @@ public sealed partial class SqliteDesktopStore :
         _writer.ExecuteAsync(
             async (connection, token) =>
             {
+                // Reopening a render task requires the same transaction as its new attempt and origin.
+                if (taskEvent.Type is TaskEventType.RenderPageRegenerationRequested or TaskEventType.RenderPageRepairRequested) throw BatchInvalid();
                 await using var transaction = (SqliteTransaction)await connection
                     .BeginTransactionAsync(token)
                     .ConfigureAwait(false);
@@ -111,7 +123,14 @@ public sealed partial class SqliteDesktopStore :
         _writer.ExecuteAsync(
             async (connection, token) =>
             {
+                // Render manifests and checkpoints are one journal. Generic callers may
+                // neither create half of it nor replace its page index during recovery.
+                if (checkpoint.Stage == "render_output" || checkpoint.OutputVariantId is not null) throw RenderConflict();
                 await using var command = connection.CreateCommand();
+                command.CommandText = "SELECT COUNT(*) FROM render_page_checkpoints WHERE task_id=$task_id AND style_id=$style_id AND page_id=$page_id;";
+                AddCheckpointParameters(command, checkpoint);
+                if ((long)(await command.ExecuteScalarAsync(token).ConfigureAwait(false))! != 0) throw RenderConflict();
+                command.Parameters.Clear();
                 command.CommandText = """
                     INSERT INTO checkpoints (
                         task_id, style_id, page_id, stage, attempt, plan_digest,
@@ -125,10 +144,11 @@ public sealed partial class SqliteDesktopStore :
                         plan_digest = excluded.plan_digest,
                         bridge_execution_id = excluded.bridge_execution_id,
                         output_commit_state = excluded.output_commit_state,
-                        updated_at = excluded.updated_at;
+                        updated_at = excluded.updated_at
+                    WHERE checkpoints.stage <> 'render_output';
                     """;
                 AddCheckpointParameters(command, checkpoint);
-                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                if (await command.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) throw RenderConflict();
                 return true;
             },
             cancellationToken);
@@ -141,10 +161,13 @@ public sealed partial class SqliteDesktopStore :
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT style_id, page_id, stage, attempt, plan_digest,
-                   bridge_execution_id, output_commit_state, updated_at
+                   bridge_execution_id, output_commit_state, updated_at, '' AS output_variant_id
             FROM checkpoints
-            WHERE task_id = $task_id
-            ORDER BY style_id, page_id;
+            WHERE task_id = $task_id AND stage <> 'render_output'
+            UNION ALL
+            SELECT style_id,page_id,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at,output_variant_id
+            FROM render_page_checkpoints WHERE task_id=$task_id
+            ORDER BY style_id, page_id, output_variant_id, attempt;
             """;
         command.Parameters.AddWithValue("$task_id", taskId);
 
@@ -161,7 +184,8 @@ public sealed partial class SqliteDesktopStore :
                 reader.GetString(4),
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 Enum.Parse<OutputCommitState>(reader.GetString(6), ignoreCase: false),
-                DateTimeOffset.Parse(reader.GetString(7), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)));
+                DateTimeOffset.Parse(reader.GetString(7), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.GetString(8).Length == 0 ? null : reader.GetString(8)));
         }
 
         return checkpoints;

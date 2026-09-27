@@ -14,6 +14,9 @@
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\render-plan-v1.schema.json">
       <Link>Schemas\render-plan-v1.schema.json</Link>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\..\docs\技术方案\schemas\adapter-transport-v1.schema.json">
+      <Link>Schemas\adapter-transport-v1.schema.json</Link>
+    </EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\bridge-v1.schema.json">
       <Link>Schemas\bridge-v1.schema.json</Link>
     </EmbeddedResource>
@@ -22,6 +25,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-package-v1.schema.json">
       <Link>Schemas\template-package-v1.schema.json</Link>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-package-v2.schema.json">
+      <Link>Schemas\template-package-v2.schema.json</Link>
     </EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\ai-analysis-v1.schema.json">
       <Link>Schemas\ai-analysis-v1.schema.json</Link>

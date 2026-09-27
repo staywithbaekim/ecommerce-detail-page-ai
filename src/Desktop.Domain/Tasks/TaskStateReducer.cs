@@ -80,8 +80,20 @@ public static class TaskStateReducer
         TaskEventType.IssueRecorded => RecordIssue(state),
         TaskEventType.Completed => Complete(state, withIssues: false),
         TaskEventType.CompletedWithIssues => Complete(state, withIssues: true),
+        TaskEventType.RenderPageRegenerationRequested or TaskEventType.RenderPageRepairRequested => ReopenForRenderPage(state, taskEvent),
         _ => throw Violation("TASK_EVENT_UNKNOWN", "无法识别任务事件。")
     };
+
+    private static TaskState ReopenForRenderPage(TaskState state, TaskEvent taskEvent)
+    {
+        EnsureStatus(state, TaskStatus.Completed, TaskStatus.CompletedWithIssues, TaskStatus.Cancelled,
+            TaskStatus.Failed, TaskStatus.Paused, TaskStatus.UserActionRequired);
+        if (string.IsNullOrWhiteSpace(taskEvent.PageId) || taskEvent.PayloadDigest.Length != 71
+            || !taskEvent.PayloadDigest.StartsWith("sha256:", StringComparison.Ordinal)
+            || taskEvent.PayloadDigest[7..].Any(c => !char.IsAsciiHexDigitLower(c)))
+            throw Violation("TASK_REGENERATION_IDENTITY_REQUIRED", "重新生成必须绑定页面和新计划摘要。");
+        return state with { Status = TaskStatus.ReadyToRender };
+    }
 
     private static TaskState CommitPage(TaskState state, string? pageId)
     {

@@ -36,7 +36,9 @@ public sealed record TaskCheckpoint(
     string PlanDigest,
     string? BridgeExecutionId,
     OutputCommitState OutputState,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? OutputVariantId = null);
 
 public interface ICheckpointStore
 {
@@ -51,4 +53,8 @@ public sealed record TaskProjection(
     long LastSequence,
     int OutputCount,
     int IssueCount,
-    bool CanResume);
+    bool CanResume)
+{
+    // Presentation metadata only; never an execution/recovery checkpoint.
+    public DateTimeOffset? UpdatedAt { get; init; }
+}

@@ -9,6 +9,62 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class TemplateRepositoryTests
 {
+    [Fact]
+    public async Task ExactLayerNameWhitespaceSurvivesCommittedRevisionReopen()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var page = Page("page_name", "revision_name", 0);
+        var binding = FrameBinding.Create("frame_name", page.PageId, LayerPath.Create([2]),
+            ExpectedLayerEvidence.Create(257, "\tfabric_detail ", true, false, false, false, 255, "normal",
+                LayerStructureSignature.Create(RuleDigest)), [], SelectionRequirement.Create("面料近景"),
+            LayoutIntent.Create("detail_crop", 1, 0, 0, TemplateRect.Create(0, 0, 790, 1252)));
+        var draft = TemplateRevision.CreateDraft(page.RevisionId, "group_name", 1, now, [page], [binding]);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveGroupAsync(TemplateGroup.Create(draft.GroupId, "layer names", now), default);
+            await store.SaveDraftRevisionAsync(draft, default);
+            await store.CommitRevisionAsync(Commit(draft), null, default);
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        Assert.Equal("\tfabric_detail ", (await reopened.GetRevisionAsync(page.RevisionId, default))!.FrameBindings.Single().ExpectedLayer.NameBefore);
+    }
+
+    [Fact]
+    public async Task SizeCalibrationSurvivesRestartAndCommittedRulesCannotBeReplaced()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var group = TemplateGroup.Create("group_size", "sizes", now);
+        var layer = new SizeTableTemplateLayer(1, 257, "group", "old table", "sha256:" + new string('b', 64));
+        var calibration = new SizeTableTemplateCalibration("size-table-template/v1", new string('a', 64), "new table", layer,
+            [layer], TemplateRect.Create(10, 20, 700, 1000),
+            new("Microsoft YaHei UI", 24, 1000, 56, 24, 12, "#FFFFFFFF", "#FFF2F4F7", "#FF101828", "#FF98A2B3"));
+        var page = TemplatePage.Create("page_size", "revision_size", 0, "sizes", TemplatePageContentType.DynamicSizeTable,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource_size", sizeTableCalibration: calibration);
+        var draft = TemplateRevision.CreateDraft(page.RevisionId, group.GroupId, 1, now, [page]);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveGroupAsync(group, default);
+            await store.SaveDraftRevisionAsync(draft, default);
+            await store.CommitRevisionAsync(Commit(draft), null, default);
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var revision = (await reopened.GetRevisionAsync(page.RevisionId, default))!;
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(calibration),
+            System.Text.Json.JsonSerializer.Serialize(revision.Pages[0].SizeTableCalibration));
+        var changed = draft.CalibrateSizeTable(page.PageId, calibration with { LayerName = "changed" });
+        var error = await Assert.ThrowsAsync<TemplateRuleViolationException>(() => reopened.CommitRevisionAsync(Commit(changed), null, default));
+        Assert.Equal("TPL_REVISION_IMMUTABLE", error.Message);
+        Assert.Equal("new table", (await reopened.GetRevisionAsync(page.RevisionId, default))!.Pages[0].SizeTableCalibration!.LayerName);
+    }
+
     private const string RuleDigest =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

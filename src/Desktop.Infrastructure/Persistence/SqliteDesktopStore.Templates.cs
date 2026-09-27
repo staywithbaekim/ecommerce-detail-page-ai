@@ -827,10 +827,10 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
             pageCommand.CommandText = """
                 INSERT INTO template_pages(
                     revision_id, page_id, order_index, name, content_type, generation_mode,
-                    variant_capacity, enabled, template_resource_id)
+                    variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y, size_table_calibration_json)
                 VALUES(
                     $revision_id, $page_id, $order_index, $name, $content_type, $generation_mode,
-                    $variant_capacity, $enabled, $template_resource_id);
+                    $variant_capacity, $enabled, $template_resource_id, $notes, $canvas_x, $canvas_y, $size_table_calibration_json);
                 """;
             AddPageParameters(pageCommand, page);
             await pageCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -874,6 +874,11 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
         command.Parameters.AddWithValue("$variant_capacity", (object?)page.VariantCapacity ?? DBNull.Value);
         command.Parameters.AddWithValue("$enabled", page.Enabled ? 1 : 0);
         command.Parameters.AddWithValue("$template_resource_id", page.TemplateResourceId);
+        command.Parameters.AddWithValue("$notes", page.Notes);
+        command.Parameters.AddWithValue("$canvas_x", page.CanvasX);
+        command.Parameters.AddWithValue("$canvas_y", page.CanvasY);
+        command.Parameters.AddWithValue("$size_table_calibration_json", page.SizeTableCalibration is null
+            ? DBNull.Value : JsonSerializer.Serialize(page.SizeTableCalibration));
     }
 
     private static async Task EnsureCommittedRevisionMatchesAsync(
@@ -909,7 +914,7 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
             pageCommand.Transaction = transaction;
             pageCommand.CommandText = """
                 SELECT page_id, order_index, name, content_type, generation_mode,
-                       variant_capacity, enabled, template_resource_id
+                       variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y, size_table_calibration_json
                 FROM template_pages
                 WHERE revision_id = $revision_id
                 ORDER BY order_index;
@@ -974,7 +979,12 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
         && string.Equals(reader.GetString(4), page.GenerationMode.ToString(), StringComparison.Ordinal)
         && (reader.IsDBNull(5) ? null : reader.GetInt32(5)) == page.VariantCapacity
         && reader.GetBoolean(6) == page.Enabled
-        && string.Equals(reader.GetString(7), page.TemplateResourceId, StringComparison.Ordinal);
+        && string.Equals(reader.GetString(7), page.TemplateResourceId, StringComparison.Ordinal)
+        && string.Equals(reader.GetString(8), page.Notes, StringComparison.Ordinal)
+        && Math.Abs(reader.GetDouble(9) - page.CanvasX) < 0.0001
+        && Math.Abs(reader.GetDouble(10) - page.CanvasY) < 0.0001
+        && string.Equals(reader.IsDBNull(11) ? null : reader.GetString(11), page.SizeTableCalibration is null
+            ? null : JsonSerializer.Serialize(page.SizeTableCalibration), StringComparison.Ordinal);
 
     private static async Task<ImmutableArray<TemplatePage>> LoadPagesAsync(
         SqliteConnection connection,
@@ -984,7 +994,7 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT page_id, order_index, name, content_type, generation_mode,
-                   variant_capacity, enabled, template_resource_id
+                   variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y, size_table_calibration_json
             FROM template_pages
             WHERE revision_id = $revision_id
             ORDER BY order_index;
@@ -1003,7 +1013,12 @@ public sealed partial class SqliteDesktopStore : ITemplateRepository, IBatchSnap
                 Enum.Parse<TemplateGenerationMode>(reader.GetString(4), false),
                 reader.IsDBNull(5) ? null : reader.GetInt32(5),
                 reader.GetBoolean(6),
-                reader.GetString(7)));
+                reader.GetString(7),
+                reader.GetString(8),
+                reader.GetDouble(9),
+                reader.GetDouble(10),
+                reader.IsDBNull(11) ? null : JsonSerializer.Deserialize<SizeTableTemplateCalibration>(reader.GetString(11))
+                    ?? throw new InvalidDataException("SIZE_TABLE_CALIBRATION_INVALID")));
         }
 
         return pages.ToImmutable();

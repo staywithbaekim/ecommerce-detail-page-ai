@@ -82,7 +82,13 @@ public sealed record AiVariantGroupV1(
     [property: JsonPropertyName("dimension")] string Dimension,
     [property: JsonPropertyName("value")] string Value,
     [property: JsonPropertyName("asset_ids")] IReadOnlyList<string> AssetIds,
-    [property: JsonPropertyName("is_primary_suggestion")] bool IsPrimarySuggestion);
+    [property: JsonPropertyName("is_primary_suggestion")] bool IsPrimarySuggestion,
+    [property: JsonPropertyName("variant_role")] string? VariantRole = null,
+    [property: JsonPropertyName("coverage_requirement_ids")] IReadOnlyList<string>? CoverageRequirementIds = null,
+    [property: JsonPropertyName("missing_requirement_ids")] IReadOnlyList<string>? MissingRequirementIds = null,
+    [property: JsonPropertyName("is_complete")] bool? IsComplete = null,
+    [property: JsonPropertyName("evidence_codes")] IReadOnlyList<string>? EvidenceCodes = null,
+    [property: JsonPropertyName("primary_suggestion_evidence")] string? PrimarySuggestionEvidence = null);
 
 public sealed record AiSubjectGeometryV1(
     [property: JsonPropertyName("asset_id")] string AssetId,

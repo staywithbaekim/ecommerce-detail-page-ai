@@ -38,7 +38,17 @@ public sealed record TemplatePageProjection(
     TemplateGenerationModeOption GenerationMode,
     int? VariantCapacity,
     bool Enabled,
-    string TemplateResourceId);
+    string TemplateResourceId,
+    string Notes = "",
+    double CanvasX = 0,
+    double CanvasY = 0,
+    TemplateSizeCalibration? SizeTableCalibration = null);
+
+public interface ISizeTableTemplateCalibrationService
+{
+    Task CalibrateSizeTableAsync(TemplateDraftSession session, string pageId,
+        TemplateSizeCalibration calibration, CancellationToken cancellationToken);
+}
 
 public sealed record TemplateDraftSession(
     string GroupId,
@@ -76,6 +86,25 @@ public sealed record TemplateDraftPage(
 public sealed record TemplateDraftView(
     TemplateDraftSession Session,
     IReadOnlyList<TemplateDraftPage> Pages);
+
+public sealed record TemplatePagePresentationUpdate(
+    string PageId,
+    string Notes,
+    double CanvasX,
+    double CanvasY);
+
+/// <summary>
+/// Stores editor-only presentation state without coupling it to output order.
+/// Implemented by the workspace service so older callers and test doubles can
+/// continue using the original page configuration contract.
+/// </summary>
+public interface ITemplatePagePresentationService
+{
+    Task UpdatePagePresentationAsync(
+        TemplateDraftSession session,
+        TemplatePagePresentationUpdate update,
+        CancellationToken cancellationToken);
+}
 
 public sealed record TemplateWorkspaceImportResult(
     TemplatePageImportResult Import,

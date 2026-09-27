@@ -1,0 +1,79 @@
+<UserControl x:Class="Desktop.App.AiUploadConsentDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             HorizontalContentAlignment="Stretch"
+             VerticalContentAlignment="Stretch"
+             >
+    <Grid>
+        <Grid Grid.Row="0"
+              Panel.ZIndex="40"
+              Background="{StaticResource ModalOverlayBrush}"
+              Visibility="{Binding IsAiUploadConsentDialogVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              AutomationProperties.AutomationId="AiUploadConsentDialog"
+              AutomationProperties.Name="AI 分析与图片上传授权"
+              AutomationProperties.LiveSetting="Assertive">
+            <Border Width="620"
+                    MaxWidth="620"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource DialogCardStyle}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource SectionTitleTextStyle}"
+                               Text="AI 分析与图片上传授权"
+                               AutomationProperties.AutomationId="AiUploadConsentDialogTitle" />
+                    <TextBlock Margin="0,8,0,0"
+                               Style="{StaticResource BodyTextStyle}"
+                               Text="为了识别商品主体和匹配页面图片框，软件需要把必要的压缩分析副本上传到火山方舟。此授权只需确认一次，之后可在设置中查看或撤回。"
+                               TextWrapping="Wrap" />
+                    <Border Margin="0,18,0,0"
+                            Padding="14,12"
+                            Background="{StaticResource SurfaceSubtleBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource SmallBodyTextStyle}"
+                                       Text="只上传应用生成的必要压缩分析副本" />
+                            <TextBlock Margin="0,7,0,0"
+                                       Style="{StaticResource SmallBodyTextStyle}"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Text="不上传 PSD、原始高清图片、本地路径或正式输出；撤回后不再发起新的 AI 请求，已有本地结果不受影响。"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                    <CheckBox Margin="0,18,0,0"
+                              IsChecked="{Binding AiUploadConsentAcknowledged, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              Content="我已阅读并同意“AI 分析与图片上传授权”"
+                              AutomationProperties.AutomationId="AiUploadConsentAcknowledgement" />
+                    <TextBlock Margin="0,8,0,0"
+                               Style="{StaticResource CaptionTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="该选项默认不勾选。取消不会修改源文件，也不会开始扫描或上传。"
+                               TextWrapping="Wrap" />
+                    <StackPanel Margin="0,22,0,0"
+                                HorizontalAlignment="Right"
+                                Orientation="Horizontal">
+                        <Button Margin="0,0,8,0"
+                                IsCancel="True"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding CancelAiUploadConsentCommand}"
+                                Content="暂不使用 AI"
+                                AutomationProperties.AutomationId="CancelAiUploadConsentButton" />
+                        <Button IsDefault="True"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding ConfirmAiUploadConsentCommand}"
+                                IsEnabled="{Binding CanConfirmAiUploadConsent}"
+                                Content="同意并继续"
+                                AutomationProperties.AutomationId="ConfirmAiUploadConsentButton" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+        
+    </Grid>
+</UserControl>
+

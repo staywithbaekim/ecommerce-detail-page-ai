@@ -63,6 +63,19 @@ public sealed class TemplatePackagePortTests
         var validated = await port.ValidateAsync(path, CancellationToken.None);
         Assert.Equal("revision_current_evidence", validated.RevisionId);
         Assert.Single(validated.Entries);
+        using (var archive = ZipFile.Open(path, ZipArchiveMode.Update))
+        {
+            var entry = archive.GetEntry("manifest.json")!;
+            string original;
+            using (var reader = new StreamReader(entry.Open())) original = await reader.ReadToEndAsync();
+            var raw = System.Text.Json.Nodes.JsonNode.Parse(original)!;
+            raw["pages"]![0]!["sizeTableCalibration"] = null;
+            await using var stream = entry.Open(); stream.SetLength(0);
+            await using var writer = new StreamWriter(stream); await writer.WriteAsync(raw.ToJsonString());
+        }
+        // Validate the original JSON, so ignored optional nulls cannot bypass frozen v1 fields.
+        var unknown = await Assert.ThrowsAsync<InvalidDataException>(() => new ZipTemplatePackagePort().ValidateAsync(path, default));
+        Assert.Equal("TPL_PACKAGE_INVALID", unknown.Message);
     }
 
     [Fact]

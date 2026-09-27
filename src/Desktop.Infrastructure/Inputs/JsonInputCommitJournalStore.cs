@@ -24,6 +24,12 @@ public sealed class JsonInputCommitJournalStore(
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private static readonly JsonSerializerOptions OutputSelectionOptions = new(Options)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        AllowDuplicateProperties = false
+    };
+
     public async Task SaveAsync(
         InputCommitJournal journal,
         CancellationToken cancellationToken)
@@ -50,7 +56,12 @@ public sealed class JsonInputCommitJournalStore(
 
         try
         {
-            var envelope = JsonSerializer.Deserialize<JournalEnvelope>(bytes, Options)
+            using var document = JsonDocument.Parse(bytes);
+            var options = document.RootElement.TryGetProperty("schema_version", out var version)
+                && version.ValueKind == JsonValueKind.String
+                && version.GetString() == InputCommitJournalProtocol.OutputSelectionVersion
+                    ? OutputSelectionOptions : Options;
+            var envelope = JsonSerializer.Deserialize<JournalEnvelope>(bytes, options)
                 ?? throw new InvalidDataException("INPUT_COMMIT_JOURNAL_CORRUPT");
             return FromEnvelope(envelope, batchId);
         }
@@ -103,7 +114,7 @@ public sealed class JsonInputCommitJournalStore(
 
     private static JournalEnvelope ToEnvelope(InputCommitJournal journal)
     {
-        if (!string.Equals(journal.SchemaVersion, InputCommitJournalProtocol.Version, StringComparison.Ordinal)
+        if (!ValidVersion(journal.SchemaVersion, journal.ReadyDraft.OutputSelection is not null)
             || !string.Equals(journal.BatchId, journal.ReadyDraft.BatchId, StringComparison.Ordinal)
             || !string.Equals(journal.BatchId, journal.StagedManifest.BatchId, StringComparison.Ordinal)
             || journal.ReadyDraft.ScanStatus != BatchScanStatus.ScanReady
@@ -161,14 +172,16 @@ public sealed class JsonInputCommitJournalStore(
                 asset.Readability)).ToArray(),
             draft.CreatedAt,
             draft.UpdatedAt,
-            journal.UpdatedAt);
+            journal.UpdatedAt,
+            draft.OutputSelection is { } selection
+                ? new OutputSelectionEnvelope(selection.Mode.ToString(), selection.UnifiedRoot) : null);
     }
 
     private static InputCommitJournal FromEnvelope(
         JournalEnvelope envelope,
         string requestedBatchId)
     {
-        if (!string.Equals(envelope.SchemaVersion, InputCommitJournalProtocol.Version, StringComparison.Ordinal)
+        if (!ValidVersion(envelope.SchemaVersion, envelope.OutputSelection is not null)
             || !string.Equals(envelope.BatchId, requestedBatchId, StringComparison.Ordinal)
             || !Enum.IsDefined(envelope.State)
             || string.IsNullOrWhiteSpace(envelope.ManifestReference)
@@ -233,7 +246,8 @@ public sealed class JsonInputCommitJournalStore(
             envelope.ManifestDigest,
             null,
             envelope.CreatedAt,
-            envelope.UpdatedAt);
+            envelope.UpdatedAt,
+            ReadOutputSelection(envelope.OutputSelection));
         var staged = new StagedAssetManifest(
             envelope.BatchId,
             envelope.ManifestReference,
@@ -250,6 +264,17 @@ public sealed class JsonInputCommitJournalStore(
 
     private static string PathFor(string batchId) =>
         $"batches/{batchId}/asset-manifest/commit.journal.json";
+
+    private static bool ValidVersion(string version, bool hasSelection) => version == (hasSelection
+        ? InputCommitJournalProtocol.OutputSelectionVersion : InputCommitJournalProtocol.Version);
+
+    private static BatchOutputSelection? ReadOutputSelection(OutputSelectionEnvelope? value)
+    {
+        if (value is null) return null;
+        if (!Enum.TryParse<BatchOutputMode>(value.Mode, out var mode) || mode.ToString() != value.Mode)
+            throw new InvalidDataException("INPUT_OUTPUT_SELECTION_INVALID");
+        return BatchOutputSelection.Create(mode, value.UnifiedRoot);
+    }
 
     private static void ValidateId(string value)
     {
@@ -281,7 +306,11 @@ public sealed class JsonInputCommitJournalStore(
         IReadOnlyList<AssetEnvelope> Assets,
         DateTimeOffset CreatedAt,
         DateTimeOffset UpdatedAt,
-        DateTimeOffset JournalUpdatedAt);
+        DateTimeOffset JournalUpdatedAt,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        OutputSelectionEnvelope? OutputSelection = null);
+
+    private sealed record OutputSelectionEnvelope(string Mode, string? UnifiedRoot);
 
     private sealed record SnapshotEnvelope(
         string SnapshotId,

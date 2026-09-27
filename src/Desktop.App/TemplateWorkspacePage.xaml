@@ -1,0 +1,1349 @@
+<UserControl x:Class="Desktop.App.TemplateWorkspacePage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:local="clr-namespace:Desktop.App"
+             mc:Ignorable="d"
+             HorizontalContentAlignment="Stretch"
+             VerticalContentAlignment="Stretch">
+    <UserControl.Resources>
+        <DataTemplate x:Key="TemplateLibraryCardTemplate">
+            <Grid Height="76" Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="64" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="148" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.ColumnSpan="5"
+                        Padding="0"
+                        HorizontalContentAlignment="Stretch"
+                        VerticalContentAlignment="Stretch"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Command="{Binding DataContext.OpenTemplateCommand, RelativeSource={RelativeSource AncestorType=local:TemplateWorkspacePage}}"
+                        CommandParameter="{Binding}"
+                        FocusVisualStyle="{StaticResource VisibleFocusStyle}"
+                        AutomationProperties.AutomationId="OpenTemplateGroupRowButton"
+                        AutomationProperties.Name="{Binding Name, StringFormat=打开模板组 {0}}">
+                    <Border Background="{StaticResource SurfaceBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            AutomationProperties.AutomationId="TemplateGroupRowChrome" />
+                </Button>
+                <Border Grid.Column="0"
+                        Width="52"
+                        Height="52"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        IsHitTestVisible="False"
+                        Background="{StaticResource SurfaceStrongBrush}"
+                        CornerRadius="6">
+                    <TextBlock HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontFamily="Segoe Fluent Icons"
+                               FontSize="20"
+                               Text="&#xE8A5;" />
+                </Border>
+                <StackPanel Grid.Column="1"
+                            Margin="12,0,12,0"
+                            VerticalAlignment="Center"
+                            IsHitTestVisible="False">
+                    <TextBlock Style="{StaticResource FieldLabelTextStyle}"
+                               Text="{Binding Name}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Margin="0,2,0,0"
+                               Style="{StaticResource SmallBodyTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="{Binding Meta}" />
+                </StackPanel>
+                <TextBlock Grid.Column="2"
+                           VerticalAlignment="Center"
+                           IsHitTestVisible="False"
+                           Style="{StaticResource SmallBodyTextStyle}"
+                           Foreground="{StaticResource TextMutedBrush}"
+                           Text="{Binding UpdatedText}" />
+                <StackPanel Grid.Column="3"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center"
+                            IsHitTestVisible="False"
+                            Orientation="Horizontal">
+                    <Ellipse Width="8"
+                             Height="8"
+                             Margin="0,0,8,0"
+                             Fill="{StaticResource StatusDraftBrush}" />
+                    <TextBlock Text="{Binding Status}" />
+                </StackPanel>
+                <StackPanel Grid.Column="4"
+                            Margin="0,0,10,0"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal">
+                    <Button Width="68"
+                            Margin="0,0,4,0"
+                            Style="{StaticResource GhostButtonStyle}"
+                            Command="{Binding DataContext.RenameTemplateCommand, RelativeSource={RelativeSource AncestorType=local:TemplateWorkspacePage}}"
+                            CommandParameter="{Binding}"
+                            Content="重命名"
+                            AutomationProperties.AutomationId="RenameTemplateGroupButton"
+                            AutomationProperties.Name="{Binding Name, StringFormat=重命名模板组 {0}}" />
+                    <Button Width="56"
+                            Style="{StaticResource GhostButtonStyle}"
+                            Foreground="{StaticResource DangerBrush}"
+                            Command="{Binding DataContext.DeleteTemplateFromLibraryCommand, RelativeSource={RelativeSource AncestorType=local:TemplateWorkspacePage}}"
+                            CommandParameter="{Binding}"
+                            Content="删除"
+                            AutomationProperties.AutomationId="DeleteTemplateGroupFromLibraryButton"
+                            AutomationProperties.Name="{Binding Name, StringFormat=删除模板组 {0}}" />
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="TemplateDetailPageTemplate">
+            <Border Height="68"
+                    Padding="16"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="0,0,0,1">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="42" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="130" />
+                        <ColumnDefinition Width="70" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="{Binding OrderText}" />
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock FontWeight="Medium" Text="{Binding Name}" />
+                        <TextBlock Margin="0,2,0,0"
+                                   FontSize="12"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Text="{Binding Meta}" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="2"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource StatusCompletedTextBrush}"
+                               Text="{Binding Status}" />
+                    <Button Grid.Column="3"
+                            Width="56"
+                            Height="30"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Style="{StaticResource CompactButtonStyle}"
+                            Command="{Binding DataContext.EditTemplatePageCommand, RelativeSource={RelativeSource AncestorType=local:TemplateWorkspacePage}}"
+                            CommandParameter="{Binding}"
+                            Content="{Binding Action}"
+                            ToolTip="创建该页面的编辑草稿；其他页面保持只读"
+                            AutomationProperties.AutomationId="EditTemplatePageButton"
+                            AutomationProperties.Name="编辑页面" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+    </UserControl.Resources>
+    <Grid PreviewKeyDown="TemplateWorkspacePage_PreviewKeyDown">
+        <Grid Visibility="{Binding IsTemplateSectionVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              AutomationProperties.AutomationId="TemplateWorkspace">
+            <!-- T-01: template library and detail use real application projections. -->
+            <Grid Visibility="{Binding IsTemplateLibraryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                  AutomationProperties.AutomationId="TemplateLibraryPage">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="58" />
+                    <RowDefinition Height="24" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource PageTitleTextStyle}"
+                                   Text="模板库"
+                                   AutomationProperties.AutomationId="TemplateLibraryTitle" />
+                        <TextBlock Margin="0,4,0,0"
+                                   Style="{StaticResource BodyTextStyle}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Text="查找、维护和迁移已校准模板组" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Margin="0,11,8,11"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding ImportTemplatePackageCommand}"
+                                Content="导入已校准模板"
+                                AutomationProperties.AutomationId="ImportTemplatePackageButton" />
+                        <Button Margin="0,11,0,11"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding NewTemplateCommand}"
+                                AutomationProperties.AutomationId="NewTemplateGroupButton"
+                                AutomationProperties.Name="新建模板组">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Margin="0,0,8,0"
+                                           FontFamily="Segoe Fluent Icons"
+                                           FontSize="16"
+                                           Text="&#xE710;" />
+                                <TextBlock Text="新建模板组" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+        
+                <Grid Grid.Row="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0"
+                               Margin="0,0,0,12"
+                               Style="{StaticResource SmallBodyTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="{Binding TemplateStatusMessage}"
+                               TextWrapping="Wrap"
+                               Visibility="{Binding HasTemplateStatusMessage, Converter={StaticResource BooleanToVisibilityConverter}}"
+                               AutomationProperties.AutomationId="TemplateLibraryStatus" />
+                    <StackPanel Grid.Row="1"
+                                Visibility="{Binding HasTemplateGroups, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource SectionTitleTextStyle}"
+                                       Text="{Binding TemplateGroups.Count, StringFormat={}{0} 个模板组}" />
+                            <TextBlock Grid.Column="1"
+                                       VerticalAlignment="Center"
+                                       Style="{StaticResource BodyTextStyle}"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Text="按最近更新排序" />
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding TemplateGroups}"
+                                           ItemTemplate="{StaticResource TemplateLibraryCardTemplate}"
+                                      AutomationProperties.AutomationId="TemplateGroupList" />
+                    </StackPanel>
+        
+                    <Border Grid.Row="1"
+                            Padding="48,64"
+                            Style="{StaticResource SectionCardStyle}"
+                            Visibility="{Binding IsTemplateLibraryEmpty, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            AutomationProperties.AutomationId="TemplateLibraryEmptyState">
+                        <StackPanel HorizontalAlignment="Center">
+                            <Border Width="48"
+                                    Height="48"
+                                    HorizontalAlignment="Center"
+                                    Background="{StaticResource SurfaceStrongBrush}"
+                                    CornerRadius="24">
+                                <TextBlock HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontFamily="Segoe Fluent Icons"
+                                           FontSize="22"
+                                           Text="&#xE8A5;" />
+                            </Border>
+                            <TextBlock Margin="0,18,0,0"
+                                       HorizontalAlignment="Center"
+                                       FontSize="17"
+                                       FontWeight="SemiBold"
+                                       Text="尚无模板组" />
+                            <TextBlock Margin="0,8,0,0"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Text="从一个或多个 PSD 开始建立可重复使用的模板页面。" />
+                            <Button Margin="0,22,0,0"
+                                    HorizontalAlignment="Center"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding NewTemplateCommand}"
+                                    Content="新建模板组"
+                                    AutomationProperties.AutomationId="EmptyNewTemplateGroupButton" />
+                         </StackPanel>
+                     </Border>
+                </Grid>
+            </Grid>
+        
+            <Grid Visibility="{Binding IsTemplateDetailsVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                  AutomationProperties.AutomationId="TemplateDetailsPage">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="20" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                 <Grid>
+                     <Grid.ColumnDefinitions>
+                         <ColumnDefinition Width="*" />
+                         <ColumnDefinition Width="Auto" />
+                     </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <Button Width="84"
+                                Height="28"
+                                Margin="0,0,0,10"
+                                HorizontalAlignment="Left"
+                                Style="{StaticResource GhostButtonStyle}"
+                                Command="{Binding BackToTemplateLibraryCommand}"
+                                Content="← 返回"
+                                AutomationProperties.AutomationId="BackToTemplateLibraryButton" />
+                        <TextBlock Style="{StaticResource PageTitleTextStyle}"
+                                   Text="{Binding TemplateDetailsTitle}" />
+                        <TextBlock Margin="0,5,0,0"
+                                   Style="{StaticResource SmallBodyTextStyle}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                    Text="{Binding TemplateDetailsMeta}" />
+                         <TextBlock Margin="0,5,0,0"
+                                    Foreground="{StaticResource TextMutedBrush}"
+                                    Text="{Binding TemplateStatusMessage}"
+                                    TextWrapping="Wrap"
+                                    AutomationProperties.AutomationId="TemplateDetailsStatus" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1"
+                                VerticalAlignment="Bottom"
+                                Orientation="Horizontal">
+                        <Button Margin="0,0,8,0"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding EditTemplateGroupCommand}"
+                                Content="编辑模板组"
+                                AutomationProperties.AutomationId="EditTemplateGroupButton" />
+                         <Button Margin="0,0,8,0"
+                                 Style="{StaticResource SecondaryButtonStyle}"
+                                 Foreground="{StaticResource DangerBrush}"
+                                 Content="删除"
+                                Command="{Binding DeleteTemplateCommand}"
+                                AutomationProperties.AutomationId="DeleteTemplateGroupButton" />
+                        <Button Margin="0,0,8,0"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Content="另存为"
+                                Command="{Binding SaveTemplateAsCommand}"
+                                AutomationProperties.AutomationId="SaveTemplateAsButton" />
+                        <Button Margin="0,0,8,0"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Content="导出"
+                                Command="{Binding ExportTemplateCommand}"
+                                AutomationProperties.AutomationId="ExportTemplatePackageButton" />
+                        <Button Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding AddTemplatePagesCommand}"
+                                IsEnabled="{Binding CanIncrementTemplate}"
+                                Content="添加模板页面"
+                                AutomationProperties.AutomationId="AddTemplatePagesButton" />
+                    </StackPanel>
+                </Grid>
+                <Border Grid.Row="2" Style="{StaticResource SectionCardStyle}">
+                    <StackPanel>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource SectionTitleTextStyle}"
+                                       Text="模板页面" />
+                            <TextBlock Grid.Column="1"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Text="页面顺序决定详情页输出顺序" />
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding TemplateDetailPages}"
+                                           ItemTemplate="{StaticResource TemplateDetailPageTemplate}"
+                                      AutomationProperties.AutomationId="TemplateDetailPageList" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        
+            <Grid Visibility="{Binding IsTemplateCanvasVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                  AutomationProperties.AutomationId="TemplateCanvasPage">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="12" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="330" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                         <StackPanel>
+                             <TextBlock Style="{StaticResource PageTitleTextStyle}"
+                                        Text="{Binding TemplateCanvasTitle}" />
+                             <TextBlock Margin="0,4,0,0"
+                                        Style="{StaticResource SmallBodyTextStyle}"
+                                        Foreground="{StaticResource TextMutedBrush}"
+                                        Text="{Binding TemplateCanvasSubtitle}" />
+                         </StackPanel>
+                        <TextBlock Margin="0,5,0,0"
+                                   Style="{StaticResource CaptionTextStyle}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Text="{Binding CalibrationFlowStepText}" />
+                     </StackPanel>
+                     <StackPanel Grid.Column="1" Orientation="Horizontal">
+                         <Button Margin="0,0,8,0"
+                                 Style="{StaticResource GhostButtonStyle}"
+                                  Command="{Binding BackToTemplateLibraryCommand}"
+                                  Content="返回模板库"
+                                  AutomationProperties.AutomationId="BackToTemplateLibraryFromCanvasButton" />
+                          <Button Margin="0,0,8,0"
+                                  Style="{StaticResource SecondaryButtonStyle}"
+                                  Click="ChoosePsdFiles_Click"
+                                  Content="添加 PSD"
+                                  AutomationProperties.AutomationId="AddPsdToCanvasButton" />
+                          <Button Margin="0,0,8,0"
+                                  Style="{StaticResource SecondaryButtonStyle}"
+                                  Click="ChoosePsdFolder_Click"
+                                  Content="导入文件夹"
+                                  AutomationProperties.AutomationId="AddPsdFolderToCanvasButton" />
+                         <Button Margin="0,0,8,0"
+                                 Style="{StaticResource SecondaryButtonStyle}"
+                                 Command="{Binding SaveTemplateAsCommand}"
+                                 IsEnabled="{Binding CanSaveAsTemplate}"
+                                 Content="另存为"
+                                 AutomationProperties.AutomationId="SaveAsTemplateFromCalibrationButton" />
+                         <Button Margin="0,0,8,0"
+                                 Style="{StaticResource GhostButtonStyle}"
+                                Command="{Binding UndoCalibrationCommand}"
+                                IsEnabled="{Binding CalibrationDraft.CanUndo}"
+                                Content="撤销"
+                                AutomationProperties.AutomationId="UndoCalibrationButton"
+                                Visibility="{Binding IsManualCalibrationReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                        <Button Style="{StaticResource GhostButtonStyle}"
+                                Command="{Binding RedoCalibrationCommand}"
+                                IsEnabled="{Binding CalibrationDraft.CanRedo}"
+                                Content="重做"
+                                AutomationProperties.AutomationId="RedoCalibrationButton"
+                                Visibility="{Binding IsManualCalibrationReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource GhostButtonStyle}"
+                                Command="{Binding ReanalyzeReferenceLearningCommand}"
+                                Content="重新分析当前页"
+                                Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="ReanalyzeReferenceLearningButton" />
+                         <Button Margin="8,0,0,0"
+                                 Style="{StaticResource GhostButtonStyle}"
+                                 Command="{Binding CancelReferenceLearningCommand}"
+                                 Content="取消本次学习"
+                                 Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                 AutomationProperties.AutomationId="CancelReferenceLearningButton" />
+                         <Button Margin="8,0,0,0"
+                                 Style="{StaticResource PrimaryButtonStyle}"
+                                 Command="{Binding SaveTemplateCommand}"
+                                 IsEnabled="{Binding CanSaveTemplateCanvas}"
+                                 Content="保存模板组"
+                                AutomationProperties.AutomationId="SaveTemplateGroupButton" />
+                    </StackPanel>
+                </Grid>
+                <StackPanel Grid.Row="2"
+                            Orientation="Horizontal"
+                            Visibility="{Binding IsCalibrationNarrowLayout, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            AutomationProperties.AutomationId="CalibrationNarrowPanelSwitcher">
+                    <Button Width="120"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding ShowCalibrationPagesCommand}"
+                            Content="页面"
+                            AutomationProperties.AutomationId="ShowCalibrationPagesButton" />
+                    <Button Width="120"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding ShowCalibrationCanvasCommand}"
+                            Content="画布"
+                            AutomationProperties.AutomationId="ShowCalibrationCanvasButton" />
+                    <Button Width="140"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding ShowCalibrationInspectorCommand}"
+                            Content="素材与规则"
+                            AutomationProperties.AutomationId="ShowCalibrationInspectorButton" />
+                </StackPanel>
+                <Border Grid.Row="4"
+                        Style="{StaticResource SectionCardStyle}"
+                        Padding="0"
+                        AutomationProperties.AutomationId="TemplateInfiniteCanvas">
+                    <Grid ClipToBounds="True">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="42" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid Margin="12,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock FontSize="14" FontWeight="Medium" Text="模板无限画布" />
+                                <TextBlock Margin="12,0,0,0" Foreground="{StaticResource TextMutedBrush}" Text="页面位置只影响编辑布局；输出顺序仍按页面顺序" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Margin="0,0,6,0" Style="{StaticResource CompactButtonStyle}" Content="−" Click="TemplateBoardZoomOut_Click" AutomationProperties.AutomationId="TemplateBoardZoomOutButton" />
+                                <TextBlock Width="62" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" Text="{Binding TemplateBoardZoomText}" />
+                                <Button Margin="6,0,6,0" Style="{StaticResource CompactButtonStyle}" Content="＋" Click="TemplateBoardZoomIn_Click" AutomationProperties.AutomationId="TemplateBoardZoomInButton" />
+                                <Button Style="{StaticResource CompactButtonStyle}" Content="重置视图" Click="TemplateBoardReset_Click" AutomationProperties.AutomationId="TemplateBoardResetButton" />
+                            </StackPanel>
+                        </Grid>
+                        <Border Grid.Row="1" Background="{StaticResource CanvasStageBrush}" ClipToBounds="True">
+                            <ScrollViewer x:Name="TemplateBoardScrollViewer"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto"
+                                          PreviewMouseDown="TemplateBoardSurface_MouseDown"
+                                          PreviewMouseMove="TemplateBoardSurface_MouseMove"
+                                          PreviewMouseUp="TemplateBoardSurface_MouseUp"
+                                          PreviewMouseWheel="TemplateBoard_MouseWheel"
+                                          AutomationProperties.AutomationId="TemplateBoardScrollViewer">
+                                <Grid Width="2400" Height="1500">
+                                    <Grid.RenderTransform>
+                                        <TransformGroup>
+                                            <TranslateTransform X="{Binding TemplateBoardPanX}" Y="{Binding TemplateBoardPanY}" />
+                                            <ScaleTransform ScaleX="{Binding TemplateBoardZoom}" ScaleY="{Binding TemplateBoardZoom}" />
+                                        </TransformGroup>
+                                    </Grid.RenderTransform>
+                                    <ListBox ItemsSource="{Binding TemplatePages}"
+                                             SelectedItem="{Binding SelectedTemplatePage, Mode=TwoWay}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             AllowDrop="False"
+                                             PreviewMouseLeftButtonDown="TemplateBoardPage_MouseLeftButtonDown"
+                                             PreviewMouseMove="TemplateBoardPage_MouseMove"
+                                             PreviewMouseLeftButtonUp="TemplateBoardPage_MouseLeftButtonUp"
+                                             AutomationProperties.AutomationId="TemplateBoardPageList">
+                                        <ListBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <Canvas Width="2400" Height="1500" />
+                                            </ItemsPanelTemplate>
+                                        </ListBox.ItemsPanel>
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Canvas.Left" Value="{Binding CanvasX}" />
+                                                <Setter Property="Canvas.Top" Value="{Binding CanvasY}" />
+                                                <Setter Property="Padding" Value="0" />
+                                                <Setter Property="Margin" Value="0" />
+                                                <Setter Property="BorderThickness" Value="0" />
+                                                <Setter Property="Background" Value="Transparent" />
+                                                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                                                <Setter Property="VerticalContentAlignment" Value="Top" />
+                                                <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Width="300" Height="250" Margin="8" Padding="10" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                                                    <Grid>
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="28" />
+                                                            <RowDefinition Height="150" />
+                                                            <RowDefinition Height="Auto" />
+                                                        </Grid.RowDefinitions>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock FontWeight="SemiBold" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Grid.Column="1" Foreground="{StaticResource TextMutedBrush}" Text="{Binding ContentTypeText}" />
+                                                        </Grid>
+                                                        <Border Grid.Row="1" Background="{StaticResource SurfaceSubtleBrush}" CornerRadius="4">
+                                                            <Image Source="{Binding PreviewSourceReference, Converter={StaticResource BoundedPreviewImageConverter}, ConverterParameter=500}" Stretch="Uniform" AutomationProperties.AutomationId="TemplateBoardPagePreview" />
+                                                        </Border>
+                                                        <StackPanel Grid.Row="2" Margin="0,8,0,0">
+                                                            <TextBlock FontSize="11" Foreground="{StaticResource TextMutedBrush}" Text="{Binding CanvasSummary}" />
+                                                            <TextBox Margin="0,4,0,0" Height="28" Text="{Binding Notes, UpdateSourceTrigger=PropertyChanged}" ToolTip="页面备注，可写素材规则或视角说明" AutomationProperties.AutomationId="TemplateBoardPageNotes" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </Border>
+        
+                 <Grid Grid.Row="5">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="{Binding CalibrationPageColumnWidth}" />
+                        <ColumnDefinition Width="{Binding CalibrationPanelGapWidth}" />
+                        <ColumnDefinition Width="{Binding CalibrationCanvasColumnWidth}" />
+                        <ColumnDefinition Width="{Binding CalibrationPanelGapWidth}" />
+                        <ColumnDefinition Width="{Binding CalibrationInspectorColumnWidth}" />
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0"
+                            Style="{StaticResource SectionCardStyle}"
+                            Padding="0"
+                            Visibility="{Binding IsCalibrationPagePanelVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                         <Grid ClipToBounds="True">
+                             <Grid.RowDefinitions>
+                                 <RowDefinition Height="92" />
+                                 <RowDefinition Height="220" />
+                                 <RowDefinition Height="44" />
+                                 <RowDefinition Height="*" />
+                                 <RowDefinition Height="Auto" />
+                             </Grid.RowDefinitions>
+                              <Border Grid.Row="0"
+                                      Padding="12,10"
+                                      Background="{StaticResource SurfaceSubtleBrush}">
+                                 <Grid>
+                                     <Grid.ColumnDefinitions>
+                                         <ColumnDefinition Width="*" />
+                                         <ColumnDefinition Width="Auto" />
+                                     </Grid.ColumnDefinitions>
+                                      <StackPanel VerticalAlignment="Center">
+                                          <TextBlock FontSize="14"
+                                                     FontWeight="Medium"
+                                                     Text="{Binding CalibrationPageListTitle}" />
+                                          <TextBlock Margin="0,3,0,0"
+                                                     FontSize="11"
+                                                     Foreground="{StaticResource TextMutedBrush}"
+                                                     Text="{Binding ReferenceLearningOverallProgress}"
+                                                     TextWrapping="Wrap"
+                                                     Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                     AutomationProperties.AutomationId="ReferenceLearningOverallProgress" />
+                                          <TextBlock Margin="0,2,0,0"
+                                                     FontSize="11"
+                                                     Foreground="{StaticResource TextMutedBrush}"
+                                                     Text="{Binding ReferenceLearningCurrentPageProgress}"
+                                                     TextWrapping="Wrap"
+                                                     Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                     AutomationProperties.AutomationId="ReferenceLearningCurrentPageProgress" />
+                                          <TextBlock Margin="0,2,0,0"
+                                                     FontSize="11"
+                                                     Foreground="{StaticResource TextMutedBrush}"
+                                                     Text="{Binding ReferenceLearningReviewInstruction}"
+                                                     TextWrapping="Wrap"
+                                                     Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                     AutomationProperties.AutomationId="ReferenceLearningReviewInstruction" />
+                                      </StackPanel>
+                                     <Button Grid.Column="1"
+                                             Style="{StaticResource CompactButtonStyle}"
+                                             Command="{Binding RemoveTemplatePageCommand}"
+                                             CommandParameter="{Binding SelectedTemplatePage}"
+                                             IsEnabled="{Binding SelectedTemplatePage.CanRemove}"
+                                             Content="移除"
+                                             AutomationProperties.AutomationId="RemoveCalibrationPageButton" />
+                                 </Grid>
+                             </Border>
+                            <ListBox Grid.Row="1"
+                                     Padding="7,7,7,0"
+                                     MaxHeight="220"
+                                     ItemsSource="{Binding CalibrationPages}"
+                                     SelectedItem="{Binding SelectedCalibrationPage, Mode=TwoWay}"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     ScrollViewer.CanContentScroll="True"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling"
+                                     AutomationProperties.AutomationId="CalibrationPageList">
+                                 <ListBox.ItemContainerStyle>
+                                     <Style TargetType="ListBoxItem" BasedOn="{StaticResource SurfaceListItemStyle}">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="BorderThickness" Value="0" />
+                                        <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Height="58"
+                                                Margin="0,3"
+                                                Padding="12,7"
+                                                CornerRadius="8">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="Transparent" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                                                     Value="True">
+                                                            <Setter Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="30" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock VerticalAlignment="Top"
+                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                           Text="{Binding DisplayOrder}" />
+                                                <StackPanel Grid.Column="1">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock FontWeight="Medium"
+                                                                   Text="{Binding Name}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="1"
+                                                                   Margin="8,0,0,0"
+                                                                   FontSize="11"
+                                                                   Foreground="{StaticResource StatusCompletedTextBrush}"
+                                                                   Text="{Binding Status}" />
+                                                    </Grid>
+                                                    <TextBlock Margin="0,3,0,0"
+                                                               FontSize="11"
+                                                               Foreground="{StaticResource TextMutedBrush}"
+                                                               Text="{Binding RuleSummary}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                             <Border Grid.Row="2"
+                                     Padding="12,0"
+                                     Background="{StaticResource SurfaceSubtleBrush}"
+                                     BorderBrush="{StaticResource BorderBrush}"
+                                     BorderThickness="0,1,0,1"
+                                     Visibility="{Binding IsSelectedNormalComposition, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock FontSize="14"
+                                               FontWeight="Medium"
+                                               Text="图片框" />
+                                                  <TextBlock Margin="0,2,0,0"
+                                                             FontSize="10"
+                                                             Foreground="{StaticResource TextMutedBrush}"
+                                                             Text="{Binding ReferenceLearningFrameSummary}"
+                                                             TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+                             <ListBox Grid.Row="3"
+                                      Padding="7,7,7,0"
+                                      ItemsSource="{Binding CalibrationFrameItems}"
+                                      SelectedValuePath="FrameId"
+                                      SelectedValue="{Binding CalibrationFrameIdInput, Mode=TwoWay}"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      PreviewKeyDown="CalibrationFrameList_PreviewKeyDown"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                       AutomationProperties.AutomationId="CalibrationFrameList"
+                                       Visibility="{Binding IsSelectedNormalComposition, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource SurfaceListItemStyle}">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="BorderThickness" Value="0" />
+                                        <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                             <Border MinHeight="52"
+                                                     Margin="0,3"
+                                                     Padding="12,7"
+                                                     CornerRadius="8"
+                                                     BorderThickness="1"
+                                                     PreviewMouseLeftButtonDown="CalibrationFrame_MouseLeftButtonDown">
+                                                 <Border.Style>
+                                                     <Style TargetType="Border">
+                                                         <Setter Property="Background" Value="Transparent" />
+                                                         <Setter Property="BorderBrush" Value="Transparent" />
+                                                         <Style.Triggers>
+                                                             <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                                                          Value="True">
+                                                                 <Setter Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
+                                                                 <Setter Property="BorderBrush" Value="{StaticResource BorderStrongBrush}" />
+                                                             </DataTrigger>
+                                                         </Style.Triggers>
+                                                     </Style>
+                                                 </Border.Style>
+                                                 <StackPanel>
+                                                     <TextBlock FontWeight="Medium"
+                                                                Text="{Binding LayerName}"
+                                                                TextTrimming="CharacterEllipsis" />
+                                                         <StackPanel Margin="0,3,0,0" Orientation="Horizontal">
+                                                             <Ellipse Width="8"
+                                                                      Height="8"
+                                                                      Margin="0,0,8,0"
+                                                                      VerticalAlignment="Center"
+                                                                      Style="{StaticResource ReviewStatusDotStyle}" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{StaticResource TextMutedBrush}"
+                                                                       Text="{Binding ReviewStatusText}" />
+                                                         </StackPanel>
+                                                         <TextBlock Margin="16,2,0,0"
+                                                                    FontSize="10"
+                                                                    Foreground="{StaticResource TextMutedBrush}"
+                                                                    Text="{Binding StructuralSummary}"
+                                                                    TextTrimming="CharacterEllipsis" />
+                                                     </StackPanel>
+                                             </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Border Grid.Row="4"
+                                    Padding="12,10"
+                                    Background="{StaticResource SurfaceSubtleBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="0,1,0,0">
+                                <StackPanel>
+                                    <TextBlock Foreground="{StaticResource TextMutedBrush}"
+                                               Text="{Binding CalibrationWorkflowStatusMessage}"
+                                               TextWrapping="Wrap" />
+                                     <TextBlock Margin="0,6,0,0"
+                                                Foreground="{StaticResource TextMutedBrush}"
+                                                Text="{Binding TemplateStatusMessage}"
+                                                TextWrapping="Wrap"
+                                                AutomationProperties.AutomationId="CalibrationOperationStatus" />
+                                 </StackPanel>
+                             </Border>
+                         </Grid>
+                     </Border>
+                    <Border Grid.Column="2"
+                            Background="{StaticResource SurfaceBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            AllowDrop="True"
+                            Focusable="True"
+                            IsEnabled="{Binding CanEditCalibration}"
+                            ClipToBounds="True"
+                            DragOver="CalibrationCanvas_DragOver"
+                            Drop="CalibrationCanvas_Drop"
+                            PreviewMouseLeftButtonDown="CalibrationCanvas_MouseLeftButtonDown"
+                            PreviewMouseMove="CalibrationCanvas_MouseMove"
+                            PreviewMouseLeftButtonUp="CalibrationCanvas_MouseLeftButtonUp"
+                            PreviewMouseWheel="CalibrationCanvas_MouseWheel"
+                            KeyDown="CalibrationCanvas_KeyDown"
+                            Visibility="{Binding IsCalibrationCanvasPanelVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            AutomationProperties.AutomationId="CalibrationCanvas">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="44" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0"
+                                    Padding="12,6"
+                                    Background="{StaticResource SurfaceSubtleBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="0,0,0,1">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               Text="普通滚轮浏览 · Ctrl + 滚轮缩放" />
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                        <Button Margin="0,0,6,0" Style="{StaticResource CompactButtonStyle}" Content="适合宽度" Click="CalibrationFitWidth_Click" AutomationProperties.AutomationId="CalibrationFitWidthButton" />
+                                        <Button Margin="0,0,6,0" Style="{StaticResource CompactButtonStyle}" Content="适合页面" Click="CalibrationFitPage_Click" AutomationProperties.AutomationId="CalibrationFitPageButton" />
+                                        <Button Style="{StaticResource CompactButtonStyle}" Content="100%" Click="CalibrationActualSize_Click" AutomationProperties.AutomationId="CalibrationActualSizeButton" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <ScrollViewer x:Name="CalibrationCanvasScrollViewer"
+                                          Grid.Row="1"
+                                          Background="{StaticResource CanvasStageBrush}"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto"
+                                          CanContentScroll="False"
+                                          PanningMode="Both"
+                                          AutomationProperties.AutomationId="CalibrationCanvasScrollViewer">
+                            <Border Margin="16"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Top"
+                                     Background="{StaticResource SurfaceBrush}"
+                                    BorderBrush="{StaticResource BorderStrongBrush}"
+                                    BorderThickness="1">
+                                    <Grid Width="{Binding CalibrationCanvasWidth}"
+                                          Height="{Binding CalibrationCanvasHeight}"
+                                          Background="{StaticResource SurfaceBrush}">
+                                        <Grid.LayoutTransform>
+                                            <ScaleTransform ScaleX="{Binding CalibrationViewportZoom}"
+                                                            ScaleY="{Binding CalibrationViewportZoom}" />
+                                        </Grid.LayoutTransform>
+                                         <Image Source="{Binding CalibrationTemplatePreviewImagePath, Converter={StaticResource BoundedPreviewImageConverter}, ConverterParameter=1200}"
+                                                Stretch="Fill"
+                                                Visibility="{Binding IsSelectedNormalComposition, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                AutomationProperties.AutomationId="CalibrationTemplatePreviewImage" />
+                                         <Image Source="{Binding SelectedTemplatePage.PreviewSourceReference, Converter={StaticResource BoundedPreviewImageConverter}, ConverterParameter=1200}"
+                                                Stretch="Fill"
+                                                Visibility="{Binding IsSelectedDynamicSizeTable, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                AutomationProperties.AutomationId="DynamicSizeTableTemplatePreviewImage" />
+                                         <Canvas>
+                                             <ItemsControl ItemsSource="{Binding CalibrationFrameItems}"
+                                                           Panel.ZIndex="1">
+                                                 <ItemsControl.ItemsPanel>
+                                                     <ItemsPanelTemplate>
+                                                         <Canvas />
+                                                     </ItemsPanelTemplate>
+                                                 </ItemsControl.ItemsPanel>
+                                                 <ItemsControl.ItemContainerStyle>
+                                                     <Style TargetType="ContentPresenter">
+                                                         <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                                                         <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                                     </Style>
+                                                 </ItemsControl.ItemContainerStyle>
+                                                 <ItemsControl.ItemTemplate>
+                                                     <DataTemplate>
+                                                         <Border Width="{Binding Width}"
+                                                                 Height="{Binding Height}"
+                                                                 BorderThickness="1"
+                                                                 Background="{StaticResource CalibrationFrameOverlayBrush}"
+                                                                 PreviewMouseLeftButtonDown="CalibrationFrame_MouseLeftButtonDown">
+                                                             <Border.Style>
+                                                                 <Style TargetType="Border">
+                                                                      <Setter Property="BorderBrush" Value="{StaticResource CalibrationFrameBorderBrush}" />
+                                                                     <Style.Triggers>
+                                                                         <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                             <Setter Property="BorderBrush" Value="{StaticResource TextBrush}" />
+                                                                             <Setter Property="BorderThickness" Value="2" />
+                                                                         </DataTrigger>
+                                                                     </Style.Triggers>
+                                                                 </Style>
+                                                             </Border.Style>
+                                                         </Border>
+                                                     </DataTemplate>
+                                                 </ItemsControl.ItemTemplate>
+                                             </ItemsControl>
+                                          <Border Canvas.Left="{Binding CalibrationFrameLeft}"
+                                                  Canvas.Top="{Binding CalibrationFrameTop}"
+                                                  Width="{Binding CalibrationFrameWidth}"
+                                                  Height="{Binding CalibrationFrameHeight}"
+                                                 BorderBrush="{StaticResource TextBrush}"
+                                                  BorderThickness="0"
+                                                  Panel.ZIndex="2"
+                                                  ClipToBounds="True"
+                                                  Visibility="{Binding IsManualCalibrationReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                             <Grid>
+                                                 <Image Source="{Binding CalibrationPreviewImageSource}"
+                                                        Stretch="UniformToFill"
+                                                        RenderTransformOrigin="0.5,0.5"
+                                                        AutomationProperties.AutomationId="CalibrationPreviewImage">
+                                                     <Image.RenderTransform>
+                                                         <TransformGroup>
+                                                             <ScaleTransform ScaleX="{Binding CalibrationScaleInput}"
+                                                                             ScaleY="{Binding CalibrationScaleInput}" />
+                                                             <TranslateTransform X="{Binding CalibrationOffsetXInput}"
+                                                                                 Y="{Binding CalibrationOffsetYInput}" />
+                                                         </TransformGroup>
+                                                     </Image.RenderTransform>
+                                                 </Image>
+                                                 <Border BorderBrush="{StaticResource TextBrush}"
+                                                         BorderThickness="2"
+                                                         IsHitTestVisible="False" />
+                                                 <Border Width="8"
+                                                         Height="8"
+                                                         HorizontalAlignment="Left"
+                                                         VerticalAlignment="Top"
+                                                         Margin="-4"
+                                                         Background="White"
+                                                         BorderBrush="{StaticResource TextBrush}"
+                                                         BorderThickness="1"
+                                                         IsHitTestVisible="False" />
+                                                 <Border Width="8"
+                                                         Height="8"
+                                                         HorizontalAlignment="Right"
+                                                         VerticalAlignment="Top"
+                                                         Margin="0,-4,-4,0"
+                                                         Background="White"
+                                                         BorderBrush="{StaticResource TextBrush}"
+                                                         BorderThickness="1"
+                                                         IsHitTestVisible="False" />
+                                                 <Border Width="8"
+                                                         Height="8"
+                                                         HorizontalAlignment="Left"
+                                                         VerticalAlignment="Bottom"
+                                                         Margin="-4,0,0,-4"
+                                                         Background="White"
+                                                         BorderBrush="{StaticResource TextBrush}"
+                                                         BorderThickness="1"
+                                                         IsHitTestVisible="False" />
+                                                 <Border Width="8"
+                                                         Height="8"
+                                                         HorizontalAlignment="Right"
+                                                         VerticalAlignment="Bottom"
+                                                         Margin="0,0,-4,-4"
+                                                         Background="White"
+                                                         BorderBrush="{StaticResource TextBrush}"
+                                                         BorderThickness="1"
+                                                         IsHitTestVisible="False" />
+                                             </Grid>
+                                         </Border>
+                                        </Canvas>
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   IsHitTestVisible="False"
+                                                   Text="{Binding CalibrationCanvasInstruction}"
+                                                   AutomationProperties.AutomationId="CalibrationCanvasLabel">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CalibrationPreviewImagePath}" Value="{x:Null}">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Grid>
+                            </Border>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                    <Border Grid.Column="4"
+                            Style="{StaticResource SectionCardStyle}"
+                            Padding="0"
+                            ClipToBounds="True"
+                            Visibility="{Binding IsSelectedNormalComposition, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="48" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0"
+                                        Margin="12,8"
+                                        Orientation="Horizontal">
+                                <Border Width="72"
+                                        Height="32"
+                                        Background="{StaticResource SurfaceStrongBrush}"
+                                        CornerRadius="8">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontWeight="Medium"
+                                               Text="素材" />
+                                </Border>
+                                <Border Width="72" Height="32" Margin="8,0,0,0">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               FontWeight="Medium"
+                                               Text="规则" />
+                                </Border>
+                            </StackPanel>
+                        <ScrollViewer Grid.Row="1"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="16,12,16,16">
+                             <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="页面属性" />
+                             <TextBlock Margin="0,4,0,10"
+                                        Style="{StaticResource CaptionTextStyle}"
+                                        Text="页面设置与校准在同一画布中完成。"
+                                        TextWrapping="Wrap" />
+                             <TextBlock Margin="0,0,0,6" Style="{StaticResource FieldLabelTextStyle}" Text="页面名称" />
+                             <TextBox Style="{StaticResource FieldTextBoxStyle}"
+                                      Text="{Binding SelectedTemplatePage.Name, UpdateSourceTrigger=PropertyChanged}"
+                                      IsReadOnly="{Binding SelectedTemplatePage.IsReadOnly}"
+                                      AutomationProperties.AutomationId="TemplateCanvasPageNameInput" />
+                             <TextBlock Margin="0,10,0,6" Style="{StaticResource FieldLabelTextStyle}" Text="内容类型" />
+                             <ComboBox Style="{StaticResource FieldComboBoxStyle}"
+                                       ItemsSource="{x:Static local:TemplatePageRowViewModel.ContentTypeOptions}"
+                                       SelectedItem="{Binding SelectedTemplatePage.ContentTypeText, Mode=TwoWay}"
+                                       IsEnabled="{Binding SelectedTemplatePage.IsAffected}"
+                                       AutomationProperties.AutomationId="TemplateCanvasContentTypeSelect" />
+                             <TextBlock Margin="0,10,0,6" Style="{StaticResource FieldLabelTextStyle}" Text="生成方式" />
+                             <ComboBox Style="{StaticResource FieldComboBoxStyle}"
+                                       ItemsSource="{x:Static local:TemplatePageRowViewModel.GenerationModeOptions}"
+                                       SelectedItem="{Binding SelectedTemplatePage.GenerationModeText, Mode=TwoWay}"
+                                       IsEnabled="{Binding SelectedTemplatePage.IsAffected}"
+                                       AutomationProperties.AutomationId="TemplateCanvasGenerationModeSelect" />
+                             <Border Height="44" Margin="0,10,0,14" Padding="10,4" Background="{StaticResource SurfaceSubtleBrush}" CornerRadius="6">
+                                 <Grid>
+                                     <StackPanel VerticalAlignment="Center">
+                                         <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="在模板组中启用" />
+                                         <TextBlock Style="{StaticResource CaptionTextStyle}" Text="可在新建批次中选择" />
+                                     </StackPanel>
+                                     <CheckBox HorizontalAlignment="Right" VerticalAlignment="Center"
+                                               Style="{StaticResource ToggleSwitchStyle}"
+                                               IsChecked="{Binding SelectedTemplatePage.Enabled, Mode=TwoWay}"
+                                               IsEnabled="{Binding SelectedTemplatePage.IsAffected}"
+                                               AutomationProperties.AutomationId="TemplateCanvasPageEnabledCheckBox" />
+                                     </Grid>
+                                 </Border>
+                               <StackPanel Margin="0,0,0,16"
+                                          Visibility="{Binding IsSelectedNormalComposition, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                  <TextBlock FontSize="12"
+                                             Foreground="{StaticResource TextMutedBrush}"
+                                             Text="当前图片框" />
+                                 <TextBlock Margin="0,4,0,0"
+                                            FontSize="13"
+                                            FontWeight="Medium"
+                                            Text="{Binding CalibrationFrameDisplayName}"
+                                            TextTrimming="CharacterEllipsis" />
+                             </StackPanel>
+                               <TextBlock Margin="0,0,0,7"
+                                          FontSize="14"
+                                          FontWeight="Medium"
+                                          Text="未来选图规则" />
+                             <Border Margin="0,0,0,10"
+                                     Padding="10"
+                                     Background="{StaticResource InfoSurfaceBrush}"
+                                     BorderBrush="{StaticResource BorderBrush}"
+                                     BorderThickness="1"
+                                     CornerRadius="6"
+                                     AutomationProperties.AutomationId="ReferenceLearningRuleSummaryPanel">
+                                 <StackPanel>
+                                      <TextBlock FontSize="12"
+                                                 FontWeight="Medium"
+                                                 Text="统一校准规则" />
+                                     <TextBlock Margin="0,6,0,0"
+                                                Style="{StaticResource SmallBodyTextStyle}"
+                                                Text="{Binding CalibrationEditorHintText}"
+                                                TextWrapping="Wrap"
+                                                AutomationProperties.AutomationId="ReferenceLearningRuleSummary" />
+                                 </StackPanel>
+                             </Border>
+                              <TextBlock Margin="0,0,0,7"
+                                         FontSize="12"
+                                         FontWeight="Medium"
+                                         Text="当前图片框素材（系统已预填，可更换）"
+                                        Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                             <StackPanel Margin="0,12,0,0"
+                                         Orientation="Horizontal"
+                                         Visibility="{Binding IsManualCalibrationReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                 <Button Margin="0,0,8,0"
+                                         Style="{StaticResource SecondaryButtonStyle}"
+                                         Click="ChooseCalibrationAsset_Click"
+                                         IsEnabled="{Binding CanEditCalibration}"
+                                         Content="{Binding CalibrationAssetActionText}"
+                                         AutomationProperties.AutomationId="BindCalibrationAssetButton" />
+                                 <Button Style="{StaticResource SecondaryButtonStyle}"
+                                         Command="{Binding ClearCalibrationAssetCommand}"
+                                         IsEnabled="{Binding CanClearCalibrationAsset}"
+                                         Content="移除素材"
+                                         ToolTip="从当前图片框移除素材；不会删除电脑中的源文件"
+                                         AutomationProperties.AutomationId="ClearCalibrationAssetButton" />
+                             </StackPanel>
+                             <StackPanel Margin="0,8,0,0"
+                                         Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                         AutomationProperties.AutomationId="ReferenceLearningEvidencePanel">
+                                 <TextBlock Style="{StaticResource SmallBodyTextStyle}"
+                                            Text="{Binding ReferenceLearningMatchText}"
+                                            TextWrapping="Wrap" />
+                                 <TextBlock Margin="0,4,0,0"
+                                            Style="{StaticResource CaptionTextStyle}"
+                                            Foreground="{StaticResource TextMutedBrush}"
+                                            Text="{Binding ReferenceLearningConfidenceText, StringFormat=系统判断把握度：{0}}" />
+                                 <TextBlock Margin="0,4,0,0"
+                                            Style="{StaticResource CaptionTextStyle}"
+                                            Foreground="{StaticResource TextMutedBrush}"
+                                            Text="{Binding ReferenceLearningDecisionText, StringFormat=复核状态：{0}}" />
+                                 <ListBox Margin="0,10,0,0"
+                                          MaxHeight="180"
+                                          ItemsSource="{Binding ReferenceLearningPhotos}"
+                                          SelectedItem="{Binding SelectedReferenceLearningPhoto, Mode=TwoWay}"
+                                          Background="Transparent"
+                                          BorderBrush="{StaticResource BorderBrush}"
+                                          BorderThickness="1"
+                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                          AutomationProperties.AutomationId="ReferenceLearningPhotoList">
+                                      <ListBox.ItemContainerStyle>
+                                          <Style TargetType="ListBoxItem" BasedOn="{StaticResource SurfaceListItemStyle}">
+                                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                             <Setter Property="Padding" Value="0" />
+                                             <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
+                                         </Style>
+                                     </ListBox.ItemContainerStyle>
+                                     <ListBox.ItemTemplate>
+                                         <DataTemplate>
+                                             <Grid MinHeight="52" Margin="6">
+                                                 <Grid.ColumnDefinitions>
+                                                     <ColumnDefinition Width="42" />
+                                                     <ColumnDefinition Width="8" />
+                                                     <ColumnDefinition Width="*" />
+                                                 </Grid.ColumnDefinitions>
+                                                 <Border Width="42" Height="42" Background="{StaticResource SurfaceStrongBrush}" ClipToBounds="True">
+                                                     <Image Source="{Binding PreviewSource}" Stretch="UniformToFill" />
+                                                 </Border>
+                                                 <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                      <TextBlock FontWeight="Medium"
+                                                                 Text="{Binding DisplayName}"
+                                                                 TextWrapping="Wrap"
+                                                                 ToolTip="{Binding DisplayName}" />
+                                                     <TextBlock Margin="0,3,0,0" FontSize="11" Foreground="{StaticResource TextMutedBrush}" Text="{Binding Meta}" />
+                                                 </StackPanel>
+                                             </Grid>
+                                         </DataTemplate>
+                                     </ListBox.ItemTemplate>
+                                 </ListBox>
+                             </StackPanel>
+                              <Border Margin="0,10,0,0"
+                                      Padding="10"
+                                      Background="{StaticResource InfoSurfaceBrush}"
+                                      BorderBrush="{StaticResource StatusRecoverableBrush}"
+                                      BorderThickness="1"
+                                      CornerRadius="6"
+                                      Visibility="{Binding IsReferenceLearningSemanticWarningVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                      AutomationProperties.AutomationId="ReferenceLearningAiUnavailableWarning">
+                                  <TextBlock Style="{StaticResource SmallBodyTextStyle}"
+                                             Foreground="{StaticResource DangerBrush}"
+                                             Text="{Binding ReferenceLearningSemanticWarningText}"
+                                             TextWrapping="Wrap" />
+                              </Border>
+                              <Expander Margin="0,20,0,0"
+                                        IsExpanded="False"
+                                        IsEnabled="{Binding CanEditCalibration}"
+                                        Header="高级调整（可选）"
+                                        AutomationProperties.AutomationId="AdvancedCalibrationExpander">
+                                 <StackPanel Margin="0,10,0,0">
+                                     <TextBlock Margin="0,0,0,7"
+                                                FontSize="11"
+                                                Foreground="{StaticResource TextMutedBrush}"
+                                                Text="系统通常已从 PSD 提取布局；只有发现错误时才需要调整缩放和偏移。" />
+                                     <UniformGrid Columns="3">
+                                         <TextBox Margin="0,0,6,0"
+                                                  Style="{StaticResource FieldTextBoxStyle}"
+                                                  ToolTip="缩放比例，例如 1.08"
+                                                  Text="{Binding CalibrationScaleInput, UpdateSourceTrigger=PropertyChanged}"
+                                                  AutomationProperties.AutomationId="CalibrationScaleInput" />
+                                         <TextBox Margin="0,0,6,0"
+                                                  Style="{StaticResource FieldTextBoxStyle}"
+                                                  ToolTip="水平偏移"
+                                                  Text="{Binding CalibrationOffsetXInput, UpdateSourceTrigger=PropertyChanged}"
+                                                  AutomationProperties.AutomationId="CalibrationOffsetXInput" />
+                                         <TextBox Style="{StaticResource FieldTextBoxStyle}"
+                                                  ToolTip="垂直偏移"
+                                                  Text="{Binding CalibrationOffsetYInput, UpdateSourceTrigger=PropertyChanged}"
+                                                  AutomationProperties.AutomationId="CalibrationOffsetYInput" />
+                                     </UniformGrid>
+                                 </StackPanel>
+                             </Expander>
+                              <TextBlock Margin="0,16,0,7"
+                                         FontSize="12"
+                                         FontWeight="Medium"
+                                         Text="图片框用途（未来选图规则，可修改）" />
+                             <TextBlock Margin="0,0,0,7"
+                                        Style="{StaticResource CaptionTextStyle}"
+                                        Text="{Binding CalibrationRuleStatusText}"
+                                        TextWrapping="Wrap"
+                                        AutomationProperties.AutomationId="CalibrationRuleStatus" />
+                             <TextBox MinHeight="58"
+                                       IsEnabled="{Binding CanEditReferenceLearningRule}"
+                                       Style="{StaticResource FieldTextBoxStyle}"
+                                       ToolTip="需要时修正系统识别的用途，例如：正面全身图，商品主体完整"
+                                      Text="{Binding CalibrationRequirementInput, UpdateSourceTrigger=PropertyChanged}"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     InputMethod.IsInputMethodEnabled="True"
+                                     AutomationProperties.AutomationId="CalibrationRequirementInput" />
+                            <Button Margin="0,10,0,0"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding ApplyAndConfirmCalibrationCommand}"
+                                    IsEnabled="{Binding CanApplyAndConfirmCalibration}"
+                                    Content="应用并确认当前规则"
+                                    AutomationProperties.AutomationId="ApplyAndConfirmCalibrationButton" />
+                            <StackPanel Margin="0,10,0,0"
+                                        Visibility="{Binding IsReferenceLearningReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                        AutomationProperties.AutomationId="ReferenceLearningReviewActions">
+                                <TextBlock Style="{StaticResource CaptionTextStyle}"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           Text="{Binding ReferenceLearningQualifiedCandidateSummary}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.AutomationId="ReferenceLearningQualifiedCandidateSummary" />
+                                 <Button Margin="0,10,0,0"
+                                         Style="{StaticResource PrimaryButtonStyle}"
+                                         Command="{Binding ConfirmReferenceLearningPageCommand}"
+                                         IsEnabled="{Binding CanConfirmReferenceLearningPage}"
+                                         Content="确认本页可直接采用的规则"
+                                         AutomationProperties.AutomationId="ConfirmReferenceLearningPageButton" />
+                                <Button Margin="0,8,0,0"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Command="{Binding ConfirmAllQualifiedReferenceLearningCommand}"
+                                        IsEnabled="{Binding CanConfirmAllQualifiedReferenceLearning}"
+                                         Content="确认全部可直接采用的规则"
+                                         AutomationProperties.AutomationId="ConfirmAllQualifiedReferenceLearningButton" />
+                                <Button Margin="0,8,0,0"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Command="{Binding RejectReferenceLearningFrameCommand}"
+                                        Content="保留模板内容，不替换"
+                                        AutomationProperties.AutomationId="RejectReferenceLearningFrameButton" />
+                                 <Button Margin="0,8,0,0"
+                                         Style="{StaticResource GhostButtonStyle}"
+                                         Command="{Binding ReturnReferenceLearningToManualCommand}"
+                                         Content="改用拖拽校准"
+                                         Visibility="{Binding IsReferenceLearningManualFallbackVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                         AutomationProperties.AutomationId="ReturnReferenceLearningToManualButton" />
+                            </StackPanel>
+                            <TextBlock Margin="0,22,0,7"
+                                       FontSize="12"
+                                       FontWeight="Medium"
+                                       Text="当前图片框素材"
+                                       Visibility="{Binding IsManualCalibrationReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                              <ListBox MaxHeight="150"
+                                     ItemsSource="{Binding CalibrationDraft.Assets}"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     ScrollViewer.CanContentScroll="True"
+                                     VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling"
+                                     PreviewMouseLeftButtonDown="CalibrationAssetList_MouseLeftButtonDown"
+                                     PreviewMouseMove="CalibrationAssetList_MouseMove"
+                                     AutomationProperties.AutomationId="CalibrationAssetList"
+                                     Visibility="{Binding IsManualCalibrationReviewMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="8" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
+                                            <TextBlock Text="{Binding DisplayName}" />
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                         </StackPanel>
+                          </ScrollViewer>
+                          </Grid>
+                      </Border>
+                      <Border Grid.Column="4"
+                              Style="{StaticResource SectionCardStyle}"
+                              Padding="16"
+                              Visibility="{Binding IsSelectedDynamicSizeTable, Converter={StaticResource BooleanToVisibilityConverter}}"
+                              AutomationProperties.AutomationId="DynamicSizeTableCanvasInspector">
+                          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                          <StackPanel>
+                              <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="动态尺码表页面" />
+                              <TextBlock Margin="0,8,0,0"
+                                         Style="{StaticResource SmallBodyTextStyle}"
+                                         Foreground="{StaticResource TextMutedBrush}"
+                                         Text="设置尺码表区域与样式，并选择要隐藏的旧表图层。"
+                                         TextWrapping="Wrap" />
+                              <TextBlock Margin="0,18,0,6" Style="{StaticResource FieldLabelTextStyle}" Text="页面名称" />
+                              <TextBox Style="{StaticResource FieldTextBoxStyle}"
+                                       Text="{Binding SelectedTemplatePage.Name, UpdateSourceTrigger=PropertyChanged}"
+                                       IsReadOnly="{Binding SelectedTemplatePage.IsReadOnly}" />
+                              <TextBlock Margin="0,14,0,6" Style="{StaticResource FieldLabelTextStyle}" Text="生成方式" />
+                              <ComboBox Style="{StaticResource FieldComboBoxStyle}"
+                                        ItemsSource="{x:Static local:TemplatePageRowViewModel.GenerationModeOptions}"
+                                        SelectedItem="{Binding SelectedTemplatePage.GenerationModeText, Mode=TwoWay}" />
+                              <Button Content="设置尺码表区域与样式" Click="ConfigureSizeTable_Click" Margin="0,12,0,0"
+                                      AutomationProperties.AutomationId="ConfigureSizeTableCalibration" />
+                              <Border Margin="0,18,0,0" Padding="12" Background="{StaticResource InfoSurfaceBrush}" CornerRadius="6">
+                                  <TextBlock Style="{StaticResource SmallBodyTextStyle}" Text="批次中的尺码数据会生成清晰表格并完整放入已设置的区域。尚未设置时会阻止渲染。" TextWrapping="Wrap" />
+                              </Border>
+                          </StackPanel>
+                          </ScrollViewer>
+                      </Border>
+                         </Grid>
+                 <Border Grid.Row="6"
+                         Margin="0,12,0,0"
+                         Padding="12,9"
+                         Background="{StaticResource SurfaceSubtleBrush}"
+                         BorderBrush="{StaticResource BorderBrush}"
+                         BorderThickness="1"
+                         CornerRadius="8"
+                         AutomationProperties.AutomationId="CalibrationStatusBar">
+                     <Grid>
+                         <Grid.ColumnDefinitions>
+                             <ColumnDefinition Width="*" />
+                             <ColumnDefinition Width="Auto" />
+                         </Grid.ColumnDefinitions>
+                         <TextBlock Foreground="{StaticResource TextMutedBrush}"
+                                    Text="{Binding CalibrationWorkflowStatusMessage}"
+                                    TextTrimming="CharacterEllipsis" />
+                         <TextBlock Grid.Column="1"
+                                    Margin="16,0,0,0"
+                                    Foreground="{StaticResource TextMutedBrush}"
+                                    Text="{Binding CalibrationFooterMetaText}"
+                                    TextTrimming="CharacterEllipsis" />
+                     </Grid>
+                 </Border>
+             </Grid>
+        </Grid>
+        
+        <local:TemplateConfirmationDialog />
+        <local:DuplicateReviewDialog />
+    </Grid>
+</UserControl>

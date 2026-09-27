@@ -14,6 +14,7 @@ internal static class InputCommitJournalConsistency
             && string.Equals(expected.BatchId, actual.BatchId, StringComparison.Ordinal)
             && string.Equals(expected.InputRoot, actual.InputRoot, StringComparison.Ordinal)
             && string.Equals(expected.OutputRoot, actual.OutputRoot, StringComparison.Ordinal)
+            && expected.OutputSelection == actual.OutputSelection
             && expected.SelectionMode == actual.SelectionMode
             && expected.IncludeEditablePsd == actual.IncludeEditablePsd
             && string.Equals(expected.ManifestReference, actual.ManifestReference, StringComparison.Ordinal)

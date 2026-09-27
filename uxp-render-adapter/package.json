@@ -1,0 +1,8 @@
+{
+  "name": "ecommerce-detail-render-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": { "build": "node build.cjs", "test": "node --test tests/*.test.cjs" },
+  "dependencies": { "@noble/hashes": "1.8.0", "jsonc-parser": "3.3.1" },
+  "devDependencies": { "ajv": "8.17.1", "ajv-formats": "3.0.1", "esbuild": "0.25.10" }
+}

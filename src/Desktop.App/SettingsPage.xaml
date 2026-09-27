@@ -1,0 +1,400 @@
+<UserControl x:Class="Desktop.App.SettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             HorizontalContentAlignment="Stretch"
+             VerticalContentAlignment="Stretch">
+    <Grid>
+        <Grid Visibility="{Binding IsSettingsVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              AutomationProperties.AutomationId="SettingsPage">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="58" />
+                <RowDefinition Height="24" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource PageTitleTextStyle}"
+                               Text="设置"
+                               AutomationProperties.AutomationId="SettingsPageTitle" />
+                    <TextBlock Margin="0,4,0,0"
+                               Style="{StaticResource BodyTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="管理本机 AI 服务、隐私和运行环境" />
+                </StackPanel>
+            </Border>
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="138" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <ListBox ItemsSource="{Binding Sections}" SelectedItem="{Binding SelectedSection, Mode=TwoWay}"
+                         VerticalAlignment="Top" BorderThickness="0" Background="Transparent"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         AutomationProperties.AutomationId="SettingsSectionNavigation" AutomationProperties.Name="设置分区">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate><TextBlock Text="{Binding}" Margin="8,12" TextWrapping="Wrap" /></DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          AutomationProperties.AutomationId="SettingsContentScrollViewer">
+            <StackPanel>
+                <Border Padding="20" Style="{StaticResource SectionCardStyle}"
+                        Visibility="{Binding IsAiSection, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="SettingsAiSection">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="AI 服务" />
+                         <TextBlock Margin="0,6,0,0"
+                                    Style="{StaticResource SmallBodyTextStyle}"
+                                    Foreground="{StaticResource TextMutedBrush}"
+                                    Text="固定使用已配置的 AI 服务；此处只管理本机凭据和上传授权。"
+                                    TextWrapping="Wrap" />
+                         <Border Margin="0,18,0,0"
+                                 Padding="14,12"
+                                 Background="{StaticResource SurfaceSubtleBrush}"
+                                 BorderBrush="{StaticResource BorderBrush}"
+                                 BorderThickness="1"
+                                 CornerRadius="6"
+                                 AutomationProperties.AutomationId="AiCredentialCard">
+                             <StackPanel>
+                                 <Grid>
+                                     <Grid.ColumnDefinitions>
+                                         <ColumnDefinition Width="8" />
+                                         <ColumnDefinition Width="16" />
+                                         <ColumnDefinition Width="*" />
+                                         <ColumnDefinition Width="Auto" />
+                                     </Grid.ColumnDefinitions>
+                                     <Ellipse Width="8"
+                                              Height="8"
+                                              VerticalAlignment="Top"
+                                              Margin="0,6,0,0">
+                                         <Ellipse.Style>
+                                             <Style TargetType="Ellipse">
+                                                 <Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" />
+                                                 <Style.Triggers>
+                                                     <DataTrigger Binding="{Binding AiCredentialStatusState}" Value="Configured">
+                                                         <Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" />
+                                                     </DataTrigger>
+                                                     <DataTrigger Binding="{Binding AiCredentialStatusState}" Value="Checking">
+                                                         <Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" />
+                                                     </DataTrigger>
+                                                 </Style.Triggers>
+                                             </Style>
+                                         </Ellipse.Style>
+                                     </Ellipse>
+                                     <StackPanel Grid.Column="2">
+                                         <TextBlock Style="{StaticResource PanelTitleTextStyle}"
+                                                    Text="AI API Key"
+                                                    AutomationProperties.AutomationId="AiCredentialTitle" />
+                                         <TextBlock Margin="0,4,0,0"
+                                                    Style="{StaticResource SmallBodyTextStyle}"
+                                                    Text="{Binding AiCredentialStatusText}"
+                                                    AutomationProperties.AutomationId="AiCredentialStatus" />
+                                         <TextBlock Margin="0,4,0,0"
+                                                    Style="{StaticResource CaptionTextStyle}"
+                                                    Foreground="{StaticResource TextMutedBrush}"
+                                                    Text="{Binding AiCredentialStatusDetailText}"
+                                                    TextWrapping="Wrap" />
+                                     </StackPanel>
+                                     <TextBlock Grid.Column="3"
+                                                Margin="16,0,0,0"
+                                                VerticalAlignment="Top"
+                                                Style="{StaticResource CaptionTextStyle}"
+                                                Foreground="{StaticResource TextMutedBrush}"
+                                                Text="{Binding AiCredentialMaskedSuffix}"
+                                                AutomationProperties.AutomationId="AiCredentialMaskedSuffix" />
+                                 </Grid>
+                                 <PasswordBox x:Name="AiApiKeyInputBox"
+                                              Margin="0,12,0,0"
+                                              Style="{StaticResource FieldPasswordBoxStyle}"
+                                              ToolTip="粘贴火山方舟 API Key；仅保存到本机 Windows 凭据管理器"
+                                              PasswordChanged="AiApiKeyInput_PasswordChanged"
+                                              AutomationProperties.AutomationId="AiApiKeyInput" />
+                                 <TextBlock Margin="0,6,0,0"
+                                            Style="{StaticResource CaptionTextStyle}"
+                                            Foreground="{StaticResource TextMutedBrush}"
+                                            Text="保存或更换不会自动调用 AI；完整 Key 不会在界面、日志或诊断包中显示。"
+                                            TextWrapping="Wrap" />
+                                 <StackPanel Margin="0,12,0,0"
+                                             Orientation="Horizontal">
+                                     <Button Margin="0,0,8,0"
+                                             Style="{StaticResource PrimaryButtonStyle}"
+                                             Content="{Binding AiCredentialSaveButtonText}"
+                                             Command="{Binding SaveAiCredentialCommand}"
+                                             IsEnabled="{Binding CanSaveAiCredential}"
+                                             AutomationProperties.AutomationId="SaveAiCredentialButton" />
+                                     <Button Margin="0,0,8,0"
+                                             Style="{StaticResource SecondaryButtonStyle}"
+                                             Content="重新读取"
+                                             Command="{Binding RefreshAiCredentialCommand}"
+                                             IsEnabled="{Binding CanRefreshAiCredential}"
+                                             AutomationProperties.AutomationId="RefreshAiCredentialButton" />
+                                     <Button Style="{StaticResource DangerButtonStyle}"
+                                             Content="移除 Key"
+                                             Command="{Binding RemoveAiCredentialCommand}"
+                                             IsEnabled="{Binding CanRemoveAiCredential}"
+                                             AutomationProperties.AutomationId="RemoveAiCredentialButton" />
+                                 </StackPanel>
+                                 <TextBlock Margin="0,8,0,0"
+                                            Style="{StaticResource CaptionTextStyle}"
+                                            Foreground="{StaticResource TextMutedBrush}"
+                                            Text="{Binding AiCredentialActionMessage}"
+                                            TextWrapping="Wrap"
+                                            AutomationProperties.AutomationId="AiCredentialActionMessage" />
+                             </StackPanel>
+                         </Border>
+                         <Border Margin="0,18,0,0"
+                                 Padding="14,12"
+                                Background="{StaticResource SurfaceSubtleBrush}"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                AutomationProperties.AutomationId="AiUploadConsentCard">
+                            <StackPanel>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource PanelTitleTextStyle}"
+                                               Text="上传授权"
+                                               AutomationProperties.AutomationId="AiUploadConsentTitle" />
+                                    <TextBlock Margin="0,4,0,0"
+                                               Style="{StaticResource SmallBodyTextStyle}"
+                                               Text="{Binding AiUploadConsentStatusText}"
+                                               AutomationProperties.AutomationId="AiUploadConsentStatus" />
+                                    <TextBlock Margin="0,4,0,0"
+                                               Style="{StaticResource CaptionTextStyle}"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               Text="{Binding AiUploadConsentDetailText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <WrapPanel Margin="0,12,0,0"
+                                            Orientation="Horizontal">
+                                    <Button Margin="0,0,8,8"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Content="重新读取"
+                                            Command="{Binding RefreshAiConsentCommand}"
+                                            AutomationProperties.AutomationId="RefreshAiConsentButton" />
+                                    <Button Margin="0,0,8,8"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Content="允许上传压缩图"
+                                            Command="{Binding GrantAiUploadConsentCommand}"
+                                            IsEnabled="{Binding CanGrantAiUploadConsent}"
+                                            AutomationProperties.AutomationId="GrantAiUploadConsentButton" />
+                                    <Button Margin="0,0,0,8" Style="{StaticResource DangerButtonStyle}"
+                                            Content="撤回授权"
+                                            Command="{Binding RevokeAiUploadConsentCommand}"
+                                            IsEnabled="{Binding CanRevokeAiUploadConsent}"
+                                            AutomationProperties.AutomationId="RevokeAiUploadConsentButton" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+                <Border Padding="20" Style="{StaticResource SectionCardStyle}"
+                        Visibility="{Binding IsPhotoshopSection, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="SettingsPhotoshopSection">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="Photoshop 环境" />
+                        <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
+                                   Text="首发支持：Windows 11 x64 · Photoshop 2025 26.8.1（仍须逐机能力探针通过）。候选检测与正式宿主保存分离；读取或保存选择都不会启动、连接、配对、渲染或编辑 Photoshop。"
+                                   AutomationProperties.AutomationId="PhotoshopEnvironmentScope" />
+
+                        <Border Margin="0,16,0,0"
+                                Padding="14,12"
+                                Background="{StaticResource SurfaceSubtleBrush}"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                AutomationProperties.AutomationId="PhotoshopHostSelectionCard">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource PanelTitleTextStyle}"
+                                           Text="已保存正式宿主"
+                                           AutomationProperties.AutomationId="PhotoshopHostSelectionTitle" />
+                                <TextBlock Margin="0,6,0,0"
+                                           Style="{StaticResource SmallBodyTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding PhotoshopEnvironment.HostSelectionStatus}"
+                                           AutomationProperties.LiveSetting="Polite"
+                                           AutomationProperties.AutomationId="PhotoshopHostSelectionStatus" />
+                                <TextBlock Margin="0,8,0,0"
+                                           Style="{StaticResource CaptionTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding PhotoshopEnvironment.SavedHostPathText}"
+                                           AutomationProperties.AutomationId="PhotoshopHostSelectionPath" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Style="{StaticResource CaptionTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding PhotoshopEnvironment.SavedHostVersionText}"
+                                           AutomationProperties.AutomationId="PhotoshopHostSelectionVersion" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Style="{StaticResource CaptionTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding PhotoshopEnvironment.SavedHostSelectedAtText}"
+                                           AutomationProperties.AutomationId="PhotoshopHostSelectionTime" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Style="{StaticResource CaptionTextStyle}"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding PhotoshopEnvironment.SavedHostUsageText}"
+                                           AutomationProperties.AutomationId="PhotoshopHostSelectionUsage" />
+                                <WrapPanel Margin="0,12,0,0" Orientation="Horizontal">
+                                    <Button Margin="0,0,8,8"
+                                            Content="重新读取已保存宿主"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Command="{Binding PhotoshopEnvironment.RefreshHostSelectionCommand}"
+                                            AutomationProperties.AutomationId="RefreshPhotoshopHostSelectionButton" />
+                                    <Button Margin="0,0,0,8"
+                                            Content="{Binding PhotoshopEnvironment.CancelActionText}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Command="{Binding PhotoshopEnvironment.CancelCommand}"
+                                            AutomationProperties.Name="{Binding PhotoshopEnvironment.CancelActionText}"
+                                            AutomationProperties.AutomationId="CancelPhotoshopDetectionButton" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Margin="0,18,0,0"
+                                   Style="{StaticResource PanelTitleTextStyle}"
+                                   Text="查看程序候选并明确保存" />
+                        <TextBlock Margin="0,6,0,0"
+                                   TextWrapping="Wrap"
+                                   Style="{StaticResource CaptionTextStyle}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Text="重新检测会查看已知本机候选；选择程序只补充查看一个文件。两者都不会自动选择。请核对下拉中的路径和版本后，再明确点击“设为正式宿主”。"
+                                   AutomationProperties.AutomationId="PhotoshopHostSelectionInstruction" />
+                        <WrapPanel Margin="0,12,0,0">
+                            <Button Content="重新检测" Margin="0,0,8,8" Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding PhotoshopEnvironment.RefreshCommand}" AutomationProperties.AutomationId="DetectPhotoshopEnvironmentButton" />
+                            <Button Content="选择程序检查版本" Margin="0,0,0,8" Style="{StaticResource SecondaryButtonStyle}"
+                                    Command="{Binding PhotoshopEnvironment.BrowseCommand}" AutomationProperties.AutomationId="BrowsePhotoshopExecutableButton" />
+                        </WrapPanel>
+                        <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding PhotoshopEnvironment.Status}"
+                                   Style="{StaticResource SmallBodyTextStyle}" AutomationProperties.LiveSetting="Polite"
+                                   AutomationProperties.AutomationId="PhotoshopEnvironmentStatus" />
+                        <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Text="{Binding PhotoshopEnvironment.ObservationText}"
+                                   Style="{StaticResource CaptionTextStyle}" AutomationProperties.AutomationId="PhotoshopEnvironmentObservation" />
+                        <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Text="{Binding PhotoshopEnvironment.OperatingSystemText}"
+                                   Style="{StaticResource CaptionTextStyle}" AutomationProperties.AutomationId="PhotoshopOperatingSystem" />
+                        <StackPanel Margin="0,12,0,0" Visibility="{Binding PhotoshopEnvironment.HasItems, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="查看检测到的程序候选（下拉只切换查看项）" Style="{StaticResource SmallBodyTextStyle}" />
+                            <ComboBox Margin="0,6,0,0" MinHeight="32" MaxDropDownHeight="200"
+                                      ItemsSource="{Binding PhotoshopEnvironment.Items}" DisplayMemberPath="Summary"
+                                      SelectedItem="{Binding PhotoshopEnvironment.SelectedItem, Mode=TwoWay}"
+                                      AutomationProperties.Name="查看 Photoshop 程序版本" AutomationProperties.AutomationId="PhotoshopInstallationList" />
+                            <StackPanel DataContext="{Binding PhotoshopEnvironment.SelectedItem}" Margin="0,8,0,0">
+                                <TextBlock Text="{Binding VersionDetail}" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
+                                           AutomationProperties.AutomationId="PhotoshopFileVersion" />
+                                <TextBlock Margin="0,6,0,0" Text="{Binding ExecutablePath}" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"
+                                           AutomationProperties.AutomationId="PhotoshopExecutablePath" />
+                                <TextBlock Margin="0,6,0,0" Text="{Binding SourceText}" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}" />
+                                <TextBlock Margin="0,6,0,0" Text="{Binding VersionScope}" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
+                                           AutomationProperties.AutomationId="PhotoshopVersionScope" />
+                            </StackPanel>
+                            <Button Margin="0,12,0,0"
+                                    HorizontalAlignment="Left"
+                                    Content="设为正式宿主"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding PhotoshopEnvironment.SelectHostCommand}"
+                                    AutomationProperties.AutomationId="SelectPhotoshopHostButton"
+                                    AutomationProperties.HelpText="仅在明确点击后验证并保存当前查看项；保存成功前保留原正式宿主，不会启动、连接或渲染 Photoshop。" />
+                        </StackPanel>
+                        <TextBlock Margin="0,18,0,0" Style="{StaticResource PanelTitleTextStyle}" Text="设备配对（使用已保存正式宿主）" />
+                        <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"
+                                   Text="配对开始前服务会强制重验上方已保存选择；若尚未选择或记录已失效，操作会停止并引导回到上方重新保存。" />
+                        <TextBlock Margin="0,8,0,0" Text="{Binding Photoshop.Status}" TextWrapping="Wrap"
+                                   Style="{StaticResource SmallBodyTextStyle}" AutomationProperties.AutomationId="PhotoshopPairingStatus" />
+                        <TextBox Margin="0,12,0,0" Padding="8" IsReadOnly="True" FontFamily="Consolas"
+                                 Text="{Binding Photoshop.Code, Mode=OneWay}"
+                                 Visibility="{Binding Photoshop.IsPairing, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                 AutomationProperties.AutomationId="PhotoshopPairingCode" />
+                        <WrapPanel Margin="0,12,0,0" Orientation="Horizontal">
+                            <Button Margin="0,0,8,8" Content="配对设备" Style="{StaticResource SecondaryButtonStyle}" Command="{Binding Photoshop.PairCommand}"
+                                    AutomationProperties.AutomationId="PairPhotoshopButton" />
+                            <Button Margin="0,0,0,8" Content="检查配对" Style="{StaticResource SecondaryButtonStyle}" Command="{Binding Photoshop.RefreshCommand}"
+                                    AutomationProperties.AutomationId="RefreshPhotoshopPairingButton" />
+                        </WrapPanel>
+                        <TextBlock Margin="0,10,0,0" Style="{StaticResource PanelTitleTextStyle}"
+                                   Text="认证连接检查（使用已有配对）"
+                                   AutomationProperties.AutomationId="PhotoshopConnectionCheckTitle" />
+                        <TextBlock Margin="0,8,0,0" Text="{Binding Photoshop.ConnectionStatus}" TextWrapping="Wrap"
+                                   Style="{StaticResource SmallBodyTextStyle}" AutomationProperties.LiveSetting="Polite"
+                                   AutomationProperties.AutomationId="PhotoshopConnectionCheckStatus" />
+                        <TextBlock Margin="0,6,0,0" Text="{Binding Photoshop.ConnectionHistory}" TextWrapping="Wrap"
+                                   Style="{StaticResource CaptionTextStyle}"
+                                   AutomationProperties.AutomationId="PhotoshopConnectionCheckHistory" />
+                        <WrapPanel Margin="0,12,0,0" Orientation="Horizontal"
+                                   AutomationProperties.AutomationId="PhotoshopConnectionActions">
+                             <Button Margin="0,0,8,8" Content="测试认证连接" Style="{StaticResource PrimaryButtonStyle}"
+                                     Command="{Binding Photoshop.CheckConnectionCommand}"
+                                     AutomationProperties.AutomationId="TestPhotoshopConnectionButton"
+                                     AutomationProperties.HelpText="由桌面发起，等待已保存宿主中已初始化且未暂停的配套插件自动接入；首次使用须先完成安装与设备配对。最多等待60秒完成认证与心跳验证，结束后释放监听，不会执行渲染。" />
+                            <Button Margin="0,0,0,8" Content="{Binding Photoshop.CancelActionText}"
+                                    Style="{StaticResource SecondaryButtonStyle}" Command="{Binding Photoshop.CancelCommand}"
+                                    AutomationProperties.Name="{Binding Photoshop.CancelActionText}"
+                                    AutomationProperties.AutomationId="CancelPhotoshopOperationButton" />
+                        </WrapPanel>
+                        <TextBlock Margin="0,16,0,0" Style="{StaticResource SmallBodyTextStyle}" TextWrapping="Wrap"
+                                   Text="上方下拉只切换当前查看项；下拉中的当前项目本身不是正式渲染宿主选择。只有明确点击“设为正式宿主”并由服务保存成功，下方已保存记录才会更新。一次认证检查成功只证明检查时已保存宿主通过重验、匹配完整构建、累计至少 3 次认证心跳且检查时宿主为 ready（不要求连续三次 ready）；它不会因之后切换查看下拉而证明新查看项有效。监听随后释放；日常连接由桌面发起，已初始化、保存设备配对且未暂停的配套插件自动接入。交付状态不明时停止自动等待，请先查询恢复，不能重投未知页面。首次安装、组件加载和逐机能力仍须分别验证；这不代表当前连接或可生产。"
+                                   AutomationProperties.AutomationId="PhotoshopConnectionBoundary" />
+                    </StackPanel>
+                </Border>
+                <Border Padding="20" Style="{StaticResource SectionCardStyle}"
+                        Visibility="{Binding IsStorageSection, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="SettingsStorageSection">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="存储与清理" />
+                        <TextBlock Margin="0,12,0,0" Style="{StaticResource BodyTextStyle}" TextWrapping="Wrap"
+                                   Text="路径迁移、占用统计和安全清理尚待接入。当前页面不会删除任务、缓存、日志、源文件或正式输出。请勿手动清理未完成任务的恢复数据。" />
+                    </StackPanel>
+                </Border>
+                <Border Padding="20" Style="{StaticResource SectionCardStyle}"
+                        Visibility="{Binding IsPrivacySection, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="SettingsPrivacySection">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="隐私与诊断" />
+                        <TextBlock Margin="0,12,0,0" Style="{StaticResource BodyTextStyle}" TextWrapping="Wrap"
+                                   Text="仅在你主动导出并选择本地新文件后生成诊断包；不会自动上传。上传授权仍在“AI 服务”分区管理，导出不会改变授权。" />
+                        <TextBlock Margin="0,16,0,0" Style="{StaticResource PanelTitleTextStyle}" Text="默认包含" />
+                        <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
+                                   Text="软件/系统/运行时版本、固定运行配置、白名单错误码和阶段耗时/数值状态；若本次启动后主动检测过 Photoshop，附数字版本和检测时间快照（无路径）；若用户主动执行过认证连接检查，附历史认证状态、匹配完整构建、检查时间和认证心跳计数。固定技术日志最多读取末尾 2 MiB、保留 2000 条；未知字段或损坏记录剔除。"
+                                   AutomationProperties.AutomationId="DiagnosticExportInclusions" />
+                        <TextBlock Margin="0,16,0,0" Style="{StaticResource PanelTitleTextStyle}" Text="明确排除" />
+                        <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
+                                   Text="API Key、配对码、路径/请求标识、原始异常正文、业务数据库、PSD、商品原图、市场尺码图、正式输出和分析缩略图。不会递归打包目录或附带图片。"
+                                   AutomationProperties.AutomationId="DiagnosticExportExclusions" />
+                        <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"
+                                   Text="文件版本与用户主动检查后的认证匹配均为进程内历史，不代表逐机能力、当前连接或可生产。导出不会主动检测或连接 Photoshop，也不会读取配对秘密。缺失日志/截断会在包中说明；日志清理尚未接入。图片请另行明确选择提供。"
+                                   AutomationProperties.AutomationId="DiagnosticExportConnectionBoundary" />
+                        <WrapPanel Margin="0,20,0,0">
+                            <Button Margin="0,0,8,8" Content="导出诊断包" Command="{Binding Diagnostics.ExportCommand}"
+                                    Style="{StaticResource PrimaryButtonStyle}" AutomationProperties.AutomationId="ExportDiagnosticPackageButton" />
+                            <Button Margin="0,0,0,8" Content="取消导出" Command="{Binding Diagnostics.CancelCommand}"
+                                    Style="{StaticResource SecondaryButtonStyle}" AutomationProperties.AutomationId="CancelDiagnosticExportButton" />
+                        </WrapPanel>
+                        <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding Diagnostics.Status}"
+                                   Style="{StaticResource SmallBodyTextStyle}" AutomationProperties.LiveSetting="Polite"
+                                   AutomationProperties.AutomationId="DiagnosticExportStatus" />
+                    </StackPanel>
+                </Border>
+                <Border Padding="20" Style="{StaticResource SectionCardStyle}"
+                        Visibility="{Binding IsSoftwareSection, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="SettingsSoftwareSection">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="软件信息" />
+                        <TextBlock Margin="0,12,0,0" Text="当前程序集版本" Style="{StaticResource SmallBodyTextStyle}" />
+                        <TextBlock Margin="0,6,0,0" Text="{Binding SoftwareVersion}" Style="{StaticResource BodyTextStyle}"
+                                   AutomationProperties.AutomationId="SoftwareVersion" />
+                        <TextBlock Margin="0,6,0,0" Text="{Binding SoftwareBuildDescription}" TextWrapping="Wrap"
+                                   Style="{StaticResource SmallBodyTextStyle}" AutomationProperties.AutomationId="SoftwareBuildDescription" />
+                        <TextBlock Margin="0,20,0,0" Text="技术支持：请联系软件交付方" TextWrapping="Wrap"
+                                   Style="{StaticResource BodyTextStyle}" AutomationProperties.AutomationId="SoftwareSupportText" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+            </ScrollViewer>
+            </Grid>
+        </Grid>
+
+    </Grid>
+</UserControl>

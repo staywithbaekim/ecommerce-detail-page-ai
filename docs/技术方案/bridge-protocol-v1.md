@@ -76,7 +76,7 @@ bridge 只负责发现、认证、资源绑定、提交已校验的 RenderPlan�
       "code": "BRIDGE_PROTOCOL_MISMATCH",
       "retryable": false,
       "scope": "session",
-      "user_action": "升级配套组件",
+      "user_action": "升级配套组件。",
       "details": { "expected": "ps-bridge/v1", "actual": "ps-bridge/v0" }
     }
   }
@@ -166,6 +166,7 @@ bridge 只负责发现、认证、资源绑定、提交已校验的 RenderPlan�
 | `BRIDGE_REQUEST_TOO_LARGE` | 否 | request | 超过请求体上限 |
 | `BRIDGE_PLAN_INVALID` | 否 | request | RenderPlan Schema 或摘要不通过 |
 | `BRIDGE_RESOURCE_BINDING_INVALID` | 否 | request | handle、hash、用途或只读属性不符 |
+| `BRIDGE_CANCEL_PENDING` | 否 | execution | 资源读取或输出 write/seal 的绑定仍匹配，但桌面已持久化取消并撤销租约；不传输或封存字节，只可安全释放并回报取消，不是终态或可重试凭据（ADR-013） |
 | `BRIDGE_EXECUTION_NOT_FOUND` | 否 | execution | execution ID 不存在或已过期 |
 | `BRIDGE_DISCONNECTED` | 是 | session | 心跳丢失或 loopback 断开 |
 | `BRIDGE_HOST_BLOCKED` | 否 | host | 未保存 Photoshop、未知弹窗或能力探针失败 |
@@ -184,3 +185,10 @@ bridge 只负责发现、认证、资源绑定、提交已校验的 RenderPlan�
 ## 8. 契约通过标准
 
 协议冻结只表示本文和 JSON Schema 已成为开发输入，不表示运行环境已通过。实现进入 `RENDER-01` 前必须提供：正反请求/响应样例、重复提交不重复替换、token 过期/轮换、端口占用、断线查询、未知执行、请求超限、未知弹窗和实际 PS2025 `26.8.1` 客户机证据。任一失败都保留结构化错误并阻断生产发布。
+
+## 9. 2026-09-19 实现澄清
+
+- 根 `body` 的联合约束由 `oneOf` 修为 `anyOf`：握手拒绝体和普通拒绝体有合法重叠；仍以 `envelope_kind` 的条件分支选择精确 Schema，未知字段规则不变。正反合同测试已证明修正，没有新增端点、版本或业务字段。
+- 实现额外执行 endpoint/operation、错误码及本地安全文案、事件执行身份/序号、RenderPlan 摘要和资源绑定闭合校验。错误的本地输出以 `BridgeWireErrors` 为准，不透传远端原始错误文案。字节流读取有界，但真实 HTTP/认证/执行端尚未接通。
+- 本合同没有完整定义桌面监听拓扑中的挑战下发、UXP 领取/ACK、认证事件回传以及 GET 认证 header。候选设计见 [UXP 主动连接传输增补草案](RENDER-S1-UXP主动连接传输增补草案.md)，尚未冻结或装入 v1 Schema。正式实现前须补齐机器合同、双方认证、去重/未知结果语义和测试。
+- 此次离线证据见 [RENDER-S1 验证记录](../验证/RENDER-01-S1合同校验与提交边界验证-20260919.md)；不关闭 S1 整体、S2 实机或 S4–S7 输出门。

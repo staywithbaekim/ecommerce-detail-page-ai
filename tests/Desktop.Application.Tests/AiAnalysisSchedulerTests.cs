@@ -1640,8 +1640,10 @@ public sealed class AiAnalysisSchedulerTests
         Assert.Equal(2, stateStore.Snapshot.Budget.OutputTokens);
     }
 
-    [Fact]
-    public async Task MixedRestoreRefillsQueuedWorkButRetainsUploadingEvidence()
+    [Theory]
+    [InlineData("Uploading")]
+    [InlineData("Analysing")]
+    public async Task MixedRestoreRefillsQueuedWorkButRetainsInFlightEvidence(string inFlightStatus)
     {
         var store = new MemoryStore();
         var stateStore = new MemorySchedulingStateStore();
@@ -1664,14 +1666,16 @@ public sealed class AiAnalysisSchedulerTests
         await store.UpdateRequestStatusAsync(
             unresolved.RequestId,
             "Queued",
-            "Uploading",
+            inFlightStatus,
             null,
             unresolvedLedger.UpdatedAt.AddTicks(1),
             CancellationToken.None);
         var unresolvedSession = (await store.LoadSessionAsync(
             "session-" + unresolved.RequestId, CancellationToken.None))!;
+        var inFlightSession = unresolvedSession.AdvanceTo(AiAnalysisSessionStatus.Uploading);
+        if (inFlightStatus == "Analysing") inFlightSession = inFlightSession.AdvanceTo(AiAnalysisSessionStatus.Analysing);
         await store.SaveSessionAsync(
-            unresolvedSession.AdvanceTo(AiAnalysisSessionStatus.Uploading),
+            inFlightSession,
             CancellationToken.None,
             unresolvedSession.SelectionRevision);
 
@@ -1686,6 +1690,7 @@ public sealed class AiAnalysisSchedulerTests
             stateStore: stateStore);
 
         Assert.Equal(1, await reopened.RestoreAsync(CancellationToken.None));
+        Assert.Equal(unresolved.RequestId, Assert.Single(reopened.RecoveredInFlightRequestIds));
         Assert.Equal(1, reopenedQueue.Count);
         Assert.Equal(AiAnalysisWorkDisposition.Completed,
             (await reopened.ProcessNextAsync(CancellationToken.None)).Disposition);
@@ -1695,7 +1700,7 @@ public sealed class AiAnalysisSchedulerTests
             "ai-s3-default", CancellationToken.None))!;
         var retained = Assert.Single(persisted.PendingItems);
         Assert.Equal(unresolved.RequestId, retained.Request.RequestId);
-        Assert.Equal("Uploading", (await store.FindRequestByFingerprintAsync(
+        Assert.Equal(inFlightStatus, (await store.FindRequestByFingerprintAsync(
             AiAnalysisCacheKeyFactory.Create(unresolved), CancellationToken.None))!.Status);
     }
 

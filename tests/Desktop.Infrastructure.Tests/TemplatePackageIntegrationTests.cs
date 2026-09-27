@@ -2,6 +2,7 @@ using Desktop.Application.Files;
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Ai;
+using Desktop.Contracts.Validation;
 using Desktop.Domain.Templates;
 using Desktop.Infrastructure.Files;
 using Desktop.Infrastructure.Persistence;
@@ -11,6 +12,99 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class TemplatePackageIntegrationTests
 {
+    [Fact]
+    public async Task FrozenV1ImportsOneBasedPathsAndReexportsExplicitV2WithoutChangingBindings()
+    {
+        using var directory = new TestDirectory();
+        var bytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 1, 2, 3, 4 };
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var sourcePath = Path.Combine(directory.Path, "source.psd");
+        await File.WriteAllBytesAsync(sourcePath, bytes);
+        var manifest = new TemplatePackageManifest(TemplatePackageProtocol.Version, "v1 migration", 1,
+            "revision", "sha256:" + new string('c', 64), [new("resource", "resources/source.psd", bytes.Length, hash)],
+            [new("page_01", 0, "normal", TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct, null, true, "resource", Inspection(hash, bytes.Length),
+                [PackageBinding() with { PageId = "page_01" }])]);
+        var port = new ZipTemplatePackagePort(new JsonSchemaContractValidator());
+        var oldPackage = Path.Combine(directory.Path, "v1.tplpkg");
+        await port.ExportAsync(manifest, new Dictionary<string, string> { ["resource"] = sourcePath }, oldPackage, default);
+        await using var store = new SqliteDesktopStore(new(Path.Combine(directory.Path, "data")));
+        await store.InitializeAsync();
+        var paths = new LocalAppPathPolicy(Path.Combine(directory.Path, "data"));
+        var files = new AtomicFileStore(paths); var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var workspace = Workspace(store, files, new JsonManifestStore(files), time);
+        var service = new TemplatePackageService(store, store, port, files, paths, workspace, time);
+        var group = await service.ImportAsNewGroupAsync(oldPackage, null, default);
+        var revision = (await store.GetRevisionAsync(group.RevisionId, default))!;
+        var resource = (await store.GetByResourceIdAsync(revision.Pages[0].TemplateResourceId, default))!;
+        Assert.Equal(1, Assert.Single(resource.Inspection.Layers[0].Path));
+        Assert.Equal(2, Assert.Single(revision.FrameBindings[0].LayerPath.Segments));
+        var newPackage = Path.Combine(directory.Path, "v2.tplpkg");
+        await service.ExportCurrentAsync(group.GroupId, newPackage, default);
+        var migrated = (await port.ValidateAsync(newPackage, default)).Manifest!;
+        Assert.Equal(TemplatePackageProtocol.CurrentVersion, migrated.Protocol);
+        Assert.Equal(1, Assert.Single(migrated.Pages![0].Inspection!.Layers[0].Path));
+        Assert.Equal(2, Assert.Single(migrated.Pages[0].Bindings![0].LayerPath));
+        await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(migrated with
+        {
+            Pages = [migrated.Pages[0] with { Bindings = [migrated.Pages[0].Bindings![0] with { LayerPath = [1] }] }]
+        }, new Dictionary<string, string>(), Path.Combine(directory.Path, "wrong-index.tplpkg"), default));
+    }
+
+    [Fact]
+    public async Task DynamicCalibrationRoundtripsPackageAndIsCoveredByCommittedManifest()
+    {
+        using var directory = new TestDirectory();
+        using var packageDirectory = new TestDirectory();
+        var bytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 1, 2, 3, 4 };
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var sourcePath = Path.Combine(packageDirectory.Path, "source.psd");
+        await File.WriteAllBytesAsync(sourcePath, bytes);
+        var basis = Inspection(hash, bytes.Length);
+        var layer = basis.Layers[0] with { Path = [0], Kind = "group", IsGroup = true, SmartObject = null,
+            Visible = true, EffectiveVisible = true, Clipping = false };
+        var inspection = basis with { Layers = [layer], LayerCount = 1, SmartObjectCount = 0 };
+        var reference = new SizeTableTemplateLayer(1, layer.LayerId, layer.Kind, layer.Name, inspection.StructureSignature);
+        var calibration = new SizeTableTemplateCalibration("size-table-template/v1", hash, "new table", reference, [reference],
+            TemplateRect.Create(10, 20, 700, 1000),
+            new("Microsoft YaHei UI", 24, 1000, 56, 24, 12, "#FFFFFFFF", "#FFF2F4F7", "#FF101828", "#FF98A2B3"));
+        var manifest = new TemplatePackageManifest(TemplatePackageProtocol.CurrentVersion, "size template", 1, "revision", "sha256:" + new string('c', 64),
+            [new("resource", "resources/source.psd", bytes.Length, hash)],
+            [new("page", 0, "size", TemplatePageContentTypeOption.DynamicSizeTable, TemplateGenerationModeOption.OncePerProduct,
+                null, true, "resource", inspection, [], calibration)]);
+        var package = Path.Combine(packageDirectory.Path, "size.tplpkg");
+        var port = new ZipTemplatePackagePort(new JsonSchemaContractValidator());
+        await port.ExportAsync(manifest, new Dictionary<string, string> { ["resource"] = sourcePath }, package, default);
+        await using var store = new SqliteDesktopStore(new(directory.Path)); await store.InitializeAsync();
+        var paths = new LocalAppPathPolicy(directory.Path); var files = new AtomicFileStore(paths);
+        var manifests = new JsonManifestStore(files); var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var workspace = Workspace(store, files, manifests, time);
+        var service = new TemplatePackageService(store, store, port, files, paths, workspace, time);
+        var imported = await service.ImportAsNewGroupAsync(package, null, default);
+        var revision = (await store.GetRevisionAsync(imported.RevisionId, default))!;
+        var page = Assert.Single(revision.Pages);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(calibration), System.Text.Json.JsonSerializer.Serialize(page.SizeTableCalibration));
+        using var committedManifest = System.Text.Json.JsonDocument.Parse((await files.ReadAsync(revision.ManifestRef!, default))!);
+        Assert.Contains("size_" + page.PageId, committedManifest.RootElement.ToString(), StringComparison.Ordinal);
+        var clone = await service.SaveAsNewGroupAsync(imported.GroupId, "size copy", default);
+        var copied = (await store.GetRevisionAsync(clone.RevisionId, default))!.Pages[0];
+        Assert.NotEqual(page.PageId, copied.PageId);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(calibration), System.Text.Json.JsonSerializer.Serialize(copied.SizeTableCalibration));
+        var edit = await workspace.BeginPageEditAsync(imported.GroupId, page.PageId, default);
+        var editPage = Assert.Single((await workspace.GetDraftAsync(edit, default)).Pages);
+        var editedCalibration = editPage.Page.SizeTableCalibration! with { LayerName = "revised table" };
+        await Assert.ThrowsAsync<TemplateRuleViolationException>(() => workspace.CalibrateSizeTableAsync(edit, page.PageId,
+            editedCalibration with { TemplateSha256 = new string('0', 64) }, default));
+        await workspace.CalibrateSizeTableAsync(edit, page.PageId, editedCalibration, default);
+        var edited = await workspace.CommitDraftAsync(edit, default);
+        Assert.NotEqual(revision.RuleDigest, (await store.GetRevisionAsync(edited.RevisionId, default))!.RuleDigest);
+        Assert.Equal("new table", (await store.GetRevisionAsync(imported.RevisionId, default))!.Pages[0].SizeTableCalibration!.LayerName);
+        await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(manifest with {
+            Pages = [manifest.Pages![0] with { SizeTableCalibration = calibration with { TemplateSha256 = new string('0', 64) } }] },
+            new Dictionary<string, string> { ["resource"] = sourcePath }, Path.Combine(packageDirectory.Path, "bad.tplpkg"), default));
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(sourcePath));
+    }
+
     [Fact]
     public async Task CopyFailureRemovesImportedDraftDatabaseRowsAndOwnedFiles()
     {
@@ -39,7 +133,7 @@ public sealed class TemplatePackageIntegrationTests
                 "resource_source",
                 Inspection(hash, bytes.Length),
                 [PackageBinding()])]);
-        var realPort = new ZipTemplatePackagePort();
+        var realPort = new ZipTemplatePackagePort(new JsonSchemaContractValidator());
         await realPort.ExportAsync(
             manifest,
             new Dictionary<string, string> { ["resource_source"] = sourcePath },
@@ -98,6 +192,21 @@ public sealed class TemplatePackageIntegrationTests
         var resourcePath =
             "templates/groups/group_package_source/revisions/revision_package_source/pages/page_package_source/template.psd";
         await sourceFiles.WriteAtomicallyAsync(resourcePath, psdBytes, CancellationToken.None);
+        var workerInspection = Inspection(hash, psdBytes.Length) with
+        {
+            StructureSignature = new string('b', 64),
+            LayerCount = 2,
+            SmartObjectCount = 2,
+            Layers = [Inspection(hash, psdBytes.Length).Layers[0] with
+            {
+                Path = [1],
+                ContentEvidence = new(true, new string('d', 64), null, null, null, null)
+            }, Inspection(hash, psdBytes.Length).Layers[0] with
+            {
+                Path = [0], LayerId = 256, Name = "old_product",
+                SmartObject = Inspection(hash, psdBytes.Length).Layers[0].SmartObject! with { Kind = "data" }
+            }]
+        };
         var resource = new ImportedTemplateResource(
             "resource_package_source",
             group.GroupId,
@@ -106,7 +215,7 @@ public sealed class TemplatePackageIntegrationTests
             psdBytes.Length,
             hash,
             "sha256:" + new string('b', 64),
-            Inspection(hash, psdBytes.Length),
+            workerInspection,
             now);
         var draft = TemplateRevision.CreateDraft(
             "revision_package_source",
@@ -123,7 +232,8 @@ public sealed class TemplatePackageIntegrationTests
                 null,
                 true,
                 resource.ResourceId)],
-            [Binding("frame_package_source", "page_package_source")]);
+            [Binding("frame_package_source", "page_package_source",
+                [SupersededLayerEvidence.Create(LayerPath.Create([1]), false, 256)])]);
         await source.SaveGroupAsync(group, CancellationToken.None);
         await source.SaveImportedAsync("import_package_source", resource, CancellationToken.None);
         await source.CommitRevisionAsync(Commit(draft), null, CancellationToken.None);
@@ -131,12 +241,22 @@ public sealed class TemplatePackageIntegrationTests
         var sourcePackages = new TemplatePackageService(
             source,
             source,
-            new ZipTemplatePackagePort(),
+            new ZipTemplatePackagePort(new JsonSchemaContractValidator()),
             sourceFiles,
             sourcePaths,
             sourceWorkspace,
             time);
         await sourcePackages.ExportCurrentAsync(group.GroupId, packagePath, CancellationToken.None);
+        var storedInspection = (await source.GetByResourceIdAsync(resource.ResourceId, default))!.Inspection;
+        Assert.Equal(new string('b', 64), storedInspection.StructureSignature);
+        Assert.NotNull(storedInspection.Layers[0].ContentEvidence);
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(packagePath))
+        using (var reader = new StreamReader(archive.GetEntry("manifest.json")!.Open()))
+        {
+            var packageJson = await reader.ReadToEndAsync();
+            Assert.DoesNotContain("contentEvidence", packageJson, StringComparison.Ordinal);
+            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV2, packageJson).IsValid);
+        }
 
         await using var target = new SqliteDesktopStore(targetOptions);
         await target.InitializeAsync();
@@ -147,7 +267,7 @@ public sealed class TemplatePackageIntegrationTests
         var targetPackages = new TemplatePackageService(
             target,
             target,
-            new ZipTemplatePackagePort(),
+            new ZipTemplatePackagePort(new JsonSchemaContractValidator()),
             targetFiles,
             targetPaths,
             targetWorkspace,
@@ -169,7 +289,14 @@ public sealed class TemplatePackageIntegrationTests
         Assert.NotEqual(group.GroupId, imported.GroupId);
         Assert.Equal("可迁移模板", imported.Name);
         Assert.Equal(hash, importedResource.Sha256);
+        Assert.Equal("sha256:" + new string('b', 64), importedResource.Inspection.StructureSignature);
+        Assert.Null(importedResource.Inspection.Layers[0].ContentEvidence);
         Assert.Equal(psdBytes, importedBytes);
+        var importedHidden = Assert.Single(Assert.Single(reopenedRevision.FrameBindings).SupersededLayers);
+        Assert.Equal(1, Assert.Single(importedHidden.LayerPath.Segments));
+        Assert.Equal(256, importedHidden.ExpectedLayerId);
+        Assert.True(importedHidden.ExpectedVisible);
+        Assert.False(importedHidden.ExpectedClipping);
         var importedCriteria = Assert.Single(reopenedRevision.FrameBindings)
             .SelectionRequirement.Criteria.ToDictionary(
                 criterion => criterion.Key,
@@ -192,6 +319,9 @@ public sealed class TemplatePackageIntegrationTests
             CancellationToken.None);
         Assert.NotEqual(imported.GroupId, savedAs.GroupId);
         Assert.Equal("可迁移模板 副本", savedAs.Name);
+        var savedAsRevision = (await target.GetRevisionAsync(savedAs.RevisionId, default))!;
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(importedHidden),
+            System.Text.Json.JsonSerializer.Serialize(Assert.Single(Assert.Single(savedAsRevision.FrameBindings).SupersededLayers)));
         Assert.False(Directory.EnumerateFiles(
             Path.Combine(targetDirectory.Path, "template-package-staging"),
             "*.tplpkg",
@@ -211,9 +341,10 @@ public sealed class TemplatePackageIntegrationTests
                 store,
                 time),
             time,
-            manifests);
+            manifests, files: files);
 
-    private static FrameBinding Binding(string frameId, string pageId) => FrameBinding.Create(
+    private static FrameBinding Binding(string frameId, string pageId,
+        IReadOnlyList<SupersededLayerEvidence>? superseded = null) => FrameBinding.Create(
         frameId,
         pageId,
         LayerPath.Create([2]),
@@ -227,7 +358,7 @@ public sealed class TemplatePackageIntegrationTests
             100,
             "normal",
             LayerStructureSignature.Create("sha256:" + new string('b', 64))),
-        [],
+        superseded ?? [],
         SelectionRequirement.Create(
             "Choose the main product image.",
             [

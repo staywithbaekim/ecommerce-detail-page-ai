@@ -40,7 +40,27 @@ public static class DesktopServices
         services.AddSingleton<IRenderPlanValidator, RenderPlanValidator>();
         services.AddSingleton<ITemplateRenderPlanBuilder, TemplateRenderPlanBuilder>();
         services.AddSingleton<ISizeTableRenderPlanBuilder, SizeTableRenderPlanBuilder>();
-        services.AddSingleton<IPhotoshopAvailabilityPort, UnavailablePhotoshopAvailabilityPort>();
+        services.AddSingleton<RenderBatchResourcePreparer>();
+        services.AddSingleton<RenderStyleOutputPublisher>();
+        services.AddSingleton<IRenderStyleOutputPublisher>(provider => provider.GetRequiredService<RenderStyleOutputPublisher>());
+        services.AddSingleton<BridgeRenderBatchSessionFactory>();
+        services.AddSingleton<IRenderBatchSessionFactory>(provider => provider.GetRequiredService<BridgeRenderBatchSessionFactory>());
+        services.AddSingleton<IPhotoshopAvailabilityPort>(provider => provider.GetRequiredService<BridgeRenderBatchSessionFactory>());
+        services.AddSingleton<ISizeTablePageRepairPreparer, SizeTablePageRepairPreparer>();
+        services.AddSingleton<RenderBatchCoordinator>();
+        services.AddSingleton<IRenderBatchWorkflow>(provider => provider.GetRequiredService<RenderBatchCoordinator>());
+        services.AddSingleton<ISizeTablePageRepairWorkflow>(provider => provider.GetRequiredService<RenderBatchCoordinator>());
+        services.AddSingleton<IRenderBatchOutputReader, RenderBatchOutputReader>();
+        services.AddSingleton<IBridgePairingSecretStore, WindowsBridgePairingStore>();
+        services.AddSingleton<IBridgePeerProcessResolver, WindowsBridgePeerProcessResolver>();
+        services.AddSingleton<PhotoshopHostSelectionService>();
+        services.AddSingleton<IPhotoshopHostSelectionPort>(provider => provider.GetRequiredService<PhotoshopHostSelectionService>());
+        // Production registration is explicit: the optional tooling constructor cannot silently omit selection.
+        services.AddSingleton(provider => new BridgeSessionOwnerFactory(
+            provider.GetRequiredService<IBridgePairingSecretStore>(), provider.GetRequiredService<IPathPolicy>(),
+            provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<PhotoshopHostSelectionService>()));
+        services.AddSingleton<IPhotoshopPairingPort>(provider => provider.GetRequiredService<BridgeSessionOwnerFactory>());
+        services.AddSingleton<IPhotoshopConnectionCheckPort>(provider => provider.GetRequiredService<BridgeSessionOwnerFactory>());
         services.AddSingleton<IAiRenderPlanFactory, AiRenderPlanFactory>();
         services.AddSingleton<ISizeTableRepository, SizeTableFileRepository>();
         services.AddSingleton<ISizeTableEditingWorkflow, SizeTableEditingWorkflow>();
@@ -49,6 +69,8 @@ public static class DesktopServices
         services.AddSingleton<SqliteDesktopStore>();
         services.AddSingleton<ITaskEventStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<ICheckpointStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<IRenderBatchStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<IRenderPageCommitStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IAppInstanceStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<ITemplateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IBatchSnapshotRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
@@ -95,6 +117,8 @@ public static class DesktopServices
         services.AddSingleton<IRedactedLogger>(provider => new RedactingFileLogger(
             provider.GetRequiredService<IPathPolicy>(),
             Path.Combine("logs", "desktop-v1.jsonl")));
+        services.AddSingleton<IPhotoshopEnvironmentProbe, WindowsPhotoshopEnvironmentProbe>();
+        services.AddSingleton<IDiagnosticPackageExporter, LocalDiagnosticPackageExporter>();
 
         services.AddSingleton<IBridgeClient, MockBridgeClient>();
         services.AddSingleton<IAiAnalyzer, MockAiAnalyzer>();
@@ -131,7 +155,9 @@ public static class DesktopServices
             provider.GetRequiredService<VolcArkAiOptions>(),
             provider.GetService<IRedactedLogger>()));
         services.AddSingleton<IAiAnalysisSchedulerFactory, AiAnalysisSchedulerFactory>();
-        services.AddSingleton<IAiBatchAnalysisWorkflow, AiBatchAnalysisWorkflow>();
+        services.AddSingleton<AiBatchAnalysisWorkflow>();
+        services.AddSingleton<IAiBatchAnalysisWorkflow>(provider => provider.GetRequiredService<AiBatchAnalysisWorkflow>());
+        services.AddSingleton<ISizeTableRepairAdmission>(provider => provider.GetRequiredService<AiBatchAnalysisWorkflow>());
         return services;
     }
 }

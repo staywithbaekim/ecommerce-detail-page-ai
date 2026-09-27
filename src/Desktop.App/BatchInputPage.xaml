@@ -1,0 +1,371 @@
+<UserControl x:Class="Desktop.App.BatchInputPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:local="clr-namespace:Desktop.App"
+             mc:Ignorable="d"
+             HorizontalContentAlignment="Stretch"
+             VerticalContentAlignment="Stretch">
+    <Grid>
+        <Grid Visibility="{Binding IsBatchInputVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+              AutomationProperties.AutomationId="BatchInputPage">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="16" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="64" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" MinHeight="68">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="新建批次 / 扫描前设置" />
+                    <TextBlock Margin="0,2,0,0"
+                               Style="{StaticResource PageTitleTextStyle}"
+                               Text="新建批次"
+                               AutomationProperties.AutomationId="BatchInputTitle" />
+                    <TextBlock Margin="0,2,0,0"
+                               Style="{StaticResource SmallBodyTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="确认模板、商品目录、输出位置和本批次页面" />
+                </StackPanel>
+                <StackPanel Grid.Column="1"
+                            Margin="16,6,0,0"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Top">
+                    <TextBlock Margin="0,0,6,0"
+                               VerticalAlignment="Center"
+                               FontFamily="Segoe Fluent Icons"
+                               FontSize="14"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Text="&#xE823;" />
+                    <TextBlock VerticalAlignment="Center"
+                               Style="{StaticResource CaptionTextStyle}"
+                               Text="{Binding BatchDraftSaveText}"
+                               AutomationProperties.AutomationId="BatchDraftSaveStatus" />
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="2" AutomationProperties.AutomationId="BatchInputForm">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="32" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0">
+                    <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="模板与目录" />
+                    <TextBlock Margin="0,4,0,12"
+                               Style="{StaticResource CaptionTextStyle}"
+                               Text="选择已校准模板，并确认本批次的输入与正式输出位置" />
+
+                    <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="模板组" />
+                    <ComboBox Margin="0,6,0,0"
+                              ItemsSource="{Binding BatchTemplateGroups}"
+                              SelectedItem="{Binding SelectedBatchTemplate, Mode=TwoWay}"
+                              IsEnabled="{Binding IsBatchConfigurationEditable}"
+                              Style="{StaticResource FieldComboBoxStyle}"
+                              AutomationProperties.AutomationId="BatchTemplateSelect"
+                              AutomationProperties.Name="模板组">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock Margin="0,6,0,0"
+                               Style="{StaticResource CaptionTextStyle}"
+                               Text="{Binding BatchTemplateHelperText}" />
+
+                    <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
+                        <Button Margin="0,0,8,0"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding CreateTemplateFromBatchCommand}"
+                                Content="新建模板组"
+                                AutomationProperties.AutomationId="CreateTemplateFromBatchButton" />
+                        <Button Style="{StaticResource GhostButtonStyle}"
+                                Command="{Binding ImportTemplateFromBatchCommand}"
+                                Content="导入已校准模板"
+                                AutomationProperties.AutomationId="ImportTemplateFromBatchButton" />
+                    </StackPanel>
+
+                    <TextBlock Margin="0,14,0,0"
+                               Style="{StaticResource FieldLabelTextStyle}"
+                               Text="商品目录" />
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="8" />
+                            <ColumnDefinition Width="88" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Style="{StaticResource FieldTextBoxStyle}"
+                                 IsReadOnly="True"
+                                 Text="{Binding BatchInputDirectoryDisplay, Mode=OneWay}"
+                                 AutomationProperties.AutomationId="BatchInputDirectoryField"
+                                 AutomationProperties.Name="商品目录" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding ChooseBatchInputDirectoryCommand}"
+                                Content="选择目录"
+                                AutomationProperties.AutomationId="ChooseBatchInputDirectoryButton" />
+                    </Grid>
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="8" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Ellipse Width="8" Height="8" Fill="{StaticResource StatusDraftBrush}" />
+                        <TextBlock Grid.Column="2"
+                                   Style="{StaticResource CaptionTextStyle}"
+                                   TextWrapping="Wrap"
+                                   Text="{Binding BatchRecognitionText}"
+                                   AutomationProperties.AutomationId="BatchRecognitionStatus"
+                                   AutomationProperties.LiveSetting="Polite" />
+                    </Grid>
+
+                    <TextBlock Margin="0,14,0,0"
+                               Style="{StaticResource FieldLabelTextStyle}"
+                               Text="输出位置" />
+                    <Grid Margin="0,6,0,0" IsEnabled="{Binding IsBatchConfigurationEditable}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <RadioButton GroupName="BatchOutputMode" IsChecked="{Binding IsBatchUnifiedOutput, Mode=TwoWay}"
+                                     Style="{StaticResource FieldRadioCardStyle}"
+                                     AutomationProperties.AutomationId="BatchUnifiedOutputOption" AutomationProperties.Name="统一输出目录">
+                            <TextBlock Text="统一目录 · 每款一目录" TextWrapping="Wrap" />
+                        </RadioButton>
+                        <RadioButton Grid.Column="2" GroupName="BatchOutputMode" IsChecked="{Binding IsBatchStyleSourceOutput, Mode=TwoWay}"
+                                     Style="{StaticResource FieldRadioCardStyle}"
+                                     AutomationProperties.AutomationId="BatchStyleSourceOutputOption" AutomationProperties.Name="各款源目录">
+                            <TextBlock Text="各款源目录" TextWrapping="Wrap" />
+                        </RadioButton>
+                    </Grid>
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="8" />
+                            <ColumnDefinition Width="88" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Style="{StaticResource FieldTextBoxStyle}"
+                                 IsReadOnly="True"
+                                 Text="{Binding BatchOutputDirectoryDisplay, Mode=OneWay}"
+                                 AutomationProperties.AutomationId="BatchOutputDirectoryField"
+                                 AutomationProperties.Name="正式输出目录" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding ChooseBatchOutputDirectoryCommand}"
+                                Content="选择目录"
+                                AutomationProperties.AutomationId="ChooseBatchOutputDirectoryButton" />
+                    </Grid>
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="8" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Ellipse Width="8" Height="8" Fill="{StaticResource StatusDraftBrush}" />
+                        <TextBlock Grid.Column="2"
+                                   Style="{StaticResource CaptionTextStyle}"
+                                   TextWrapping="Wrap"
+                                   Text="{Binding BatchOutputConfirmationText}"
+                                   AutomationProperties.AutomationId="BatchOutputConfirmationStatus" />
+                    </Grid>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2">
+                    <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="生成设置" />
+                    <TextBlock Margin="0,4,0,12"
+                               Style="{StaticResource CaptionTextStyle}"
+                               Text="设置本批次的选图方式、页面范围与输出格式" />
+
+                    <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="选图方式" />
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <RadioButton Grid.Column="0"
+                                     GroupName="BatchSelectionMode"
+                                     Style="{StaticResource FieldRadioCardStyle}"
+                                     IsEnabled="{Binding IsBatchConfigurationEditable}"
+                                     IsChecked="{Binding IsBatchAutomaticSelection, Mode=TwoWay}"
+                                     AutomationProperties.AutomationId="BatchAutomaticSelectionOption"
+                                     AutomationProperties.Name="AI 自动选图">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="AI 自动选图" />
+                                <TextBlock Style="{StaticResource CaptionTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="自动分析并匹配每个图片框" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton Grid.Column="2"
+                                     GroupName="BatchSelectionMode"
+                                     Style="{StaticResource FieldRadioCardStyle}"
+                                     IsEnabled="{Binding IsBatchConfigurationEditable}"
+                                     IsChecked="{Binding IsBatchManualSelection, Mode=TwoWay}"
+                                     AutomationProperties.AutomationId="BatchManualSelectionOption"
+                                     AutomationProperties.Name="人工选图">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="人工选图" />
+                                <TextBlock Style="{StaticResource CaptionTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="由用户选图，后续仍可智能适配" />
+                            </StackPanel>
+                        </RadioButton>
+                    </Grid>
+
+                    <Border Margin="0,14,0,0" Style="{StaticResource SectionCardStyle}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource PanelTitleTextStyle}"
+                                           Text="{Binding BatchPageSelectionSummary}"
+                                           AutomationProperties.AutomationId="BatchPageSelectionSummary" />
+                                <TextBlock Style="{StaticResource CaptionTextStyle}" Text="取消页面只影响当前批次" />
+                            </StackPanel>
+                            <Button Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    Command="{Binding OpenBatchPageSelectionCommand}"
+                                    Content="选择页面"
+                                    AutomationProperties.AutomationId="OpenBatchPageSelectionButton" />
+                        </Grid>
+                    </Border>
+
+                    <Border Margin="0,12,0,0" Style="{StaticResource SectionCardStyle}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource FieldLabelTextStyle}" Text="同时输出可编辑 PSD" />
+                                <TextBlock Style="{StaticResource CaptionTextStyle}"
+                                           TextWrapping="Wrap"
+                                           Text="默认关闭；开启后不适用 5 分钟性能目标" />
+                            </StackPanel>
+                            <CheckBox Grid.Column="1"
+                                      VerticalAlignment="Center"
+                                      Style="{StaticResource ToggleSwitchStyle}"
+                                      IsEnabled="{Binding IsBatchConfigurationEditable}"
+                                      IsChecked="{Binding BatchIncludeEditablePsd, Mode=TwoWay}"
+                                      AutomationProperties.AutomationId="BatchEditablePsdToggle"
+                                      AutomationProperties.Name="同时输出可编辑 PSD" />
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Margin="0,14,0,8"
+                               Style="{StaticResource FieldLabelTextStyle}"
+                               Text="输出结构预览" />
+                    <Border Padding="16,12"
+                            Background="{StaticResource SurfaceSubtleBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource PanelTitleTextStyle}" Text="款式目录\" />
+                            <ItemsControl Margin="0,4,0,0"
+                                          ItemsSource="{Binding BatchOutputPreviewFiles}"
+                                          AutomationProperties.AutomationId="BatchOutputPreviewFiles">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Margin="0,0,0,2"
+                                                   Style="{StaticResource CaptionTextStyle}"
+                                                   Text="{Binding}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Margin="0,4,0,0"
+                                       Style="{StaticResource CaptionTextStyle}"
+                                       Text="{Binding BatchOutputPreviewSummary}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="4"
+                    Margin="0,12,0,0"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="0,1,0,0"
+                    AutomationProperties.AutomationId="BatchInputFooter">
+                <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Width="8" Height="8">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{StaticResource StatusDraftBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding BatchStatusState}" Value="Scanning">
+                                        <Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding BatchStatusState}" Value="ScanReady">
+                                        <Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding BatchStatusState}" Value="ScanBlocked">
+                                        <Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               Style="{StaticResource SmallBodyTextStyle}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               TextWrapping="Wrap"
+                               Text="{Binding BatchStatusMessage}"
+                               AutomationProperties.AutomationId="BatchInputStatus"
+                               AutomationProperties.LiveSetting="Assertive" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Margin="0,0,8,0"
+                            Style="{StaticResource GhostButtonStyle}"
+                            Command="{Binding CancelBatchInputCommand}"
+                            Content="取消"
+                            AutomationProperties.AutomationId="CancelBatchInputButton" />
+                    <Button Margin="0,0,8,0"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding RetryBatchScanCommand}"
+                            Content="重试扫描"
+                            Visibility="{Binding HasBatchRetry, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            AutomationProperties.AutomationId="RetryBatchScanButton" />
+                    <Button Margin="0,0,8,0"
+                            Style="{StaticResource DangerButtonStyle}"
+                            Command="{Binding CancelBatchScanCommand}"
+                            Content="取消扫描"
+                            Visibility="{Binding IsBatchScanning, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            AutomationProperties.AutomationId="CancelBatchScanButton" />
+                    <Button Style="{StaticResource PrimaryButtonStyle}"
+                            Command="{Binding ScanBatchInputCommand}"
+                            Content="{Binding BatchPrimaryActionText}"
+                            AutomationProperties.AutomationId="ScanBatchInputButton"
+                            AutomationProperties.Name="{Binding BatchPrimaryActionText}" />
+                </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+
+        <local:BatchPageSelectionDialog />
+    </Grid>
+</UserControl>

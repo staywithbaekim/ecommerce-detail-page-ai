@@ -5,6 +5,44 @@ namespace Desktop.Domain.Tests;
 
 public sealed class BatchInputDomainTests
 {
+    [Theory]
+    [InlineData(BatchOutputMode.UnifiedDirectory, @"D:\成品")]
+    [InlineData(BatchOutputMode.StyleSourceDirectories, null)]
+    public void OutputSelectionSurvivesScanBlockAndReadyTransitions(BatchOutputMode mode, string? root)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var original = Draft(now);
+        Assert.Null(original.OutputSelection); // Legacy calls remain legacy, never opt in silently.
+        var selection = BatchOutputSelection.Create(mode, root);
+        var draft = original.Reconfigure(original.InputRoot, original.OutputRoot,
+            original.TemplateSnapshot, original.SelectionMode, false, now, selection);
+        var scanning = draft.BeginScanning(now);
+        Assert.Equal(selection, scanning.OutputSelection);
+        Assert.Equal(selection, scanning.Block(ScanBlockReason.Cancelled(), now).OutputSelection);
+        var ready = scanning.MarkScanReady(BatchInputType.SingleStyle,
+            [StyleDraft.Create("style_01", "新建文件夹", "", 0, ["asset_01"])],
+            [SourceAssetMetadata.CreateReadable("asset_01", "style_01", "front.png", "front.png",
+                100, new string('a', 64), 4, 3, SourceImageFormat.Png, "image/png")],
+            "batches/batch_01/manifest.json", "sha256:" + new string('b', 64), now);
+        Assert.Equal(selection, ready.OutputSelection);
+        Assert.Equal(original.OutputRoot, ready.OutputRoot);
+        Assert.Equal("", Assert.Single(ready.Styles).SourceDirectoryRelativePath);
+        Assert.Throws<InputRuleViolationException>(() => ready.Reconfigure(ready.InputRoot,
+            ready.OutputRoot, ready.TemplateSnapshot, ready.SelectionMode, false, now, null));
+    }
+
+    [Theory]
+    [InlineData(BatchOutputMode.UnifiedDirectory, null)]
+    [InlineData(BatchOutputMode.UnifiedDirectory, "")]
+    [InlineData(BatchOutputMode.UnifiedDirectory, " \t")]
+    [InlineData(BatchOutputMode.UnifiedDirectory, "C:\\bad\0root")]
+    [InlineData(BatchOutputMode.StyleSourceDirectories, "")]
+    [InlineData(BatchOutputMode.StyleSourceDirectories, @"C:\guess-parent")]
+    [InlineData((BatchOutputMode)42, null)]
+    public void OutputSelectionRejectsAmbiguousOrUnknownMode(BatchOutputMode mode, string? root) =>
+        Assert.Equal("INPUT_OUTPUT_SELECTION_INVALID",
+            Assert.Throws<InputRuleViolationException>(() => BatchOutputSelection.Create(mode, root)).Code);
+
     [Fact]
     public void DetectsSingleStyleFromRootImagesOnly()
     {

@@ -86,7 +86,15 @@ public static class AiAnalysisResultReferenceNormalizer
                 AssetIds = group.AssetIds.Select(value => ResolveReference(
                     assetAliases,
                     value,
-                    "AI_RESULT_ASSET_REFERENCE_MISMATCH")).ToArray()
+                    "AI_RESULT_ASSET_REFERENCE_MISMATCH")).ToArray(),
+                CoverageRequirementIds = group.CoverageRequirementIds?.Select(value => ResolveReference(
+                    requirementAliases,
+                    value,
+                    "AI_RESULT_REQUIREMENT_REFERENCE_MISMATCH")).ToArray(),
+                MissingRequirementIds = group.MissingRequirementIds?.Select(value => ResolveReference(
+                    requirementAliases,
+                    value,
+                    "AI_RESULT_REQUIREMENT_REFERENCE_MISMATCH")).ToArray()
             })
             .ToArray();
         var geometry = result.SubjectGeometry

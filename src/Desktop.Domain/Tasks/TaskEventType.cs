@@ -15,5 +15,7 @@ public enum TaskEventType
     PageCommitted,
     IssueRecorded,
     Completed,
-    CompletedWithIssues
+    CompletedWithIssues,
+    RenderPageRegenerationRequested,
+    RenderPageRepairRequested
 }

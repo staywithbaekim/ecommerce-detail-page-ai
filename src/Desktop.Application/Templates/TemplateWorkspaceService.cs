@@ -14,8 +14,24 @@ public sealed class TemplateWorkspaceService(
     ITemplateOwnedStorage? ownedStorage = null,
     IPathPolicy? paths = null,
     ITemplateSourceFilePort? sourceFiles = null,
-    IFileStore? files = null) : ITemplateWorkspaceService
+    IFileStore? files = null) : ITemplateWorkspaceService, ITemplatePagePresentationService, ISizeTableTemplateCalibrationService
 {
+    public async Task CalibrateSizeTableAsync(TemplateDraftSession session, string pageId,
+        TemplateSizeCalibration calibration, CancellationToken cancellationToken)
+    {
+        if (!session.CanEditPage(pageId)) throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
+        var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
+        if (revision.GroupId != session.GroupId) throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
+        var page = revision.Pages.SingleOrDefault(item => item.PageId == pageId)
+            ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        var resource = await resources.GetByResourceIdAsync(page.TemplateResourceId, cancellationToken).ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");
+        if (!calibration.Matches(resource.Inspection))
+            throw new TemplateRuleViolationException("SIZE_TABLE_CALIBRATION_INVALID");
+        await templates.SaveDraftRevisionAsync(revision.CalibrateSizeTable(pageId, calibration.ToDomain()), cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken)
     {
         var groups = await templates.ListGroupsAsync(cancellationToken).ConfigureAwait(false);
@@ -448,6 +464,38 @@ public sealed class TemplateWorkspaceService(
         await templates.SaveDraftRevisionAsync(updated, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task UpdatePagePresentationAsync(
+        TemplateDraftSession session,
+        TemplatePagePresentationUpdate update,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(update);
+        if (!session.CanEditPage(update.PageId))
+        {
+            throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
+        }
+
+        var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
+        var page = revision.Pages.SingleOrDefault(item =>
+            string.Equals(item.PageId, update.PageId, StringComparison.Ordinal))
+            ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        var notes = TemplateValueRules.OptionalText(update.Notes, 2_000, "TPL_PAGE_NOTES_INVALID") ?? string.Empty;
+        var updated = revision.ConfigurePage(
+            page.PageId,
+            page.Name,
+            page.ContentType,
+            page.GenerationMode,
+            page.VariantCapacity,
+            page.Enabled,
+            notes,
+            update.CanvasX,
+            update.CanvasY);
+        await templates.SaveDraftRevisionAsync(updated, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task ReorderPagesAsync(
         TemplateDraftSession session,
         IReadOnlyList<string> orderedPageIds,
@@ -705,7 +753,7 @@ public sealed class TemplateWorkspaceService(
                     page.GenerationMode,
                     page.VariantCapacity,
                     page.Enabled,
-                    resourceMap[page.TemplateResourceId]));
+                    resourceMap[page.TemplateResourceId], page.Notes, page.CanvasX, page.CanvasY, page.SizeTableCalibration));
             }
 
             foreach (var binding in sourceRevision.FrameBindings)
@@ -893,6 +941,16 @@ public sealed class TemplateWorkspaceService(
                 resource.Length,
                 resource.Sha256,
                 "ready"));
+            if (page.SizeTableCalibration is { } calibration)
+            {
+                if (files is null || !SizeTables.SizeTableCalibrationResolver.Matches(calibration, resource.Inspection))
+                    throw new TemplateRuleViolationException("SIZE_TABLE_CALIBRATION_INVALID");
+                var relative = $"templates/groups/{revision.GroupId}/revisions/{revision.RevisionId}/{page.PageId}-size-calibration.json";
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(calibration);
+                await files.WriteAtomicallyAsync(relative, bytes, cancellationToken).ConfigureAwait(false);
+                entries.Add(new ManifestEntry("size_" + page.PageId, relative, bytes.Length,
+                    Convert.ToHexStringLower(SHA256.HashData(bytes)), "ready"));
+            }
         }
 
         return entries;
@@ -917,8 +975,7 @@ public sealed class TemplateWorkspaceService(
                 StringComparison.Ordinal)).ToArray();
             if (resource.Inspection.SmartObjectCount <= 0
                 || registered.Length == 0
-                || registered.Any(binding => !binding.SelectionRequirement.Criteria.Any(criterion =>
-                    string.Equals(criterion.Key, "asset_id", StringComparison.Ordinal))))
+                || registered.Any(binding => string.IsNullOrWhiteSpace(binding.SelectionRequirement.Description)))
             {
                 throw new TemplateRuleViolationException("TPL_CALIBRATION_INCOMPLETE");
             }
@@ -1155,7 +1212,11 @@ public sealed class TemplateWorkspaceService(
         },
         page.VariantCapacity,
         page.Enabled,
-        page.TemplateResourceId);
+        page.TemplateResourceId,
+        page.Notes,
+        page.CanvasX,
+        page.CanvasY,
+        TemplateSizeCalibration.FromDomain(page.SizeTableCalibration));
 
     private static string? GetPreviewSource(ImportedTemplateResource resource, IPathPolicy? paths)
     {

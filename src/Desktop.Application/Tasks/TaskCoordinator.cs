@@ -25,7 +25,8 @@ public sealed class TaskCoordinator(ITaskEventStore store)
         string taskId,
         CancellationToken cancellationToken = default)
     {
-        var state = await LoadAsync(taskId, cancellationToken).ConfigureAwait(false);
+        var events = await store.LoadEventsAsync(taskId, cancellationToken).ConfigureAwait(false);
+        var state = TaskStateReducer.Replay(taskId, events);
         return new TaskProjection(
             state.TaskId,
             state.Status.ToString(),
@@ -34,6 +35,7 @@ public sealed class TaskCoordinator(ITaskEventStore store)
             state.IssueCount,
             state.Status is Desktop.Domain.Tasks.TaskStatus.Paused
                 or Desktop.Domain.Tasks.TaskStatus.RecoveryRequired
-                or Desktop.Domain.Tasks.TaskStatus.UserActionRequired);
+                or Desktop.Domain.Tasks.TaskStatus.UserActionRequired)
+        { UpdatedAt = events.Count == 0 ? null : events.Max(item => item.OccurredAt) };
     }
 }

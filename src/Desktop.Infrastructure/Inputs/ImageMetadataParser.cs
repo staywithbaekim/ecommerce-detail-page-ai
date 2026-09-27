@@ -65,6 +65,7 @@ internal static class ImageMetadataParser
 
         int width = 0;
         int height = 0;
+        var sawScan = false;
         var sawEnd = false;
         while (stream.Position < stream.Length)
         {
@@ -114,14 +115,15 @@ internal static class ImageMetadataParser
             if (marker == 0xda)
             {
                 stream.Position += segmentLength - 2;
-                sawEnd = ScanJpegEntropyToEnd(stream);
-                break;
+                sawScan = true;
+                ScanJpegEntropyToNextMarker(stream);
+                continue;
             }
 
             stream.Position += segmentLength - 2;
         }
 
-        if (!sawEnd || width <= 0 || height <= 0)
+        if (!sawScan || !sawEnd || width <= 0 || height <= 0)
         {
             throw new InvalidDataException("INPUT_JPEG_INVALID");
         }
@@ -129,7 +131,7 @@ internal static class ImageMetadataParser
         return new ParsedImageMetadata("jpeg", "image/jpeg", width, height);
     }
 
-    private static bool ScanJpegEntropyToEnd(Stream stream)
+    private static void ScanJpegEntropyToNextMarker(Stream stream)
     {
         while (stream.Position < stream.Length)
         {
@@ -150,15 +152,15 @@ internal static class ImageMetadataParser
                 continue;
             }
 
-            if (marker == 0xd9)
-            {
-                return true;
-            }
-
-            throw new InvalidDataException("INPUT_JPEG_INVALID");
+            // A progressive JPEG has multiple entropy scans, with tables and
+            // SOS headers between them. Let the outer parser validate each
+            // segment length instead of requiring EOI after the first scan.
+            // Stuffed FF00 bytes and restart markers remain inside the scan.
+            stream.Position -= 2;
+            return;
         }
 
-        return false;
+        throw new InvalidDataException("INPUT_JPEG_TRUNCATED");
     }
 
     private static ParsedImageMetadata ParsePng(Stream stream)

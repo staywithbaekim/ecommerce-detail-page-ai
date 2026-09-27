@@ -23,6 +23,32 @@ public enum BatchSelectionMode
     Manual
 }
 
+public enum BatchOutputMode { UnifiedDirectory, StyleSourceDirectories }
+
+/// <summary>Confirmed public destination intent, separate from the internal page evidence root.</summary>
+public sealed record BatchOutputSelection
+{
+    private BatchOutputSelection(BatchOutputMode mode, string? unifiedRoot)
+    {
+        Mode = mode;
+        UnifiedRoot = unifiedRoot;
+    }
+
+    public BatchOutputMode Mode { get; }
+    public string? UnifiedRoot { get; }
+
+    public static BatchOutputSelection Create(BatchOutputMode mode, string? unifiedRoot = null)
+    {
+        if (!Enum.IsDefined(mode)
+            || mode == BatchOutputMode.StyleSourceDirectories && unifiedRoot is not null
+            || mode == BatchOutputMode.UnifiedDirectory && (string.IsNullOrWhiteSpace(unifiedRoot)
+                || unifiedRoot.Length > 32_767 || unifiedRoot.Any(char.IsControl)))
+            throw new InputRuleViolationException("INPUT_OUTPUT_SELECTION_INVALID");
+        // Filesystem/path identity and writability are checked by the publication adapter, not the domain.
+        return new(mode, unifiedRoot);
+    }
+}
+
 public enum ScanBlockCategory
 {
     DirectoryStructure = 0,
