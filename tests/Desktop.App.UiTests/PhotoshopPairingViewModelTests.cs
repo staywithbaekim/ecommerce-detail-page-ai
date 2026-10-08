@@ -7,6 +7,29 @@ namespace Desktop.App.UiTests;
 public sealed class PhotoshopPairingViewModelTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InstanceCheckIsExplicitAndNeverTreatsABasicResultAsInstanceEvidence(bool verifiedScope)
+    {
+        var pairing = new PairingPort();
+        var check = new ConnectionCheckPort
+        {
+            Result = new(PhotoshopConnectionCheckStatus.Ready, DateTimeOffset.UnixEpoch, 3,
+                "26.8.1 (20250624.r.8 5e0d05d)", verifiedScope)
+        };
+        using var view = new PhotoshopPairingViewModel(pairing, check);
+        await view.CheckInstanceConnectionAsync();
+        Assert.True(check.RequestedInstance);
+        Assert.Equal(1, check.Calls);
+        Assert.Equal(0, pairing.PairCalls);
+        Assert.Empty(view.Code);
+        Assert.Contains(verifiedScope ? "实例能力检查已通过" : "不能用基础连接结果替代",
+            view.ConnectionStatus, StringComparison.Ordinal);
+        if (verifiedScope) Assert.Contains("实例能力", view.ConnectionHistory, StringComparison.Ordinal);
+        else Assert.Contains("尚无已完成", view.ConnectionHistory, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CompletionOrFailureAlwaysClearsTransientCode(bool fail)
@@ -64,17 +87,13 @@ public sealed class PhotoshopPairingViewModelTests
         Assert.Equal(0, pairing.PairCalls);
         Assert.Contains("通过", view.ConnectionStatus, StringComparison.Ordinal);
         Assert.Contains("不代表当前连接", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("检查时使用的已保存正式宿主", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("不会因上方查看下拉变化", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("下次测试或生成", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("由桌面发起", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("交付状态不明时停止自动等待", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("不证明组件已安装", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains(observedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture),
+        Assert.Contains("这是本次检查的历史结果", view.ConnectionStatus, StringComparison.Ordinal);
+        Assert.Contains("更换宿主或组件后请重新检查", view.ConnectionStatus, StringComparison.Ordinal);
+        Assert.Contains(observedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.CurrentCulture),
             view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains("3 次", view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains("26.8.1 (20250624.r.8 5e0d05d)", view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains("不保留连接", view.ConnectionHistory, StringComparison.Ordinal);
+        Assert.Contains("基础连接", view.ConnectionHistory, StringComparison.Ordinal);
+        Assert.Contains("已通过", view.ConnectionHistory, StringComparison.Ordinal);
+        Assert.DoesNotContain("26.8.1 (20250624.r.8 5e0d05d)", view.ConnectionHistory, StringComparison.Ordinal);
         Assert.False(view.IsBusy);
         Assert.False(view.IsPairing);
     }
@@ -92,20 +111,19 @@ public sealed class PhotoshopPairingViewModelTests
 
         Assert.Equal(0, check.Calls);
         Assert.Contains("历史结果", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("26.8.1 (20250624.r.8 5e0d05d)", view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains("4 次", view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains("不保留连接", view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains("不会随上方查看下拉改变", view.ConnectionHistory, StringComparison.Ordinal);
+        Assert.Contains("基础连接", view.ConnectionHistory, StringComparison.Ordinal);
+        Assert.Contains("已通过", view.ConnectionHistory, StringComparison.Ordinal);
+        Assert.Contains("更换宿主或组件后请重新检查", view.ConnectionHistory, StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData(PhotoshopConnectionCheckStatus.PairingRequired, "尚未保存设备配对")]
-    [InlineData(PhotoshopConnectionCheckStatus.Busy, "正在使用")]
-    [InlineData(PhotoshopConnectionCheckStatus.TimedOut, "不能确定具体原因")]
-    [InlineData(PhotoshopConnectionCheckStatus.HostNotReady, "检查时 Photoshop 宿主不是 ready")]
-    [InlineData(PhotoshopConnectionCheckStatus.Failed, "受保护配对存储")]
-    [InlineData(PhotoshopConnectionCheckStatus.HostSelectionRequired, "尚未保存正式 Photoshop 宿主")]
-    [InlineData(PhotoshopConnectionCheckStatus.HostSelectionInvalid, "已保存的正式宿主缺失")]
+    [InlineData(PhotoshopConnectionCheckStatus.Busy, "当前任务正在使用连接通道")]
+    [InlineData(PhotoshopConnectionCheckStatus.TimedOut, "认证连接检查超时")]
+    [InlineData(PhotoshopConnectionCheckStatus.HostNotReady, "Photoshop 当前无法开始检查")]
+    [InlineData(PhotoshopConnectionCheckStatus.Failed, "认证连接检查未完成")]
+    [InlineData(PhotoshopConnectionCheckStatus.HostSelectionRequired, "尚未选择正式 Photoshop")]
+    [InlineData(PhotoshopConnectionCheckStatus.HostSelectionInvalid, "已保存的 Photoshop 程序已失效")]
     public async Task ConnectionFailuresRemainActionableAndDistinct(
         PhotoshopConnectionCheckStatus status,
         string expected)
@@ -150,7 +168,7 @@ public sealed class PhotoshopPairingViewModelTests
         Assert.Contains("取消", view.ConnectionStatus, StringComparison.Ordinal);
         Assert.DoesNotContain("通过", view.ConnectionStatus, StringComparison.Ordinal);
         Assert.DoesNotContain("late-sensitive-build", view.ConnectionHistory, StringComparison.Ordinal);
-        Assert.Contains(prior.ObservedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture),
+        Assert.Contains(prior.ObservedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.CurrentCulture),
             view.ConnectionHistory, StringComparison.Ordinal);
         Assert.True(view.CheckConnectionCommand.CanExecute(null));
     }
@@ -238,11 +256,12 @@ public sealed class PhotoshopPairingViewModelTests
         Assert.False(view.IsPairing);
         Assert.Empty(view.Code);
         Assert.Contains("60 秒", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("插件自动接入", view.ConnectionStatus, StringComparison.Ordinal);
-        Assert.Contains("Photoshop 已启动", view.ConnectionStatus, StringComparison.Ordinal);
+        Assert.Contains("配套组件已启动", view.ConnectionStatus, StringComparison.Ordinal);
+        Assert.Contains("Photoshop 和配套组件", view.ConnectionStatus, StringComparison.Ordinal);
         Assert.Contains("不会重新配对", view.ConnectionStatus, StringComparison.Ordinal);
         Assert.False(view.PairCommand.CanExecute(null));
         Assert.False(view.RefreshCommand.CanExecute(null));
+        Assert.False(view.CheckInstanceConnectionCommand.CanExecute(null));
         await view.PairAsync();
         await view.RefreshAsync();
         Assert.Equal(0, pairing.PairCalls);
@@ -304,10 +323,17 @@ public sealed class PhotoshopPairingViewModelTests
         public bool WaitForRelease { get; init; }
         public bool IgnoreCancellation { get; init; }
         public int Calls { get; private set; }
+        public bool RequestedInstance { get; private set; }
         public CancellationToken ObservedToken { get; private set; }
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public PhotoshopConnectionCheckResult? Latest => LatestValue;
+
+        public Task<PhotoshopConnectionCheckResult> CheckInstanceIdentityAsync(CancellationToken cancellationToken)
+        {
+            RequestedInstance = true;
+            return CheckAsync(cancellationToken);
+        }
 
         public async Task<PhotoshopConnectionCheckResult> CheckAsync(CancellationToken cancellationToken)
         {

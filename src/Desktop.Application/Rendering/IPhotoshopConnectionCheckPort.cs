@@ -17,7 +17,8 @@ public sealed record PhotoshopConnectionCheckResult(
     PhotoshopConnectionCheckStatus Status,
     DateTimeOffset ObservedAt,
     long AuthenticatedHeartbeats = 0,
-    string? MatchedPhotoshopBuild = null);
+    string? MatchedPhotoshopBuild = null,
+    bool InstanceIdentityRequired = false);
 
 /// <summary>Explicit, bounded authentication check using an existing device pairing. Never submits rendering work.</summary>
 public interface IPhotoshopConnectionCheckPort
@@ -26,4 +27,8 @@ public interface IPhotoshopConnectionCheckPort
     PhotoshopConnectionCheckResult? Latest { get; }
 
     Task<PhotoshopConnectionCheckResult> CheckAsync(CancellationToken cancellationToken);
+
+    /// <summary>Same authenticated check with the production page-instance contract required. Legacy implementations fail closed.</summary>
+    Task<PhotoshopConnectionCheckResult> CheckInstanceIdentityAsync(CancellationToken cancellationToken) =>
+        Task.FromException<PhotoshopConnectionCheckResult>(new InvalidOperationException("BRIDGE_INSTANCE_CHECK_UNSUPPORTED"));
 }

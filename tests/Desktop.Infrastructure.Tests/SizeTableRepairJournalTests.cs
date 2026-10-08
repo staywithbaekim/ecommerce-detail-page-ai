@@ -224,13 +224,13 @@ public sealed class SizeTableRepairJournalTests
             payload = JsonSerializer.Serialize(await store.LoadEventsAsync("batch_test", default));
         }
         var hash = await Scalar(options, "SELECT group_concat(payload_sha256,'|') FROM render_batch_journals ORDER BY revision;");
-        await Sql(options, "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DELETE FROM schema_migrations WHERE version>=18;");
+        await Sql(options, LegacyMigrationFixture.RemoveTpl02Schema + "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DELETE FROM schema_migrations WHERE version>=18;");
         await using var migrated = new SqliteDesktopStore(options);
         await migrated.InitializeAsync();
         Assert.Equal(hash, await Scalar(options, "SELECT group_concat(payload_sha256,'|') FROM render_batch_journals ORDER BY revision;"));
         Assert.Equal(payload, JsonSerializer.Serialize(await migrated.LoadEventsAsync("batch_test", default)));
         Assert.Equal(1, (await migrated.LoadRenderBatchAsync("batch_test", default))!.Version);
-        Assert.Equal(21L, await Scalar(options, "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(28L, await Scalar(options, "SELECT MAX(version) FROM schema_migrations;"));
     }
 
     private static RenderBatchCoordinator Coordinator(SqliteDesktopStore store, Session session, Preparer preparer) =>

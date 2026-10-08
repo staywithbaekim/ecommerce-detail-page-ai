@@ -6,7 +6,8 @@ using Desktop.Domain.SizeTables;
 
 namespace Desktop.Infrastructure.SizeTables;
 
-public sealed class SizeTableFileRepository(IFileStore files) : ISizeTableRepository, IDisposable
+public sealed class SizeTableFileRepository(IFileStore files,
+    Desktop.Application.Templates.ITemplateInstanceProductionEvidenceStore? productionEvidence = null) : ISizeTableRepository, IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -44,6 +45,9 @@ public sealed class SizeTableFileRepository(IFileStore files) : ISizeTableReposi
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (productionEvidence is not null && await productionEvidence.ReadProductionEvidenceAsync(table.BatchId,
+                table.StyleId, cancellationToken).ConfigureAwait(false) is not null)
+                return new(SizeTableSaveStatus.RevisionConflict, "TPL_INSTANCE_PRODUCTION_FACTS_FROZEN");
             var current = await LoadCoreAsync(
                 path,
                 table.BatchId,

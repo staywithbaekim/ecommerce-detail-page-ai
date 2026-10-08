@@ -1,0 +1,74 @@
+<UserControl x:Class="Desktop.App.TemplatePageRuleCard"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:Desktop.App" MinWidth="280" Margin="0,0,16,16" SizeChanged="Card_SizeChanged"
+ FontFamily="{StaticResource AppFontFamily}" FontSize="14" UseLayoutRounding="True" SnapsToDevicePixels="True">
+ <UserControl.Resources>
+  <ResourceDictionary>
+   <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Styles/TemplateWorkbench.xaml"/></ResourceDictionary.MergedDictionaries>
+   <Style TargetType="Button" BasedOn="{StaticResource WorkbenchCardButtonStyle}"/>
+   <Style TargetType="TextBox" BasedOn="{StaticResource WorkbenchTextBoxStyle}"/>
+  </ResourceDictionary>
+ </UserControl.Resources>
+ <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource WorkbenchLineBrush}" BorderThickness="1" CornerRadius="12">
+  <Grid>
+   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <DockPanel Margin="16,12,12,12">
+    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+     <Button x:Name="FitButton" Content="整页" Click="Whole_Click" ToolTip="切换适宽 / 整页"/>
+     <Button Content="放大" Click="Enlarge_Click" Margin="2,0"/>
+     <Border Width="1" Height="14" Background="{StaticResource WorkbenchLineBrush}" Margin="6,0"/>
+     <Button Content="移除" Click="Remove_Click" ToolTip="从草稿移除此页，不修改源 PSD"/>
+    </StackPanel>
+    <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding DisplayName}" ToolTip="{Binding Name}"/>
+   </DockPanel>
+   <Grid Grid.Row="1" Margin="12,0,12,12">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="RulesColumn" Width="220"/></Grid.ColumnDefinitions>
+    <ScrollViewer x:Name="PreviewScroll" Height="480" Background="{StaticResource WorkbenchQuietBrush}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" PreviewMouseWheel="ChainWheel">
+     <local:TemplateRulePreview x:Name="Preview" Page="{Binding}"/>
+    </ScrollViewer>
+    <Border Grid.Column="1" Background="{StaticResource WorkbenchQuietBrush}" CornerRadius="8" Margin="12,0,0,0">
+     <ScrollViewer x:Name="RulesScroll" Height="480" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" PreviewMouseWheel="ChainWheel">
+      <StackPanel Margin="10,12,10,12">
+       <TextBlock Text="本页用途" Style="{StaticResource WorkbenchSectionStyle}" Margin="8,0,0,4"/>
+       <Button Click="Purpose_Click" Style="{StaticResource WorkbenchLinkButtonStyle}" Padding="8,6" ToolTip="修改使用条件、次数及组合；不建立独立用途文本">
+        <TextBlock Text="{Binding Purpose}" Style="{StaticResource WorkbenchBodyStyle}"/>
+       </Button>
+       <Border Height="1" Background="{StaticResource WorkbenchLineBrush}" Margin="8,14,8,14"/>
+       <TextBlock Text="逐框选图规则" Style="{StaticResource WorkbenchSectionStyle}" Margin="8,0,0,10"/>
+       <TextBlock Text="{Binding EmptyFrameMessage}" Margin="8,0,8,8">
+        <TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource WorkbenchCaptionStyle}"><Style.Triggers><Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers></Style></TextBlock.Style>
+       </TextBlock>
+       <ListBox x:Name="FrameList" ItemsSource="{Binding EditableFrames}" SelectedItem="{Binding SelectedFrame, Mode=TwoWay}" BorderThickness="0" Background="Transparent"
+          ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch" SelectionChanged="FrameList_SelectionChanged">
+        <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem">
+         <Setter Property="Padding" Value="8"/><Setter Property="Margin" Value="0,0,0,10"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+          <Border x:Name="RowChrome" Padding="{TemplateBinding Padding}" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="10">
+           <ContentPresenter HorizontalAlignment="Stretch"/>
+          </Border>
+          <ControlTemplate.Triggers>
+           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="RowChrome" Property="Background" Value="#EEEEEB"/></Trigger>
+           <Trigger Property="IsSelected" Value="True"><Setter TargetName="RowChrome" Property="Background" Value="{StaticResource WorkbenchSelectedBrush}"/><Setter TargetName="RowChrome" Property="BorderBrush" Value="#A8BEB3"/></Trigger>
+          </ControlTemplate.Triggers>
+         </ControlTemplate></Setter.Value></Setter>
+        </Style></ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate><DataTemplate>
+         <StackPanel>
+          <TextBlock Text="{Binding Label}" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{Binding DataContext.IsReadOnly, RelativeSource={RelativeSource AncestorType=local:TemplatePageRuleCard}}"
+             AutomationProperties.Name="{Binding Label, StringFormat={}{0}选图规则}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="88" MaxHeight="190" VerticalScrollBarVisibility="Auto" GotKeyboardFocus="Rule_GotFocus">
+           <TextBox.ContextMenu><ContextMenu><MenuItem Header="停止替换，保留模板内容" Click="StopMenu_Click">
+            <MenuItem.Style><Style TargetType="MenuItem"><Style.Triggers><DataTrigger Binding="{Binding IsCandidate}" Value="True"><Setter Property="IsEnabled" Value="False"/></DataTrigger></Style.Triggers></Style></MenuItem.Style>
+           </MenuItem></ContextMenu></TextBox.ContextMenu>
+          </TextBox>
+         </StackPanel>
+        </DataTemplate></ListBox.ItemTemplate>
+       </ListBox>
+      </StackPanel>
+     </ScrollViewer>
+    </Border>
+   </Grid>
+  </Grid>
+ </Border>
+</UserControl>

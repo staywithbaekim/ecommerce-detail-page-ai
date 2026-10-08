@@ -183,7 +183,8 @@ async function connect(automatic = false) {
     // One-time probe codes are never persisted unless device setup was explicitly selected.
     status.textContent = "已连接";
     waitingEnabled = reusable;
-    await writePairingProbe({ stage: "paired", code: null, protected_storage_verified: remember });
+    await writePairingProbe({ stage: "paired", client_stage: client.diagnostic.stage,
+      code: null, protected_storage_verified: remember });
     // Delivery/commit queries must not wait for the liveness heartbeat interval.
     // Schedule only after the previous tick finishes: Photoshop and RPCs stay serial.
     timer = setTimeout(heartbeat, 0);
@@ -198,8 +199,9 @@ async function connect(automatic = false) {
     if (waiting) return; // An absent listener is normal; no failure-file polling.
     // Only fixed stages and coarse exception types are retained, never bodies, headers or raw messages.
     try {
-      await writePairingProbe({ ...client?.diagnostic, stage, code: error.textContent,
-        exception_type: ["Error", "TypeError", "ReferenceError", "RangeError"].includes(caught.name) ? caught.name : "unknown" });
+      await writePairingProbe({ stage, client_stage: client?.diagnostic?.stage,
+        transport: client?.diagnostic?.transport, http_status: client?.diagnostic?.http_status,
+        rejection_reason: client?.diagnostic?.rejection_reason, code: error.textContent, exception_type: caught.name });
     } catch {}
   } finally {
     supplied = ""; secret?.fill(0);
@@ -288,9 +290,29 @@ async function releaseConnection() {
 
 async function writePairingProbe(value) {
   try {
+    // Keep the legacy outer stage separate from the client check. Never spread
+    // arbitrary diagnostics or exception fields into PluginData, even on failure.
+    const allowed = (candidate, values, fallback) => values.includes(candidate) ? candidate : fallback;
+    const report = {
+      stage: allowed(value.stage, ["secret_decode", "host_check", "client_create", "pair", "protected_storage", "paired"], "unknown"),
+      client_stage: allowed(value.client_stage, ["created", "challenge_create", "challenge_request", "challenge_validate",
+        "challenge_proof", "handshake_create", "handshake_request", "handshake_validate", "paired"], "unknown"),
+      transport: allowed(value.transport, ["idle", "connect", "headers", "body", "received"], "unknown"),
+      http_status: Number.isInteger(value.http_status) && value.http_status >= 100 && value.http_status <= 599 ? value.http_status : null,
+      rejection_reason: allowed(value.rejection_reason, ["challenge_json", "challenge_status", "challenge_contract",
+        "challenge_binding", "challenge_time", "challenge_capabilities", "challenge_proof", "handshake_mac", "handshake_json",
+        "handshake_status", "handshake_contract", "handshake_rejected", "handshake_binding", "handshake_capabilities"], null),
+      code: allowed(value.code, ["BRIDGE_PAIRING_REQUIRED", "BRIDGE_PAIRING_STORAGE_UNAVAILABLE", "BRIDGE_PAIRING_REJECTED",
+        "BRIDGE_PROTOCOL_MISMATCH", "BRIDGE_HOST_BLOCKED", "BRIDGE_DISCONNECTED", "BRIDGE_REQUEST_TOO_LARGE"],
+      value.stage === "paired" && value.code === null ? null : "BRIDGE_PAIRING_REJECTED"),
+      exception_type: allowed(value.exception_type, ["Error", "TypeError", "ReferenceError", "RangeError"], "unknown"),
+      recorded_at: new Date().toISOString()
+    };
+    if (report.stage === "paired" && typeof value.protected_storage_verified === "boolean")
+      report.protected_storage_verified = value.protected_storage_verified;
     const folder = await storage.localFileSystem.getDataFolder();
     const file = await folder.createFile("pairing-probe.json", { overwrite: true });
-    await file.write(JSON.stringify({ ...value, recorded_at: new Date().toISOString() }));
+    await file.write(JSON.stringify(report));
   } catch { /* Diagnostics must not invalidate an authenticated session. */ }
 }
 

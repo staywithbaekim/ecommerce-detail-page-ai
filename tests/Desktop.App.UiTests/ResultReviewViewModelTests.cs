@@ -10,6 +10,34 @@ namespace Desktop.App.UiTests;
 public sealed class ResultReviewViewModelTests
 {
     [Fact]
+    public async Task E3InstancesKeepSelectionCountsAndFailedRetryCommandSeparateAcrossRefresh()
+    {
+        var original = CreateCommittedPage(0, 10, 10);
+        RenderInstanceIdentity Identity(char id) => new(1, "batch", "style", "instance_" + new string(id, 64), original.PageId,
+            "snapshot", "revision", "sha256:" + new string('a', 64), "sha256:" + new string('b', 64), "sha256:" + new string('c', 64));
+        var first = original with { Instance = Identity('a'), Commit = original.Commit! with { Page = original.Commit.Page with { Instance = Identity('a') } } };
+        var second = original with { Instance = Identity('b'), Status = RenderBatchPageStatus.Failed, Commit = null };
+        var blocked = original with { Instance = Identity('c'), Status = RenderBatchPageStatus.Blocked, Commit = null,
+            ExecutionId = null, PlanJson = null, ReasonCode = "TPL_INSTANCE_SELECTION_MISSING", PreparationReasonCode = "TPL_INSTANCE_SELECTION_MISSING" };
+        var workflow = new ReadOnlyWorkflow(new(4, "batch", 8, RenderBatchStatus.CompletedWithIssues, false, false, [first, second, blocked]));
+        using var view = new ResultReviewViewModel(new ResultHost { AllowFailedPageRecovery = true, AllowRenderedEditing = false }, workflow);
+        await view.TryRestoreRenderingAsync("batch", null);
+        Assert.Equal(3, view.State.AllResultPages.Length);
+        Assert.Contains("已登记 1 页", view.ResultFormalOutputText, StringComparison.Ordinal);
+        var old = view.State.AllResultPages[1]; view.OpenResultPageCommand.Execute(old);
+        await view.RefreshRenderingAsync(); view.OpenResultPageCommand.Execute(old);
+        Assert.Equal(second.Instance!.PageInstanceId, view.SelectedResultPage!.PageInstanceId);
+        Assert.True(view.RegenerateResultPageCommand.CanExecute(null));
+        await view.RegenerateSelectedPageAsync();
+        Assert.Equal(second.Instance.PageInstanceId, workflow.RequestedInstance);
+        Assert.Null(workflow.Requested); Assert.Equal(1, workflow.Runs);
+        Assert.Equal(3, view.State.AllResultPages.Length);
+        Assert.Contains("已登记 1 页", view.ResultFormalOutputText, StringComparison.Ordinal);
+        var red = view.State.AllResultPages.Single(page => page.PageInstanceId == blocked.Instance!.PageInstanceId);
+        Assert.Contains("补图", red.DetailText, StringComparison.Ordinal); Assert.False(red.HasPreview);
+    }
+
+    [Fact]
     public async Task PublicOutputBatchDoesNotOfferOrDispatchPostGenerationEditing()
     {
         var workflow = new ReadOnlyWorkflow(Journal([CreateCommittedPage(0, 10, 10)]));
@@ -320,10 +348,19 @@ public sealed class ResultReviewViewModelTests
         public RenderBatchJournal Journal { get => journal; set => journal = value; }
         public (string Style, string Page, string? Variant, int Attempt)? Requested { get; private set; }
         public int Runs { get; private set; }
+        public string? RequestedInstance { get; private set; }
         public bool FailRun { get; init; }
         public bool FailRegeneration { get; init; }
         public TaskCompletionSource? RunGate { get; init; }
         public TaskCompletionSource RunStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<RenderBatchJournal> PrepareInstanceRetryAsync(string batchId, string styleId, string pageInstanceId,
+            int expectedAttempt, CancellationToken token)
+        {
+            RequestedInstance = pageInstanceId;
+            var prior = journal.Pages.Single(page => page.StyleId == styleId && page.Instance?.PageInstanceId == pageInstanceId && page.Attempt == expectedAttempt);
+            return Task.FromResult(journal = journal with { Status = RenderBatchStatus.Prepared, RegenerationPageIndex = journal.Pages.Count,
+                Pages = [.. journal.Pages, prior with { Attempt = expectedAttempt + 1, Status = RenderBatchPageStatus.Planned, ExecutionId = null, Commit = null }] });
+        }
         public Task<RenderBatchJournal> PrepareRegenerationAsync(string batchId, string styleId, string pageId,
             string? outputVariantId, int expectedAttempt, CancellationToken token)
         {

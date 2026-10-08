@@ -144,7 +144,8 @@ public sealed partial class BridgeLoopbackHostTests
 
     private static async Task AuthenticateDevice(byte[] secret, Action beforeThirdHeartbeat, CancellationToken token,
         bool protectedStorage = true, int heartbeatCount = 3, string hostState = "ready", string modalState = "idle",
-        string? photoshopBuild = null, byte[]? wrongHandshakeSecret = null, bool useSocket = true)
+        string? photoshopBuild = null, byte[]? wrongHandshakeSecret = null, bool useSocket = true,
+        bool instanceIdentity = false, bool expectCapabilityRejection = false)
     {
         using var client = new HttpClient(useSocket ? new SocketHttpHandler() : new HttpClientHandler { UseProxy = false })
             { Timeout = TimeSpan.FromSeconds(5) };
@@ -158,12 +159,13 @@ public sealed partial class BridgeLoopbackHostTests
         if (!protectedStorage) request = request with { Capabilities = request.Capabilities
             .Where(capability => capability != BridgeSessionOwnerFactory.ProtectedPairingCapability).ToArray() };
         if (photoshopBuild is not null) request = request with { PhotoshopBuild = photoshopBuild };
+        if (instanceIdentity) request = request with { Capabilities = [.. request.Capabilities, RenderPlanInstanceIdentity.Capability] };
         byte[]? key = null;
         try
         {
             using var challengeResponse = await client.PostAsync(root + "/adapter/v1/challenges", Content(JsonSerializer.Serialize(
                 new AdapterEnvelope<AdapterChallengeRequest>(BridgeAdapterProtocol.Version, "challenge_request", request), BridgeProtocol.JsonOptions)), token);
-            if (!protectedStorage || photoshopBuild is not null)
+            if (!protectedStorage || photoshopBuild is not null || expectCapabilityRejection)
             {
                 Assert.NotEqual(HttpStatusCode.OK, challengeResponse.StatusCode);
                 return;

@@ -3,7 +3,7 @@ using Desktop.Application.Tasks;
 
 namespace Desktop.Application.Rendering;
 
-public enum RenderBatchStatus { Prepared, Running, Paused, RecoveryRequired, Completed, CompletedWithIssues, Cancelled }
+public enum RenderBatchStatus { Prepared, Running, Paused, RecoveryRequired, Completed, CompletedWithIssues, Cancelled, UserActionRequired, Empty, Failed }
 public enum RenderBatchPageStatus { Planned, Blocked, Submitting, Running, Committed, Failed, Cancelled, Unknown }
 
 /// <summary>Logical plans and durable execution facts only; no paths, credentials or transport handles.</summary>
@@ -11,10 +11,16 @@ public sealed record RenderBatchPage(string StyleId, string PageId, string? Outp
     string? PlanJson, RenderBatchPageStatus Status, string ReasonCode,
     string? ExecutionId = null, RenderPageCommitCheckpoint? Commit = null,
     string? PreparationReasonCode = null, string? OutputVariantName = null,
-    RenderSizeTableRepairOrigin? SizeTableRepair = null);
+    RenderSizeTableRepairOrigin? SizeTableRepair = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RenderInstanceIdentity? Instance = null);
+
+public sealed record RenderBatchInstanceSet(string StyleId, string SchemaVersion, string BatchPlanDigest, string InputFactsDigest);
 
 public sealed record RenderBatchJournal(int Version, string BatchId, long Revision, RenderBatchStatus Status,
-    bool PauseRequested, bool CancelRequested, IReadOnlyList<RenderBatchPage> Pages, int? RegenerationPageIndex = null);
+    bool PauseRequested, bool CancelRequested, IReadOnlyList<RenderBatchPage> Pages, int? RegenerationPageIndex = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<RenderBatchInstanceSet>? InstanceSets = null);
 
 public interface IRenderBatchStore
 {
@@ -45,6 +51,8 @@ public interface IRenderBatchWorkflow
     Task<RenderBatchJournal?> LoadAsync(string batchId, CancellationToken cancellationToken);
     Task<RenderBatchJournal> PrepareRegenerationAsync(string batchId, string styleId, string pageId,
         string? outputVariantId, int expectedAttempt, CancellationToken cancellationToken);
+    Task<RenderBatchJournal> PrepareInstanceRetryAsync(string batchId, string styleId, string pageInstanceId,
+        int expectedAttempt, CancellationToken cancellationToken) => throw new InvalidOperationException("RENDER_INSTANCE_RETRY_NOT_AVAILABLE");
     Task<RenderBatchJournal> RunAsync(string batchId, CancellationToken cancellationToken);
     Task RequestPauseAsync(string batchId, CancellationToken cancellationToken);
     Task RequestCancelAsync(string batchId, CancellationToken cancellationToken);
@@ -77,6 +85,8 @@ public interface IRenderStyleOutputPublisher
     /// </summary>
     Task<bool> CanRecoverFailedPageAsync(string batchId, string styleId, string pageId, string? outputVariantId,
         int expectedAttempt, CancellationToken cancellationToken);
+    Task<bool> CanRecoverFailedInstanceAsync(string batchId, string styleId, string pageInstanceId,
+        int expectedAttempt, CancellationToken cancellationToken) => Task.FromResult(false);
 
     Task PublishAsync(string batchId, RenderBatchJournal journal, CancellationToken cancellationToken);
 }

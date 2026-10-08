@@ -5,6 +5,42 @@ namespace Desktop.App.UiTests;
 public sealed class PageNotificationTests
 {
     [Fact]
+    public void BatchPageEditablePsdChangesAutoSaveAndRestoreWithoutScanning()
+    {
+        var host = new BatchHost();
+        var workflow = new RecordingBatchWorkflow();
+        using var page = CreateReadyBatchPage(host, workflow);
+
+        page.BatchIncludeEditablePsd = true;
+
+        Assert.True(Assert.Single(workflow.SavedSubmissions).IncludeEditablePsd);
+        using var reopened = new BatchInputPageViewModel(host, workflow: workflow);
+        reopened.Coordinator.RestoreBatchInputCommand.Execute(null);
+        Assert.True(reopened.BatchIncludeEditablePsd);
+        Assert.Equal(page.State.CurrentBatchId, reopened.State.CurrentBatchId);
+
+        page.BatchIncludeEditablePsd = false;
+        Assert.Equal(2, workflow.SavedSubmissions.Count);
+        Assert.False(workflow.SavedSubmissions[^1].IncludeEditablePsd);
+        Assert.Equal(0, workflow.Scans);
+    }
+
+    [Fact]
+    public void BatchPageSelectionModeChangesUseTheDraftSavingCoordinator()
+    {
+        var workflow = new RecordingBatchWorkflow();
+        using var page = CreateReadyBatchPage(new BatchHost(), workflow);
+
+        page.IsBatchManualSelection = true;
+        Assert.Equal(BatchSelectionMode.Manual, Assert.Single(workflow.SavedSubmissions).SelectionMode);
+
+        page.IsBatchAutomaticSelection = true;
+        Assert.Equal(2, workflow.SavedSubmissions.Count);
+        Assert.Equal(BatchSelectionMode.Automatic, workflow.SavedSubmissions[^1].SelectionMode);
+        Assert.Equal(0, workflow.Scans);
+    }
+
+    [Fact]
     public void BatchPageObservesLocalStateWithoutShellRelayAndDetachesOnDispose()
     {
         var host = new BatchHost();
@@ -61,6 +97,43 @@ public sealed class PageNotificationTests
         page.State.TemplateDialogTitle = "关闭后";
         host.Notify(nameof(page.IsTemplateSectionVisible));
         Assert.Empty(changed);
+    }
+
+    private static BatchInputPageViewModel CreateReadyBatchPage(BatchHost host, RecordingBatchWorkflow workflow)
+    {
+        var page = new BatchInputPageViewModel(host, workflow: workflow);
+        page.State.SelectedTemplate = new("group_autosave", "draft fixture", "1 page", "today", "Committed",
+            HasCommittedRevision: true);
+        page.State.InputDirectory = @"C:\isolated\input";
+        page.State.OutputDirectory = @"C:\isolated\output";
+        page.State.BatchPages.Add(new("page_autosave", "page fixture", "test", true));
+        Assert.True(page.CanScanBatch);
+        return page;
+    }
+
+    private sealed class RecordingBatchWorkflow : IBatchInputWorkflow
+    {
+        public List<BatchInputSubmission> SavedSubmissions { get; } = [];
+        public int Scans { get; private set; }
+        private BatchInputProjection? _saved;
+
+        public Task<BatchInputProjection?> RestoreLatestDraftAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(_saved);
+
+        public Task<BatchInputProjection> SaveDraftAsync(BatchInputSubmission submission, CancellationToken cancellationToken)
+        {
+            SavedSubmissions.Add(submission);
+            _saved = new(submission.BatchId ?? "draft_autosave", submission.TemplateGroupId, BatchInputUiStatus.Draft,
+                submission.InputDirectory, submission.OutputDirectory, submission.SelectedPageIds,
+                submission.SelectionMode, submission.IncludeEditablePsd, "test fixture", "saved", submission.OutputMode);
+            return Task.FromResult(_saved);
+        }
+
+        public Task<BatchInputProjection> ScanAsync(BatchInputSubmission submission, CancellationToken cancellationToken)
+        {
+            Scans++;
+            throw new InvalidOperationException("A draft-setting test must not scan or start AI.");
+        }
     }
 
     private sealed class TemplateHost : ITemplateWorkspacePageHost, ITemplateWorkspaceHost

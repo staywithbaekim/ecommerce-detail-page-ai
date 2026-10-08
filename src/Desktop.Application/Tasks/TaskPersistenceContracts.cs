@@ -38,7 +38,9 @@ public sealed record TaskCheckpoint(
     OutputCommitState OutputState,
     DateTimeOffset UpdatedAt,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? OutputVariantId = null);
+    string? OutputVariantId = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Desktop.Application.Rendering.RenderInstanceIdentity? Instance = null);
 
 public interface ICheckpointStore
 {

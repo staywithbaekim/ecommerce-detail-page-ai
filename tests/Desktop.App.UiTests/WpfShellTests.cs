@@ -20,7 +20,7 @@ using Xunit.Abstractions;
 
 namespace Desktop.App.UiTests;
 
-public sealed class WpfShellTests
+public sealed partial class WpfShellTests
 {
     [Theory]
     [InlineData(1440, 900)]
@@ -145,10 +145,9 @@ public sealed class WpfShellTests
                 Assert.Equal("查看 Photoshop 程序版本", new ComboBoxAutomationPeer(list).GetName());
                 var version = FindByAutomationId<TextBlock>(window, "PhotoshopFileVersion");
                 Assert.Contains("26.8.1.8", version.Text, StringComparison.Ordinal);
-                Assert.Contains("不代表可生产", FindByAutomationId<TextBlock>(window, "PhotoshopVersionScope").Text, StringComparison.Ordinal);
+                Assert.Contains("支持版本候选", FindByAutomationId<TextBlock>(window, "PhotoshopVersionScope").Text, StringComparison.Ordinal);
                 Assert.True(BoundsInWindow(version, window).Right <= window.ActualWidth);
                 Assert.True(BoundsInWindow(list, window).Bottom <= window.ActualHeight);
-                Assert.Contains("G:\\", FindByAutomationId<TextBlock>(window, "PhotoshopExecutablePath").Text, StringComparison.Ordinal);
             }
             finally { window.Close(); }
         });
@@ -182,10 +181,13 @@ public sealed class WpfShellTests
 
                 Assert.Equal(0, check.Calls);
                 var test = FindByAutomationId<Button>(window, "TestPhotoshopConnectionButton");
+                var instanceTest = FindByAutomationId<Button>(window, "TestPhotoshopInstanceConnectionButton");
                 var cancel = FindByAutomationId<Button>(window, "CancelPhotoshopOperationButton");
                 var actions = FindByAutomationId<WrapPanel>(window, "PhotoshopConnectionActions");
                 var scroll = FindByAutomationId<ScrollViewer>(window, "SettingsContentScrollViewer");
                 Assert.Same(model.SettingsPageViewModel.Photoshop.CheckConnectionCommand, test.Command);
+                Assert.Same(model.SettingsPageViewModel.Photoshop.CheckInstanceConnectionCommand, instanceTest.Command);
+                Assert.Contains("当前任务所需能力", AutomationProperties.GetHelpText(instanceTest), StringComparison.Ordinal);
                 Assert.Equal("测试认证连接", new ButtonAutomationPeer(test).GetName());
                 Assert.Contains("60秒", AutomationProperties.GetHelpText(test), StringComparison.Ordinal);
                 Assert.Same(actions, VisualTreeHelper.GetParent(test));
@@ -202,17 +204,18 @@ public sealed class WpfShellTests
                 var history = FindByAutomationId<TextBlock>(window, "PhotoshopConnectionCheckHistory");
                 var boundary = FindByAutomationId<TextBlock>(window, "PhotoshopConnectionBoundary");
                 Assert.Contains("不代表当前连接", status.Text, StringComparison.Ordinal);
-                Assert.Contains("26.8.1 (20250624.r.8 5e0d05d)", history.Text, StringComparison.Ordinal);
-                Assert.Contains("3 次", history.Text, StringComparison.Ordinal);
-                Assert.Contains("不是正式渲染宿主选择", boundary.Text, StringComparison.Ordinal);
-                Assert.Contains("累计至少 3 次认证心跳", boundary.Text, StringComparison.Ordinal);
-                Assert.Contains("检查时宿主为 ready", boundary.Text, StringComparison.Ordinal);
-                Assert.Contains("不要求连续三次 ready", boundary.Text, StringComparison.Ordinal);
-                Assert.Contains("日常连接由桌面发起", boundary.Text, StringComparison.Ordinal);
-                Assert.Contains("不能重投未知页面", boundary.Text, StringComparison.Ordinal);
-                Assert.Contains("不代表", boundary.Text, StringComparison.Ordinal);
+                Assert.Contains("上次检查", history.Text, StringComparison.Ordinal);
+                Assert.Contains("基础连接", history.Text, StringComparison.Ordinal);
+                Assert.Contains("只有点击“设为正式宿主”", boundary.Text, StringComparison.Ordinal);
+                Assert.Contains("不能代表当前连接", boundary.Text, StringComparison.Ordinal);
+                Assert.DoesNotContain("template/page-instance-identity-v1", boundary.Text, StringComparison.Ordinal);
+                Assert.DoesNotContain("完整构建", boundary.Text, StringComparison.Ordinal);
                 Assert.Equal(status.Text, new TextBlockAutomationPeer(status).GetName());
                 AssertNoOverlap(BoundsInWindow(test, window), BoundsInWindow(cancel, window), "认证检查与取消按钮重叠。");
+                AssertNoOverlap(BoundsInWindow(test, window), BoundsInWindow(instanceTest, window), "基础与实例检查按钮重叠。");
+                AssertNoOverlap(BoundsInWindow(instanceTest, window), BoundsInWindow(cancel, window), "实例检查与取消按钮重叠。");
+                Assert.True(BoundsInWindow(instanceTest, window).Right <= window.ActualWidth);
+                Assert.True(BoundsInWindow(instanceTest, window).Bottom <= window.ActualHeight);
                 Assert.True(BoundsInWindow(test, window).Right <= window.ActualWidth);
                 Assert.True(BoundsInWindow(test, window).Bottom <= window.ActualHeight);
             }
@@ -249,7 +252,7 @@ public sealed class WpfShellTests
                 view.DetectAsync().GetAwaiter().GetResult();
                 FlushLayout(window);
                 Assert.Equal(0, selection.SelectCalls);
-                Assert.Contains("已明确选择", FindByAutomationId<TextBlock>(window, "PhotoshopHostSelectionPath").Text);
+                Assert.Contains("正式宿主已保存", FindByAutomationId<TextBlock>(window, "PhotoshopHostSelectionStatus").Text);
                 Assert.Contains("不代表已连接", FindByAutomationId<TextBlock>(window, "PhotoshopHostSelectionStatus").Text);
                 var save = FindByAutomationId<Button>(window, "SelectPhotoshopHostButton");
                 var reread = FindByAutomationId<Button>(window, "RefreshPhotoshopHostSelectionButton");
@@ -322,9 +325,9 @@ public sealed class WpfShellTests
                 Assert.Contains("正式输出", exclusions.Text, StringComparison.Ordinal);
                 var inclusions = FindByAutomationId<TextBlock>(window, "DiagnosticExportInclusions");
                 var connectionBoundary = FindByAutomationId<TextBlock>(window, "DiagnosticExportConnectionBoundary");
-                Assert.Contains("匹配完整构建", inclusions.Text, StringComparison.Ordinal);
-                Assert.Contains("认证心跳计数", inclusions.Text, StringComparison.Ordinal);
-                Assert.Contains("不代表逐机能力、当前连接", connectionBoundary.Text, StringComparison.Ordinal);
+                Assert.Contains("连接检查", inclusions.Text, StringComparison.Ordinal);
+                Assert.Contains("检查结果和时间", inclusions.Text, StringComparison.Ordinal);
+                Assert.Contains("不代表当前连接或正式出图", connectionBoundary.Text, StringComparison.Ordinal);
                 Assert.Contains("不会主动检测或连接 Photoshop", connectionBoundary.Text, StringComparison.Ordinal);
                 var export = FindByAutomationId<Button>(window, "ExportDiagnosticPackageButton");
                 Assert.Equal("导出诊断包", new ButtonAutomationPeer(export).GetName());
@@ -353,7 +356,7 @@ public sealed class WpfShellTests
         });
     }
 
-    private static readonly string[] PageContentTypeToggleSequence = ["动态尺码表页", "普通套图页", "动态尺码表页"];
+
     private readonly ITestOutputHelper _output;
 
     public WpfShellTests(ITestOutputHelper output)
@@ -467,8 +470,9 @@ public sealed class WpfShellTests
                 Assert.True(countBounds.Right < actionBounds.Left);
                 Assert.True(actionBounds.Right <= window.ActualWidth);
                 Assert.True(countBounds.Bottom <= window.ActualHeight);
-                Assert.Contains("不代表已重新核验输出文件",
+                Assert.Contains("打开详情",
                     AutomationProperties.GetHelpText((DependencyObject)status.Parent), StringComparison.Ordinal);
+                Assert.DoesNotContain("TPL", model.Tasks[0].TemplateName, StringComparison.OrdinalIgnoreCase);
             }
             finally { window.Close(); }
         });
@@ -1170,16 +1174,16 @@ public sealed class WpfShellTests
                     Assert.Equal(expectedScale, dpi.DpiScaleY, precision: 2);
                 }
 
-                var frameList = FindByAutomationId<ListBox>(window, "CalibrationFrameList");
+                // Retain calibration state, not the retired duplicate editor.
                 ApplyCalibrationDraft(viewModel, CreateCalibrationDraft("revision_before"));
                 FlushLayout(window);
                 Assert.Equal("frame_257", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationFrameIdInput);
-                Assert.Equal("frame_257", frameList.SelectedValue);
+                Assert.Single(viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationDraft!.Frames);
 
                 ApplyCalibrationDraft(viewModel, CreateCalibrationDraft("revision_after"));
                 FlushLayout(window);
                 Assert.Equal("frame_257", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationFrameIdInput);
-                Assert.Equal("frame_257", frameList.SelectedValue);
+                Assert.Single(viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationDraft!.Frames);
 
                 var showDialog = typeof(TemplateWorkspaceViewModel).GetMethod(
                     "ShowTemplateDialogAsync",
@@ -1221,7 +1225,7 @@ public sealed class WpfShellTests
     }
 
     [Fact]
-    public void CalibrationFrameListRefreshesWhenLoadedPageChanges()
+    public void CalibrationEvidenceRefreshesWithoutRestoringLegacyFrameList()
     {
         RunInSta(() =>
         {
@@ -1238,7 +1242,8 @@ public sealed class WpfShellTests
             try
             {
                 window.Show();
-                var frameList = FindByAutomationId<ListBox>(window, "CalibrationFrameList");
+                Assert.DoesNotContain(Descendants<FrameworkElement>(window), item =>
+                    AutomationProperties.GetAutomationId(item) == "CalibrationFrameList");
 
                 ApplyCalibrationDraft(
                     viewModel,
@@ -1249,10 +1254,10 @@ public sealed class WpfShellTests
                         "第一页图片框"));
                 FlushLayout(window);
 
-                var firstFrame = Assert.Single(frameList.Items.Cast<TemplateFrameProjection>());
+                var firstFrame = Assert.Single(viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationDraft!.Frames);
                 Assert.Equal("frame_page_one", firstFrame.FrameId);
                 Assert.Equal("第一页图片框", firstFrame.LayerName);
-                Assert.Equal("frame_page_one", frameList.SelectedValue);
+                Assert.Equal("frame_page_one", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationFrameIdInput);
 
                 ApplyCalibrationDraft(
                     viewModel,
@@ -1263,12 +1268,12 @@ public sealed class WpfShellTests
                         "第二页图片框"));
                 FlushLayout(window);
 
-                var secondFrame = Assert.Single(frameList.Items.Cast<TemplateFrameProjection>());
+                var secondFrame = Assert.Single(viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationDraft!.Frames);
                 Assert.Equal("frame_page_two", secondFrame.FrameId);
                 Assert.Equal("第二页图片框", secondFrame.LayerName);
-                Assert.Equal("frame_page_two", frameList.SelectedValue);
+                Assert.Equal("frame_page_two", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationFrameIdInput);
                 Assert.DoesNotContain(
-                    frameList.Items.Cast<TemplateFrameProjection>(),
+                    viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationDraft!.Frames,
                     frame => frame.FrameId == "frame_page_one");
             }
             finally
@@ -1669,7 +1674,7 @@ public sealed class WpfShellTests
     }
 
     [Fact]
-    public void ReferenceLearningUsesCalibrationEditorAndBlocksSaveUntilExplicitReview()
+    public void ReferenceLearningEvidenceStillBlocksUnreviewedSaveWithoutLegacyEditor()
     {
         RunInSta(() =>
         {
@@ -1722,11 +1727,9 @@ public sealed class WpfShellTests
                 FlushLayout(window);
 
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.IsReferenceLearningReviewMode);
-                Assert.True(FindByAutomationId<Grid>(window, "TemplateCanvasPage").IsVisible);
-                Assert.True(FindByAutomationId<StackPanel>(window, "ReferenceLearningEvidencePanel").IsVisible);
-                Assert.True(FindByAutomationId<Border>(window, "ReferenceLearningRuleSummaryPanel").IsVisible);
-                Assert.True(FindByAutomationId<ListBox>(window, "ReferenceLearningPhotoList").IsVisible);
-                Assert.True(FindByAutomationId<StackPanel>(window, "ReferenceLearningReviewActions").IsVisible);
+                // The retained evidence service is tested without reviving the retired UI.
+                Assert.DoesNotContain(Descendants<FrameworkElement>(window), item =>
+                    AutomationProperties.GetAutomationId(item) == "TemplateCanvasPage");
                 Assert.Equal("未复核", viewModel.TemplateWorkspacePageViewModel.Coordinator.ReferenceLearningDecisionText);
                 Assert.Equal("front.png", viewModel.TemplateWorkspacePageViewModel.Coordinator.SelectedReferenceLearningPhoto!.DisplayName);
                 Assert.Null(viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationPreviewImagePath);
@@ -1734,17 +1737,9 @@ public sealed class WpfShellTests
                 Assert.Equal(
                     "左侧选择图片框；中间查看 PSD 位置；右侧确认或修改素材、用途和布局",
                     viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationCanvasInstruction);
-                Assert.Equal(
-                    Visibility.Visible,
-                    FindByAutomationId<Expander>(window, "AdvancedCalibrationExpander").Visibility);
-                Assert.Equal(
-                     Visibility.Collapsed,
-                     FindByAutomationId<Button>(window, "ReturnReferenceLearningToManualButton").Visibility);
-                Assert.True(FindByAutomationId<TextBox>(window, "CalibrationRequirementInput").IsEnabled);
-                Assert.False(FindByAutomationId<Button>(window, "SaveTemplateGroupButton").IsEnabled);
-                Assert.False(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
-                Assert.True(FindByAutomationId<Button>(window, "RejectReferenceLearningFrameButton").IsEnabled);
-                Assert.True(FindByAutomationId<Button>(window, "CancelReferenceLearningButton").IsVisible);
+                Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanEditReferenceLearningRule);
+                Assert.False(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanSaveTemplateCanvas);
+                Assert.False(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanApplyAndConfirmCalibration);
 
                 viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationRequirementInput = "商品完整正面图";
                 var firstFrameId = viewModel.TemplateWorkspacePageViewModel.Coordinator.SelectedReferenceLearningFrame!.FrameId;
@@ -1761,7 +1756,7 @@ public sealed class WpfShellTests
                 Assert.Equal("商品完整正面图", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationRequirementInput);
                 Assert.Equal("front.png", viewModel.TemplateWorkspacePageViewModel.Coordinator.SelectedReferenceLearningPhoto!.DisplayName);
                 FlushLayout(window);
-                Assert.True(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+                Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanApplyAndConfirmCalibration);
                 var applyReview = typeof(TemplateWorkspaceViewModel).GetMethod(
                     "ApplyAndConfirmCalibrationAsync",
                     BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
@@ -1772,11 +1767,11 @@ public sealed class WpfShellTests
 
                 Assert.Equal("已确认规则", viewModel.TemplateWorkspacePageViewModel.Coordinator.ReferenceLearningDecisionText);
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanCommitReferenceLearning);
-                Assert.True(FindByAutomationId<Button>(window, "SaveTemplateGroupButton").IsEnabled);
+                Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanSaveTemplateCanvas);
 
                 SetWindowSize(window, 1100, 760);
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.IsCalibrationNarrowLayout);
-                Assert.True(FindByAutomationId<StackPanel>(window, "CalibrationNarrowPanelSwitcher").IsVisible);
+                Assert.DoesNotContain(Descendants<FrameworkElement>(window), item => AutomationProperties.GetAutomationId(item) == "CalibrationNarrowPanelSwitcher");
 
                 var save = typeof(TemplateWorkspaceViewModel).GetMethod(
                     "SaveTemplateAsync",
@@ -2039,96 +2034,36 @@ public sealed class WpfShellTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void UnifiedTemplateCanvasEditsDynamicSizeTableWithoutCalibrationFrames(bool mixedTemplate)
+    public void SizeCardsShareWorkbenchWithoutLegacySizeConfiguration(bool mixedTemplate)
     {
         RunInSta(() =>
         {
-            // Keep the preview in test output: WPF's URI image cache can hold it until host shutdown.
-            var previewPath = Path.Combine(AppContext.BaseDirectory, "template-page-preview-" + Guid.NewGuid().ToString("N") + ".png");
-            File.WriteAllBytes(previewPath, Convert.FromBase64String(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
-            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
-            var changed = typeof(TemplateWorkspaceViewModel).GetMethod(
-                    "OnTemplatePageChanged", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!
-                .CreateDelegate<Action<TemplatePageRowViewModel>>(viewModel.TemplateWorkspacePageViewModel.Coordinator);
-            var page = CreateReferenceLearningPage("page_size_settings", previewPath, changed);
-            page.Name = "尺码表 L–5XL";
-            viewModel.TemplateWorkspacePageViewModel.Coordinator.TemplatePages.Add(page);
-            if (mixedTemplate)
-            {
-                viewModel.TemplateWorkspacePageViewModel.Coordinator.TemplatePages.Add(CreateReferenceLearningPage("page_normal_01"));
-                viewModel.TemplateWorkspacePageViewModel.Coordinator.TemplatePages.Add(CreateReferenceLearningPage("page_normal_02"));
-            }
-
-            viewModel.TemplateWorkspacePageViewModel.Coordinator.SelectedTemplatePage = page;
-            viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
-            var setScreen = typeof(TemplateWorkspaceViewModel).GetMethod(
-                "SetTemplateScreen", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
-            setScreen.Invoke(viewModel.TemplateWorkspacePageViewModel.Coordinator,
-                [Enum.Parse(setScreen.GetParameters()[0].ParameterType, "Canvas")]);
-            var window = new MainWindow(viewModel);
+            using var fixture = new RuleUiFixture(); using var writes = new SemaphoreSlim(1);
+            using var model = new TemplateRuleWorkbenchViewModel(fixture.Workspace, fixture.Calibration, fixture.Session, writes);
+            PumpRuleTask(fixture.Workspace.ConfigurePageAsync(fixture.Session, "page_a", "尺码表 L–5XL",
+                TemplatePageContentTypeOption.DynamicSizeTable, TemplateGenerationModeOption.OncePerProduct, null, true, default));
+            PumpRuleTask(model.RefreshAsync());
+            if (!mixedTemplate) PumpRuleTask(model.RemovePageAsync(model.Pages[1]));
+            var size = model.Pages[0];
+            Assert.True(size.IsSizeTable); Assert.Empty(size.Frames);
+            var card = new TemplatePageRuleCard { DataContext = size };
+            var window = new Window { Width = 580, Height = 700, Content = card };
             try
             {
-                window.Show();
-                DrainDispatcher();
-                FlushLayout(window);
-                Assert.True(FindByAutomationId<Grid>(window, "TemplateCanvasPage").IsVisible);
-                var pageList = FindByAutomationId<ListBox>(window, "CalibrationPageList");
-                var pageName = FindByAutomationId<TextBox>(window, "TemplateCanvasPageNameInput");
-                var contentTypeSelect = FindByAutomationId<ComboBox>(window, "TemplateCanvasContentTypeSelect");
-                Assert.Same(page, pageList.SelectedItem);
-                Assert.Equal("尺码表 L–5XL", pageName.Text);
-
-                foreach (var contentType in PageContentTypeToggleSequence)
-                {
-                    contentTypeSelect.SelectedItem = contentType;
-                    DrainDispatcher();
-                    FlushLayout(window);
-
-                    Assert.Same(page, viewModel.TemplateWorkspacePageViewModel.Coordinator.SelectedTemplatePage);
-                    Assert.Same(page, pageList.SelectedItem);
-                    Assert.Equal("尺码表 L–5XL", pageName.Text);
-                    Assert.Equal(contentType, page.ContentTypeText);
-                    Assert.Equal("每款生成一次", FindByAutomationId<ComboBox>(window, "TemplateCanvasGenerationModeSelect").SelectedItem);
-                    Assert.True(FindByAutomationId<CheckBox>(window, "TemplateCanvasPageEnabledCheckBox").IsChecked);
-                    Assert.True(page.Enabled);
-                }
-
-                Assert.Contains(page, viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationPages);
-                Assert.Equal(mixedTemplate, viewModel.TemplateWorkspacePageViewModel.Coordinator.HasCalibratableTemplatePages);
-                Assert.Equal(
-                    mixedTemplate ? "开始校准" : "保存模板组",
-                    viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationStartActionText);
-                Assert.Equal(Visibility.Visible,
-                    FindByAutomationId<Border>(window, "DynamicSizeTableCanvasInspector").Visibility);
-                Assert.Equal(Visibility.Collapsed,
-                    FindByAutomationId<ListBox>(window, "CalibrationFrameList").Visibility);
-
-                if (mixedTemplate)
-                {
-                    viewModel.TemplateWorkspacePageViewModel.Coordinator.SelectedTemplatePage = viewModel.TemplateWorkspacePageViewModel.Coordinator.TemplatePages[1];
-                    DrainDispatcher();
-                    FlushLayout(window);
-                    Assert.Equal(Visibility.Visible,
-                        FindByAutomationId<ListBox>(window, "CalibrationFrameList").Visibility);
-                    Assert.Equal(Visibility.Collapsed,
-                        FindByAutomationId<Border>(window, "DynamicSizeTableCanvasInspector").Visibility);
-                }
+                window.Show(); FlushLayout(window);
+                Assert.Contains(Descendants<TextBlock>(card), text => text.Text.Contains("与商品照片共用输入", StringComparison.Ordinal));
+                Assert.Empty(Descendants<ComboBox>(card));
+                Assert.DoesNotContain(Descendants<Button>(card), button => Equals(button.Content, "设置"));
+                Assert.Equal(mixedTemplate ? 2 : 1, model.Pages.Count);
+                var shell = new TemplateWorkspacePage();
+                Assert.DoesNotContain(Descendants<FrameworkElement>(shell), element =>
+                    System.Windows.Automation.AutomationProperties.GetAutomationId(element) == "TemplateCanvasPage");
             }
-            finally
-            {
-                window.Close();
-                viewModel.Dispose();
-                if (File.Exists(previewPath))
-                {
-                    File.Delete(previewPath);
-                }
-            }
+            finally { window.Close(); }
         });
     }
-
     [Fact]
-    public void ManualCalibrationRuleFieldBecomesEditableAfterDraftLoads()
+    public void ManualCalibrationRuleStateRemainsEditableWithoutLegacyField()
     {
         RunInSta(() =>
         {
@@ -2164,12 +2099,12 @@ public sealed class WpfShellTests
                 ApplyCalibrationDraft(viewModel, CreateCalibrationDraft("revision_manual_rule_ui"));
                 FlushLayout(window);
 
-                var ruleInput = FindByAutomationId<TextBox>(window, "CalibrationRequirementInput");
+                // Per-page rule textboxes are exercised in WpfShellTests.TemplateRules.
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanEditCalibration);
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanEditReferenceLearningRule);
-                Assert.True(ruleInput.IsEnabled);
+                Assert.DoesNotContain(Descendants<FrameworkElement>(window), item => AutomationProperties.GetAutomationId(item) == "CalibrationRequirementInput");
 
-                ruleInput.Text = "侧面图";
+                viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationRequirementInput = "侧面图";
                 FlushLayout(window);
                 Assert.Equal("侧面图", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationRequirementInput);
             }
@@ -2182,7 +2117,7 @@ public sealed class WpfShellTests
     }
 
     [Fact]
-    public void ReferenceLearningAiUnavailableIsVisibleAndRequiresUserOverride()
+    public void ReferenceLearningAiUnavailableRetainsWarningAndRequiresExplicitRule()
     {
         RunInSta(() =>
         {
@@ -2256,18 +2191,16 @@ public sealed class WpfShellTests
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.IsReferenceLearningAiUnavailable);
                 Assert.Contains("AI 语义识别未完成", viewModel.TemplateWorkspacePageViewModel.Coordinator.ReferenceLearningSemanticWarningText, StringComparison.Ordinal);
                 Assert.Contains("请求超时", viewModel.TemplateWorkspacePageViewModel.Coordinator.ReferenceLearningSemanticWarningText, StringComparison.Ordinal);
-                Assert.Equal(
-                    Visibility.Visible,
-                    FindByAutomationId<Border>(window, "ReferenceLearningAiUnavailableWarning").Visibility);
-                Assert.False(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+                Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.IsReferenceLearningSemanticWarningVisible);
+                Assert.False(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanApplyAndConfirmCalibration);
 
                 viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationRequirementInput = "商品展示图（与参考款保持同一视角，请确认）";
                 FlushLayout(window);
-                Assert.False(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+                Assert.False(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanApplyAndConfirmCalibration);
 
                 viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationRequirementInput = "人物正面全身图";
                 FlushLayout(window);
-                Assert.True(FindByAutomationId<Button>(window, "ApplyAndConfirmCalibrationButton").IsEnabled);
+                Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanApplyAndConfirmCalibration);
             }
             finally
             {
@@ -2430,7 +2363,7 @@ public sealed class WpfShellTests
     }
 
     [Fact]
-    public void ReferenceLearningOffersPageAndBatchConfirmationForQualifiedCandidates()
+    public void ReferenceLearningQualifiedBatchAdoptionPreservesEvidenceWithoutPerPageButtons()
     {
         RunInSta(() =>
         {
@@ -2480,8 +2413,8 @@ public sealed class WpfShellTests
 
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanConfirmReferenceLearningPage);
                 Assert.True(viewModel.TemplateWorkspacePageViewModel.Coordinator.CanConfirmAllQualifiedReferenceLearning);
-                Assert.True(FindByAutomationId<Button>(window, "ConfirmReferenceLearningPageButton").IsEnabled);
-                Assert.True(FindByAutomationId<Button>(window, "ConfirmAllQualifiedReferenceLearningButton").IsEnabled);
+                Assert.DoesNotContain(Descendants<FrameworkElement>(window), item =>
+                    AutomationProperties.GetAutomationId(item) is "ConfirmReferenceLearningPageButton" or "ConfirmAllQualifiedReferenceLearningButton");
 
                 var confirmPage = typeof(TemplateWorkspaceViewModel).GetMethod(
                     "ConfirmReferenceLearningPageAsync",
@@ -3092,9 +3025,7 @@ public sealed class WpfShellTests
                 viewModel.AiAnalysisPageViewModel.OpenAiStyleReview(viewModel.AiAnalysisPageViewModel.AiStyles[0]);
                 FlushLayout(window);
 
-                var panel = FindByAutomationId<Border>(window, "AiSizeTableSourcePanel");
-                Assert.Equal(Visibility.Visible, panel.Visibility);
-                Assert.Equal(source.Candidates.Count, FindByAutomationId<ItemsControl>(window, "AiSizeTableSourceCandidates").Items.Count);
+                Assert.True(viewModel.AiAnalysisPageViewModel.AiStyles[0].HasSizeTableSource);
                 Assert.All(
                     viewModel.AiAnalysisPageViewModel.AiStyles[0].Pages[0].SizeTableSource!.Candidates,
                     candidate =>
@@ -3223,20 +3154,32 @@ public sealed class WpfShellTests
 
                 var sourceScroller = FindByAutomationId<ScrollViewer>(
                     window,
-                    "AiSizeTableSourceCandidateScrollViewer");
-                var sourceList = FindByAutomationId<ItemsControl>(window, "AiSizeTableSourceCandidates");
-                var sourcePanel = FindByAutomationId<Border>(window, "AiSizeTableSourcePanel");
+                    "AiStyleReviewAssetScrollViewer");
+                var sourceList = FindByAutomationId<ItemsControl>(window, "AiStyleReviewAssetList");
                 var usageScroller = FindByAutomationId<ScrollViewer>(window, "AiStyleReviewUsageScrollViewer");
                 var usageList = FindByAutomationId<ItemsControl>(window, "AiStyleReviewUsageList");
                 var reviewPage = FindByAutomationId<Grid>(window, "AiStyleReviewPage");
 
                 Assert.Equal(12, sourceList.Items.Count);
-                Assert.Equal(11, usageList.Items.Count);
-                Assert.Equal(160, sourceScroller.MaxHeight);
-                Assert.True(sourceScroller.ActualHeight <= sourceScroller.MaxHeight + 0.5);
+                Assert.Equal(12, usageList.Items.Count);
+                var sizeTableUsage = Assert.IsType<AiRequirementUsageViewModel>(usageList.Items[0]);
+                Assert.True(sizeTableUsage.IsSizeTableSource);
+                Assert.Equal("尺码表来源", sizeTableUsage.SelectionLabel);
+                Assert.Equal("尺码表来源 · 已选用", sizeTableUsage.StatusText);
+                var regularUsage = Assert.IsType<AiRequirementUsageViewModel>(usageList.Items[1]);
+                Assert.False(regularUsage.IsSizeTableSource);
+                var sizeTableCard = Assert.IsAssignableFrom<FrameworkElement>(
+                    usageList.ItemContainerGenerator.ContainerFromIndex(0));
+                var regularCard = Assert.IsAssignableFrom<FrameworkElement>(
+                    usageList.ItemContainerGenerator.ContainerFromIndex(1));
+                Assert.Equal(sizeTableCard.ActualHeight, regularCard.ActualHeight, precision: 3);
+                Assert.Contains(
+                    EnumerateVisualDescendants<Button>(sizeTableCard),
+                    button => string.Equals(button.Content?.ToString(), "替换用图", StringComparison.Ordinal));
+                Assert.True(sourceScroller.ActualHeight > 0);
                 Assert.True(sourceScroller.ScrollableHeight > 0);
                 Assert.Equal(
-                    "动态尺码表来源候选，可向下滚动",
+                    "本款全部照片，可向下滚动",
                     AutomationProperties.GetName(sourceScroller));
                 Assert.True(usageScroller.IsVisible);
                 var firstUsageItem = Assert.IsAssignableFrom<FrameworkElement>(
@@ -3249,19 +3192,18 @@ public sealed class WpfShellTests
                     && firstUsageBounds.Bottom <= usageScroller.ActualHeight + 0.5,
                     $"first-usage={firstUsageBounds}; usage={usageScroller.ActualHeight:F1}; " +
                     $"source-scroll={sourceScroller.ActualHeight:F1}; " +
-                    $"source-panel={sourcePanel.ActualHeight:F1}; review={reviewPage.ActualHeight:F1}; " +
+                    $"review={reviewPage.ActualHeight:F1}; " +
                     $"window={window.ActualWidth:F1}x{window.ActualHeight:F1}");
                 Assert.True(usageScroller.ScrollableHeight > 0);
-                Assert.True(
-                    BoundsInWindow(usageScroller, window).Bottom <= BoundsInWindow(reviewPage, window).Bottom + 0.5);
+                Assert.True(BoundsInWindow(usageScroller, window).Bottom <= BoundsInWindow(reviewPage, window).Bottom + 0.5);
 
                 var candidateButtons = EnumerateVisualDescendants<Button>(sourceScroller)
-                    .Where(button => button.DataContext is AiSizeTableSourceCandidateViewModel)
+                    .Where(button => button.DataContext is AiStyleAssetViewModel)
                     .ToArray();
                 Assert.Equal(12, candidateButtons.Length);
                 Assert.All(candidateButtons, button =>
                 {
-                    Assert.Same(viewModel.AiAnalysisPageViewModel.SelectAiSizeTableSourceCommand, button.Command);
+                    Assert.Same(viewModel.AiAnalysisPageViewModel.SelectAiReplacementAssetCommand, button.Command);
                     Assert.True(button.Command.CanExecute(button.CommandParameter));
                 });
                 sourceScroller.ScrollToEnd();
@@ -3270,6 +3212,128 @@ public sealed class WpfShellTests
                 usageScroller.ScrollToEnd();
                 FlushLayout(window);
                 Assert.True(usageScroller.VerticalOffset > 0);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public void AiStyleReviewCanSaveSizeTableSourceFromRightPhotoLibrary()
+    {
+        RunInSta(() =>
+        {
+            const string batchId = "batch_size_source_click_ui";
+            const string styleId = "style_size_source_click_ui";
+            var workflow = new RecordingAiBatchAnalysisWorkflow();
+            var viewModel = new MainWindowViewModel(
+                new AppLaunchOptions(true, null),
+                templateWorkspace: null,
+                aiBatchAnalysisWorkflow: workflow);
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                var initialSource = new AiSizeTableSourceProjection(
+                    AiSizeTableSourceStatus.NeedsSelection,
+                    "找到多张候选，请选择尺码图",
+                    null,
+                    null,
+                    [
+                        new(batchId, styleId, "asset_01", "照片 01", "photo_01.jpg", true, 0.96m, false),
+                        new(batchId, styleId, "asset_02", "照片 02", "photo_02.jpg", false, null, false)
+                    ]);
+                var selectedSource = initialSource with
+                {
+                    Status = AiSizeTableSourceStatus.AutoSelected,
+                    StatusText = "已选用照片 02 作为尺码图",
+                    SelectedAssetId = "asset_02",
+                    SelectedPreviewPath = "photo_02.jpg",
+                    Candidates =
+                    [
+                        initialSource.Candidates[0],
+                        initialSource.Candidates[1] with { IsSelected = true }
+                    ]
+                };
+                workflow.SelectSizeTableSourceProjection = BuildSizeSourceProjection(
+                    batchId,
+                    styleId,
+                    selectedSource);
+                var page = new AiPageAnalysisProjection(
+                    batchId,
+                    styleId,
+                    "page_size_source_click_ui",
+                    "尺码表页",
+                    AiPageUiStatus.BusinessError,
+                    "需要修复",
+                    "确认尺码来源",
+                    [],
+                    ["存在多个内容不同的尺码表来源，请先选择唯一来源。"],
+                    true,
+                    [],
+                    initialSource);
+                var projection = new AiBatchAnalysisProjection(
+                    batchId,
+                    AiBatchUiStatus.ReviewRequired,
+                    "部分页面需要处理",
+                    "继续处理",
+                    1,
+                    1,
+                    0,
+                    1,
+                    [new AiStyleAnalysisProjection(
+                        batchId,
+                        styleId,
+                        "尺码款",
+                        AiStyleUiStatus.BusinessError,
+                        "需要修复",
+                        [page],
+                        2,
+                        [
+                            new(batchId, styleId, "asset_01", "photo_01.jpg", 1),
+                            new(batchId, styleId, "asset_02", "photo_02.jpg", 2)
+                        ])],
+                    AiAnalysisSchedulingControlState.Running,
+                    null);
+
+                ApplyAiProjection(viewModel, projection);
+                SetAiScreen(viewModel);
+                var style = Assert.Single(viewModel.AiAnalysisPageViewModel.AiStyles);
+                viewModel.AiAnalysisPageViewModel.OpenAiStyleReviewCommand.Execute(style);
+                FlushLayout(window);
+
+                var usageList = FindByAutomationId<ItemsControl>(window, "AiStyleReviewUsageList");
+                var sizeTableCard = Assert.IsAssignableFrom<FrameworkElement>(
+                    usageList.ItemContainerGenerator.ContainerFromIndex(0));
+                var replaceButton = Assert.Single(
+                    EnumerateVisualDescendants<Button>(sizeTableCard),
+                    button => string.Equals(button.Content?.ToString(), "替换用图", StringComparison.Ordinal));
+                replaceButton.Command.Execute(replaceButton.CommandParameter);
+                FlushLayout(window);
+
+                var sourceScroller = FindByAutomationId<ScrollViewer>(window, "AiStyleReviewAssetScrollViewer");
+                var sourceButtons = EnumerateVisualDescendants<Button>(sourceScroller)
+                    .Where(button => button.DataContext is AiStyleAssetViewModel)
+                    .ToArray();
+                Assert.Equal(2, sourceButtons.Length);
+                sourceButtons[1].Command.Execute(sourceButtons[1].CommandParameter);
+                DrainDispatcher();
+                FlushLayout(window);
+
+                Assert.Equal((batchId, styleId, "asset_02"), workflow.LastSizeTableSourceSelection);
+                var savedStyle = Assert.Single(viewModel.AiAnalysisPageViewModel.AiStyles);
+                var savedCard = Assert.IsType<AiRequirementUsageViewModel>(
+                    Assert.Single(savedStyle.AllUsageCards));
+                Assert.True(savedCard.IsSizeTableSource);
+                Assert.Equal("asset_02", savedCard.SelectedAssetId);
+                Assert.Equal("尺码表来源 · 已选用", savedCard.StatusText);
+                Assert.Equal("照片 02", savedCard.CurrentAssetDisplayName);
+                Assert.Contains(
+                    EnumerateVisualDescendants<TextBlock>(window).Select(text => text.Text),
+                    text => string.Equals(text, "尺码表来源 · 已选用", StringComparison.Ordinal));
             }
             finally
             {
@@ -4171,6 +4235,50 @@ public sealed class WpfShellTests
         viewModel.AiAnalysisPageViewModel.ApplyAiProjection(projection);
     }
 
+    private static Desktop.Application.Ai.AiBatchAnalysisProjection BuildSizeSourceProjection(
+        string batchId,
+        string styleId,
+        Desktop.Application.Ai.AiSizeTableSourceProjection source)
+    {
+        var page = new Desktop.Application.Ai.AiPageAnalysisProjection(
+            batchId,
+            styleId,
+            "page_size_source_click_ui",
+            "尺码表页",
+            Desktop.Application.Ai.AiPageUiStatus.Ready,
+            "可生成",
+            "已通过",
+            [],
+            [],
+            false,
+            [],
+            source);
+        var style = new Desktop.Application.Ai.AiStyleAnalysisProjection(
+            batchId,
+            styleId,
+            "尺码款",
+            Desktop.Application.Ai.AiStyleUiStatus.Ready,
+            "可生成",
+            [page],
+            2,
+            [
+                new(batchId, styleId, "asset_01", "photo_01.jpg", 1),
+                new(batchId, styleId, "asset_02", "photo_02.jpg", 2)
+            ]);
+        return new Desktop.Application.Ai.AiBatchAnalysisProjection(
+            batchId,
+            Desktop.Application.Ai.AiBatchUiStatus.Ready,
+            "分析完成",
+            "进入生成",
+            1,
+            1,
+            1,
+            1,
+            [style],
+            Desktop.Application.Ai.AiAnalysisSchedulingControlState.Running,
+            null);
+    }
+
     private static void SetAiScreen(MainWindowViewModel viewModel)
     {
         var screenField = typeof(MainWindowViewModel).GetField(
@@ -4882,9 +4990,13 @@ public sealed class WpfShellTests
 
         public (string BatchId, string StyleId, string RequirementId, string AssetId)? LastLock { get; private set; }
 
+        public (string BatchId, string StyleId, string AssetId)? LastSizeTableSourceSelection { get; private set; }
+
         public AiBatchAnalysisProjection? RefreshProjection { get; set; }
 
         public AiBatchAnalysisProjection? LockProjection { get; set; }
+
+        public AiBatchAnalysisProjection? SelectSizeTableSourceProjection { get; set; }
 
         public Func<int, AiBatchAnalysisProjection>? LockProjectionFactory { get; set; }
 
@@ -4969,7 +5081,12 @@ public sealed class WpfShellTests
             string batchId,
             string styleId,
             string assetId,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            LastSizeTableSourceSelection = (batchId, styleId, assetId);
+            return Task.FromResult(SelectSizeTableSourceProjection
+                ?? throw new InvalidOperationException("TEST_SIZE_TABLE_SOURCE_PROJECTION_MISSING"));
+        }
 
         public Task<AiRenderPlanPreparation> PrepareRenderingAsync(
             string batchId,

@@ -56,7 +56,7 @@ public sealed class BridgeRenderBatchSessionFactory(IBatchRepository batches, Br
             BridgeOutputReservation.ValidatePath(batch.OutputRoot);
             var paths = new LocalAppPathPolicy(batch.OutputRoot);
             var outputDirectory = "rendered/id-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(batch.BatchId)))[..32];
-            owner = await owners.StartTaskOwnerAsync(batch.BatchId, cancellationToken).ConfigureAwait(false);
+            owner = await owners.StartTaskOwnerAsync(batch.BatchId, cancellationToken, journal.Version == 4).ConfigureAwait(false);
             Volatile.Write(ref _lastTransportFault, null);
             Volatile.Write(ref _lastBindingFault, null);
             Volatile.Write(ref _current, owner);
@@ -138,7 +138,8 @@ public sealed class BridgeRenderBatchSession(BatchDraft batch, BridgeSessionOwne
         if (record is null)
             return page.Status == RenderBatchPageStatus.Failed && page.ExecutionId is null
                 ? new(page.Status, page.ReasonCode) : Unknown(page.ExecutionId);
-        if (record.PlanDigest != plan.GetProperty("plan_digest").GetString() || record.PageId != page.PageId
+        if (record.Instance != page.Instance || RenderPlanInstanceIdentity.Read(plan) != page.Instance
+            || record.PlanDigest != plan.GetProperty("plan_digest").GetString() || record.PageId != page.PageId
             || record.TaskId != batch.BatchId || page.ExecutionId is not null && page.ExecutionId != record.ExecutionId) return Unknown(page.ExecutionId);
         if (record.State is "failed" or "cancelled")
         {
@@ -178,7 +179,7 @@ public sealed class BridgeRenderBatchSession(BatchDraft batch, BridgeSessionOwne
                 return record.State == "unknown" ? Unknown(record.ExecutionId)
                     : new(RenderBatchPageStatus.Running, "RENDER_EXECUTING", record.ExecutionId);
             }
-            if (committed.Checkpoint.Page.OutputVariantId != page.OutputVariantId || committed.Checkpoint.Page.Attempt != page.Attempt
+            if (committed.Checkpoint.Page.Instance != page.Instance || committed.Checkpoint.Page.OutputVariantId != page.OutputVariantId || committed.Checkpoint.Page.Attempt != page.Attempt
                 || page.Commit is not null && committed.Checkpoint != page.Commit) return Unknown(record.ExecutionId);
             using var cleanupPerformance = RenderPerformance.Start("output.release_resources");
             await owner.ReleaseTerminalResourcesAsync(record.ExecutionId, cancellationToken).ConfigureAwait(false);

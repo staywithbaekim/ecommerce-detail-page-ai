@@ -75,6 +75,7 @@ public sealed partial class RenderBatchCoordinator
     private static RenderBatchPage RequireRepairPage(RenderBatchJournal journal, string styleId,
         string pageId, string? outputVariantId)
     {
+        if (journal.Version == 4) throw new InvalidOperationException("TPL_INSTANCE_PRODUCTION_FACTS_FROZEN");
         var page = journal.Pages.Where(item => item.StyleId == styleId && item.PageId == pageId
             && item.OutputVariantId == outputVariantId).MaxBy(item => item.Attempt);
         if (page is null || !RenderBatchJournalValidator.CanRegenerate(journal, page))

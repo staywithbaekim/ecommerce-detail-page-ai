@@ -1,0 +1,108 @@
+<UserControl x:Class="Desktop.App.TemplateRuleOverviewControl"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ AutomationProperties.AutomationId="TemplateRuleRelationshipOverview" FontFamily="{StaticResource AppFontFamily}" FontSize="14"
+ UseLayoutRounding="True" SnapsToDevicePixels="True">
+ <UserControl.Resources>
+  <ResourceDictionary>
+   <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Styles/TemplateWorkbench.xaml"/></ResourceDictionary.MergedDictionaries>
+   <Style TargetType="Button" BasedOn="{StaticResource WorkbenchButtonStyle}"/>
+   <Style x:Key="RelationExpanderStyle" TargetType="Expander">
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Expander">
+     <StackPanel>
+      <ToggleButton x:Name="HeaderToggle" IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                    HorizontalContentAlignment="Left" FocusVisualStyle="{StaticResource WorkbenchFocusStyle}">
+       <ToggleButton.Template><ControlTemplate TargetType="ToggleButton">
+        <Border x:Name="ToggleChrome" Background="Transparent" CornerRadius="6" Padding="0,6">
+         <StackPanel Orientation="Horizontal">
+          <Path x:Name="Chevron" Data="M 1,1 L 5,5 L 1,9" Stroke="{StaticResource TextMutedBrush}" StrokeThickness="1.4" Width="10" Height="10" Stretch="None" Margin="0,0,8,0" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5"/>
+          <ContentPresenter VerticalAlignment="Center"/>
+         </StackPanel>
+        </Border>
+        <ControlTemplate.Triggers>
+         <Trigger Property="IsChecked" Value="True"><Setter TargetName="Chevron" Property="RenderTransform"><Setter.Value><RotateTransform Angle="90"/></Setter.Value></Setter></Trigger>
+         <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ToggleChrome" Property="Background" Value="{StaticResource WorkbenchQuietBrush}"/></Trigger>
+        </ControlTemplate.Triggers>
+       </ControlTemplate></ToggleButton.Template>
+       <TextBlock Text="{TemplateBinding Header}" Style="{StaticResource WorkbenchCaptionStyle}"/>
+      </ToggleButton>
+      <ContentPresenter x:Name="ExpandedContent" Visibility="Collapsed"/>
+     </StackPanel>
+     <ControlTemplate.Triggers><Trigger Property="IsExpanded" Value="True"><Setter TargetName="ExpandedContent" Property="Visibility" Value="Visible"/></Trigger></ControlTemplate.Triggers>
+    </ControlTemplate></Setter.Value></Setter>
+   </Style>
+  </ResourceDictionary>
+ </UserControl.Resources>
+ <DockPanel>
+  <Border DockPanel.Dock="Bottom" BorderBrush="{StaticResource WorkbenchLineBrush}" BorderThickness="0,1,0,0" Padding="0,14,16,0" Margin="0,10,0,0">
+   <StackPanel>
+    <Border x:Name="ErrorSurface" Margin="0,0,0,12">
+     <Border.Style><Style TargetType="Border" BasedOn="{StaticResource WorkbenchErrorStyle}"><Style.Triggers>
+      <DataTrigger Binding="{Binding Text, ElementName=Error}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+     </Style.Triggers></Style></Border.Style>
+     <TextBlock x:Name="Error" Style="{StaticResource WorkbenchBodyStyle}" Foreground="{StaticResource DangerBrush}" AutomationProperties.LiveSetting="Polite"/>
+    </Border>
+    <WrapPanel HorizontalAlignment="Right">
+     <Button Content="返回修改" Click="Back_Click" Style="{StaticResource WorkbenchGhostButtonStyle}" Margin="0,0,8,0"/>
+     <Button x:Name="Confirm" Content="确认并保存模板组" Click="Confirm_Click" Style="{StaticResource WorkbenchPrimaryButtonStyle}" Padding="20,0"/>
+    </WrapPanel>
+   </StackPanel>
+  </Border>
+  <ScrollViewer x:Name="OverviewScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+   <StackPanel Margin="0,0,18,20" MaxWidth="1080" HorizontalAlignment="Stretch">
+    <DockPanel Margin="0,2,0,10">
+     <Button DockPanel.Dock="Right" Content="修改使用条件、重复与组合" Click="Edit_Click" Margin="20,0,0,0"/>
+     <TextBlock Text="整组规则关系" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center"/>
+    </DockPanel>
+    <TextBlock Text="同一组连线内按顺序生成；不同条件互斥选择。点击模板或框返回修改。" Style="{StaticResource WorkbenchBodyStyle}" Foreground="{StaticResource TextMutedBrush}"/>
+    <TextBlock Text="这是规则，不是已生成结果。未导入目标款时不推测真实颜色、素材或产出数量。" Style="{StaticResource WorkbenchCaptionStyle}" Margin="0,6,0,28"/>
+    <ItemsControl x:Name="Groups" ItemsSource="{Binding Relations}">
+     <ItemsControl.ItemTemplate><DataTemplate>
+      <StackPanel Margin="0,0,0,28">
+       <Border Background="#EDEEEB" BorderBrush="{StaticResource WorkbenchLineBrush}" BorderThickness="1" CornerRadius="10" Padding="16,12" HorizontalAlignment="Left" MinWidth="230">
+        <StackPanel><TextBlock Text="{Binding Condition}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+         <TextBlock Text="{Binding Connection}" Style="{StaticResource WorkbenchCaptionStyle}" Margin="0,4,0,0"/></StackPanel>
+       </Border>
+       <Border Margin="22,0,0,0" BorderBrush="{StaticResource WorkbenchConnectorBrush}" BorderThickness="1,0,0,0">
+        <ItemsControl ItemsSource="{Binding Nodes}"><ItemsControl.ItemTemplate><DataTemplate>
+         <Grid Margin="0,16,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Height="1" Background="{StaticResource WorkbenchConnectorBrush}" VerticalAlignment="Top" Margin="0,27,0,0"/>
+          <Ellipse Width="5" Height="5" Fill="{StaticResource WorkbenchConnectorBrush}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,25,-2,0"/>
+          <Border Grid.Column="1" Background="{StaticResource SurfaceBrush}" CornerRadius="12" BorderBrush="{StaticResource WorkbenchLineBrush}" BorderThickness="1" Padding="14,12">
+           <StackPanel>
+            <Button Click="LocatePage_Click" Style="{StaticResource WorkbenchLinkButtonStyle}" Padding="6,4">
+             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <TextBlock Text="{Binding Order}" Style="{StaticResource WorkbenchCaptionStyle}" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="1"><TextBlock Text="{Binding Label}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
+               <TextBlock Text="{Binding Usage}" Style="{StaticResource WorkbenchBodyStyle}" Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/></StackPanel>
+             </Grid>
+            </Button>
+            <Border Height="1" Background="{StaticResource WorkbenchLineBrush}" Margin="6,10,6,6"/>
+            <Expander Header="逐框选图与同色关系" IsExpanded="True" Style="{StaticResource RelationExpanderStyle}" Margin="6,0,6,0">
+             <Border Margin="5,4,0,0" BorderBrush="{StaticResource WorkbenchLineBrush}" BorderThickness="1,0,0,0">
+              <ItemsControl ItemsSource="{Binding Frames}"><ItemsControl.ItemTemplate><DataTemplate>
+               <Grid Margin="0,2,0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Border Height="1" VerticalAlignment="Top" Margin="0,19,0,0" Background="{StaticResource WorkbenchLineBrush}"/>
+                <Button Grid.Column="1" Click="LocateFrame_Click" Style="{StaticResource WorkbenchLinkButtonStyle}">
+                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding Label}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource WorkbenchAccentBrush}" Margin="0,3,8,0"/>
+                  <StackPanel Grid.Column="1"><TextBlock Text="{Binding Description}" Style="{StaticResource WorkbenchBodyStyle}"/>
+                   <TextBlock Text="{Binding Color}" Style="{StaticResource WorkbenchCaptionStyle}" Margin="0,4,0,0"/></StackPanel>
+                 </Grid>
+                </Button>
+               </Grid>
+              </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+             </Border>
+            </Expander>
+           </StackPanel>
+          </Border>
+         </Grid>
+        </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+       </Border>
+      </StackPanel>
+     </DataTemplate></ItemsControl.ItemTemplate>
+    </ItemsControl>
+   </StackPanel>
+  </ScrollViewer>
+ </DockPanel>
+</UserControl>

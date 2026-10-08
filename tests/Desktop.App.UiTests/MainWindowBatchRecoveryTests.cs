@@ -205,7 +205,7 @@ public sealed class MainWindowBatchRecoveryTests
             item => Assert.Equal("batch_B", item.BatchId),
             item => Assert.Equal("batch_A", item.BatchId));
         Assert.All(shell.Tasks, item => Assert.Equal("已扫描 · 查看详情", item.StatusText));
-        Assert.Contains("无生成记录时显示输入阶段", shell.TaskListStatusText, StringComparison.Ordinal);
+        Assert.Contains("共 2 个批次", shell.TaskListStatusText, StringComparison.Ordinal);
         Assert.Empty(ai.Reads);
         Assert.Empty(render.Reads);
         Assert.Empty(input.Restored);
@@ -247,7 +247,7 @@ public sealed class MainWindowBatchRecoveryTests
         input.Empty = true;
         shell.RefreshTasksCommand.Execute(null);
         Assert.Empty(shell.Tasks);
-        Assert.Contains("尚无", shell.TaskListStatusText, StringComparison.Ordinal);
+        Assert.Contains("暂无任务记录", shell.TaskListStatusText, StringComparison.Ordinal);
     }
 
     [Fact]

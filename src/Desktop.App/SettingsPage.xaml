@@ -27,7 +27,7 @@
             </Border>
             <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="138" />
+                    <ColumnDefinition Width="164" />
                     <ColumnDefinition Width="16" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
@@ -35,8 +35,48 @@
                          VerticalAlignment="Top" BorderThickness="0" Background="Transparent"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          AutomationProperties.AutomationId="SettingsSectionNavigation" AutomationProperties.Name="设置分区">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="MinHeight" Value="40" />
+                            <Setter Property="Margin" Value="0,0,0,4" />
+                            <Setter Property="Padding" Value="12,0" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="VerticalContentAlignment" Value="Center" />
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="BorderThickness" Value="0" />
+                            <Setter Property="FocusVisualStyle" Value="{StaticResource VisibleFocusStyle}" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="ItemChrome"
+                                                Padding="{TemplateBinding Padding}"
+                                                Background="{TemplateBinding Background}"
+                                                CornerRadius="6">
+                                            <ContentPresenter VerticalAlignment="Center" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter TargetName="ItemChrome" Property="Opacity" Value="0.52" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
-                        <DataTemplate><TextBlock Text="{Binding}" Margin="8,12" TextWrapping="Wrap" /></DataTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}"
+                                       FontSize="13"
+                                       Foreground="{StaticResource TextBrush}"
+                                       TextWrapping="Wrap" />
+                        </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
@@ -110,7 +150,7 @@
                                  <PasswordBox x:Name="AiApiKeyInputBox"
                                               Margin="0,12,0,0"
                                               Style="{StaticResource FieldPasswordBoxStyle}"
-                                              ToolTip="粘贴火山方舟 API Key；仅保存到本机 Windows 凭据管理器"
+                                              ToolTip="粘贴 AI API Key；仅保存到本机安全存储"
                                               PasswordChanged="AiApiKeyInput_PasswordChanged"
                                               AutomationProperties.AutomationId="AiApiKeyInput" />
                                  <TextBlock Margin="0,6,0,0"
@@ -261,7 +301,7 @@
                                    TextWrapping="Wrap"
                                    Style="{StaticResource CaptionTextStyle}"
                                    Foreground="{StaticResource TextMutedBrush}"
-                                   Text="重新检测会查看已知本机候选；选择程序只补充查看一个文件。两者都不会自动选择。请核对下拉中的路径和版本后，再明确点击“设为正式宿主”。"
+                                   Text="重新检测只查看本机候选，不会自动选择。请核对版本后，明确点击“设为正式宿主”。"
                                    AutomationProperties.AutomationId="PhotoshopHostSelectionInstruction" />
                         <WrapPanel Margin="0,12,0,0">
                             <Button Content="重新检测" Margin="0,0,8,8" Style="{StaticResource PrimaryButtonStyle}"
@@ -285,9 +325,6 @@
                             <StackPanel DataContext="{Binding PhotoshopEnvironment.SelectedItem}" Margin="0,8,0,0">
                                 <TextBlock Text="{Binding VersionDetail}" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
                                            AutomationProperties.AutomationId="PhotoshopFileVersion" />
-                                <TextBlock Margin="0,6,0,0" Text="{Binding ExecutablePath}" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"
-                                           AutomationProperties.AutomationId="PhotoshopExecutablePath" />
-                                <TextBlock Margin="0,6,0,0" Text="{Binding SourceText}" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}" />
                                 <TextBlock Margin="0,6,0,0" Text="{Binding VersionScope}" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
                                            AutomationProperties.AutomationId="PhotoshopVersionScope" />
                             </StackPanel>
@@ -329,13 +366,17 @@
                                      Command="{Binding Photoshop.CheckConnectionCommand}"
                                      AutomationProperties.AutomationId="TestPhotoshopConnectionButton"
                                      AutomationProperties.HelpText="由桌面发起，等待已保存宿主中已初始化且未暂停的配套插件自动接入；首次使用须先完成安装与设备配对。最多等待60秒完成认证与心跳验证，结束后释放监听，不会执行渲染。" />
+                            <Button Margin="0,0,8,8" Content="测试实例能力连接" Style="{StaticResource SecondaryButtonStyle}"
+                                    Command="{Binding Photoshop.CheckInstanceConnectionCommand}"
+                                    AutomationProperties.AutomationId="TestPhotoshopInstanceConnectionButton"
+                                     AutomationProperties.HelpText="检查 Photoshop 是否具备当前任务所需能力；不配对、不执行渲染。" />
                             <Button Margin="0,0,0,8" Content="{Binding Photoshop.CancelActionText}"
                                     Style="{StaticResource SecondaryButtonStyle}" Command="{Binding Photoshop.CancelCommand}"
                                     AutomationProperties.Name="{Binding Photoshop.CancelActionText}"
                                     AutomationProperties.AutomationId="CancelPhotoshopOperationButton" />
                         </WrapPanel>
                         <TextBlock Margin="0,16,0,0" Style="{StaticResource SmallBodyTextStyle}" TextWrapping="Wrap"
-                                   Text="上方下拉只切换当前查看项；下拉中的当前项目本身不是正式渲染宿主选择。只有明确点击“设为正式宿主”并由服务保存成功，下方已保存记录才会更新。一次认证检查成功只证明检查时已保存宿主通过重验、匹配完整构建、累计至少 3 次认证心跳且检查时宿主为 ready（不要求连续三次 ready）；它不会因之后切换查看下拉而证明新查看项有效。监听随后释放；日常连接由桌面发起，已初始化、保存设备配对且未暂停的配套插件自动接入。交付状态不明时停止自动等待，请先查询恢复，不能重投未知页面。首次安装、组件加载和逐机能力仍须分别验证；这不代表当前连接或可生产。"
+                                   Text="下拉只切换查看项；只有点击“设为正式宿主”并保存成功才会更新正式选择。连接检查是一次性的历史检查，不能代表当前连接或正式出图；更换程序或组件后请重新检查。"
                                    AutomationProperties.AutomationId="PhotoshopConnectionBoundary" />
                     </StackPanel>
                 </Border>
@@ -357,14 +398,14 @@
                                    Text="仅在你主动导出并选择本地新文件后生成诊断包；不会自动上传。上传授权仍在“AI 服务”分区管理，导出不会改变授权。" />
                         <TextBlock Margin="0,16,0,0" Style="{StaticResource PanelTitleTextStyle}" Text="默认包含" />
                         <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
-                                   Text="软件/系统/运行时版本、固定运行配置、白名单错误码和阶段耗时/数值状态；若本次启动后主动检测过 Photoshop，附数字版本和检测时间快照（无路径）；若用户主动执行过认证连接检查，附历史认证状态、匹配完整构建、检查时间和认证心跳计数。固定技术日志最多读取末尾 2 MiB、保留 2000 条；未知字段或损坏记录剔除。"
+                                   Text="软件和系统版本、运行状态、阶段耗时和数值状态；若本次启动后检查过 Photoshop，附版本和检查时间；若主动执行过连接检查，附检查结果和时间。固定技术日志最多读取末尾 2 MiB、保留 2000 条；未知字段或损坏记录剔除。"
                                    AutomationProperties.AutomationId="DiagnosticExportInclusions" />
                         <TextBlock Margin="0,16,0,0" Style="{StaticResource PanelTitleTextStyle}" Text="明确排除" />
                         <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource SmallBodyTextStyle}"
-                                   Text="API Key、配对码、路径/请求标识、原始异常正文、业务数据库、PSD、商品原图、市场尺码图、正式输出和分析缩略图。不会递归打包目录或附带图片。"
+                                   Text="API Key、配对码、本机路径、请求标识、原始异常正文、内部数据、PSD、商品原图、市场尺码图、正式输出和分析缩略图。不会递归打包目录或附带图片。"
                                    AutomationProperties.AutomationId="DiagnosticExportExclusions" />
                         <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"
-                                   Text="文件版本与用户主动检查后的认证匹配均为进程内历史，不代表逐机能力、当前连接或可生产。导出不会主动检测或连接 Photoshop，也不会读取配对秘密。缺失日志/截断会在包中说明；日志清理尚未接入。图片请另行明确选择提供。"
+                                   Text="检查结果只代表当时的状态，不代表当前连接或正式出图。导出不会主动检测或连接 Photoshop，也不会读取配对信息。缺失日志或截断会在包中说明；图片请另行明确选择提供。"
                                    AutomationProperties.AutomationId="DiagnosticExportConnectionBoundary" />
                         <WrapPanel Margin="0,20,0,0">
                             <Button Margin="0,0,8,8" Content="导出诊断包" Command="{Binding Diagnostics.ExportCommand}"

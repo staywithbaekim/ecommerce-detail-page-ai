@@ -52,9 +52,8 @@ public sealed class DiagnosticExportViewModelTests
         Assert.Contains("未上传", view.Status, StringComparison.Ordinal);
         Assert.Contains("截断", view.Status, StringComparison.Ordinal);
         Assert.Contains("尚无Photoshop环境检测快照", view.Status, StringComparison.Ordinal);
-        Assert.Contains("尚无认证连接检查历史", view.Status, StringComparison.Ordinal);
-        Assert.Contains("认证宿主版本仍未采集", view.Status, StringComparison.Ordinal);
-        Assert.Contains("逐机渲染/ICC能力仍未验收", view.Status, StringComparison.Ordinal);
+        Assert.Contains("尚无连接检查历史", view.Status, StringComparison.Ordinal);
+        Assert.Contains("完成设备配对后可在这里检查", view.Status, StringComparison.Ordinal);
         Assert.DoesNotContain("Photoshop实际版本尚未采集", view.Status, StringComparison.Ordinal);
         if (logStatus == "unavailable") Assert.Contains("不可读取", view.Status, StringComparison.Ordinal);
         if (logStatus == "missing") Assert.Contains("尚无技术日志", view.Status, StringComparison.Ordinal);
@@ -71,8 +70,8 @@ public sealed class DiagnosticExportViewModelTests
 
         await view.ExportAsync();
 
-        Assert.Contains("历史Photoshop可执行文件元数据", view.Status, StringComparison.Ordinal);
-        Assert.Contains("不代表认证宿主完整构建、能力或连接", view.Status, StringComparison.Ordinal);
+        Assert.Contains("上次 Photoshop 环境检查结果", view.Status, StringComparison.Ordinal);
+        Assert.Contains("不代表当前连接或可直接出图", view.Status, StringComparison.Ordinal);
         Assert.DoesNotContain("Photoshop实际版本尚未采集", view.Status, StringComparison.Ordinal);
     }
 
@@ -89,11 +88,9 @@ public sealed class DiagnosticExportViewModelTests
 
         await view.ExportAsync();
 
-        Assert.Contains("认证连接检查时间点的批准完整构建匹配证据", view.Status, StringComparison.Ordinal);
-        Assert.Contains("仅代表该检查时间点", view.Status, StringComparison.Ordinal);
-        Assert.Contains("不代表持续连接", view.Status, StringComparison.Ordinal);
-        Assert.Contains("逐机渲染/ICC能力仍未验收", view.Status, StringComparison.Ordinal);
-        Assert.DoesNotContain("认证宿主版本仍未采集", view.Status, StringComparison.Ordinal);
+        Assert.Contains("上次连接检查结果", view.Status, StringComparison.Ordinal);
+        Assert.Contains("只代表当时的检查", view.Status, StringComparison.Ordinal);
+        Assert.Contains("不代表当前连接或正式出图", view.Status, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -109,10 +106,9 @@ public sealed class DiagnosticExportViewModelTests
 
         await view.ExportAsync();
 
-        Assert.Contains("已附认证连接检查历史", view.Status, StringComparison.Ordinal);
-        Assert.Contains("没有可信的批准完整构建匹配证据", view.Status, StringComparison.Ordinal);
-        Assert.Contains("逐机渲染/ICC能力仍未验收", view.Status, StringComparison.Ordinal);
-        Assert.DoesNotContain("批准完整构建匹配证据；不代表持续连接", view.Status, StringComparison.Ordinal);
+        Assert.Contains("已附连接检查历史", view.Status, StringComparison.Ordinal);
+        Assert.Contains("当时未完成检查", view.Status, StringComparison.Ordinal);
+        Assert.Contains("请重新检查后再继续", view.Status, StringComparison.Ordinal);
     }
 
     [Fact]

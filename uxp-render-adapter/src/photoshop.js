@@ -2,6 +2,7 @@
 const { encode } = require("./auth");
 const { isHostModal } = require("./host");
 const { withSubpixelTransform } = require("./transform-preference");
+const { capability: instanceCapability, validInstanceIdentity } = require("./instance-identity");
 const fail = (code = "BRIDGE_PLAN_INVALID") => { throw new Error(code); };
 const numeric = value => typeof value === "number" ? value : value?._value ?? value?.value;
 const normalized = value => String(value).replace(/[^a-z]/gi, "").toLowerCase();
@@ -66,7 +67,9 @@ function ordinaryRotation(descriptor, placement = null) {
 }
 
 function requireExecutable(plan) {
+  if (!validInstanceIdentity(plan)) return fail();
   const supported = ["psd-layer-path/psd-bottom-to-top", "smart-object/replace", "output/jpeg-srgb-icc", "layout/absolute-placement-v1", "output/verification-psd-v1", "size-table/calibrated-target-v1", "size-table/insert-layer-v1", "output/variant-identity-v1"];
+  supported.push(instanceCapability);
   const size = plan.document.content_type === "dynamic_size_table";
   const insertion = plan.required_capabilities.includes("size-table/insert-layer-v1");
   if (insertion) {

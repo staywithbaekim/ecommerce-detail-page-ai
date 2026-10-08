@@ -201,6 +201,7 @@ public static class InputCommitJournalProtocol
 {
     public const string Version = "input-commit-journal/v1";
     public const string OutputSelectionVersion = "input-commit-journal/v2";
+    public const string RuleContextVersion = "input-commit-journal/v3";
 }
 
 public enum InputCommitJournalState
@@ -229,7 +230,8 @@ public sealed record InputCommitJournal(
         StagedAssetManifest stagedManifest,
         BatchDraft readyDraft,
         DateTimeOffset updatedAt) => new(
-        readyDraft.OutputSelection is null ? InputCommitJournalProtocol.Version
+        readyDraft.TemplateSnapshot is BatchRuleTemplateContext ? InputCommitJournalProtocol.RuleContextVersion
+            : readyDraft.OutputSelection is null ? InputCommitJournalProtocol.Version
             : InputCommitJournalProtocol.OutputSelectionVersion,
         readyDraft.BatchId,
         InputCommitJournalState.Staged,
@@ -335,7 +337,7 @@ public sealed record CreateBatchDraftCommand(
     string BatchId,
     string InputRoot,
     string OutputRoot,
-    BatchTemplateSnapshot TemplateSnapshot,
+    IBatchTemplateContext TemplateSnapshot,
     BatchSelectionMode SelectionMode,
     bool IncludeEditablePsd,
     BatchOutputSelection? OutputSelection = null);

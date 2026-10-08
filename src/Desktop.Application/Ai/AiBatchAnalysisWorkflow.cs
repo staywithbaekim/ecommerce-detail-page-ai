@@ -12,7 +12,7 @@ namespace Desktop.Application.Ai;
 /// B-03 projection.  Results are always read from the durable result store;
 /// an absent result is never interpreted as a successful analysis.
 /// </summary>
-public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTableRepairAdmission, IDisposable
+public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ITemplateInstanceSelectionWorkflow, ISizeTableRepairAdmission, IDisposable
 {
     private readonly IBatchRepository _batches;
     private readonly ITemplateRepository _templates;
@@ -23,6 +23,8 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
     private readonly IConsentPort _consent;
     private readonly AiRenderPreparationService? _renderPreparation;
     private readonly IAiAnalysisCheckpointPort? _checkpointPort;
+    private readonly ITemplateInstanceProductionEvidenceStore? _productionEvidence;
+    private readonly Func<IRenderBatchWorkflow>? _rendering;
     private readonly ConcurrentDictionary<string, AiBatchCommandService> _contexts = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _contextGate = new(1, 1);
     private readonly CancellationTokenSource _backgroundCancellation = new();
@@ -63,7 +65,11 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
         IAiRenderPlanFactory? renderPlans = null,
         ISizeTableRepository? sizeTables = null,
         ISizeTableRasterizer? sizeTableRasterizer = null,
-        IAiAnalysisCheckpointPort? checkpointPort = null)
+        IAiAnalysisCheckpointPort? checkpointPort = null,
+        ITemplateInstanceProductionEvidenceStore? productionEvidence = null,
+        ITemplateInstanceProjectionSnapshotStore? instanceSnapshots = null,
+        Desktop.Application.Rendering.IRenderPlanValidator? planValidator = null,
+        Func<IRenderBatchWorkflow>? rendering = null)
     {
         _batches = batches ?? throw new ArgumentNullException(nameof(batches));
         _templates = templates ?? throw new ArgumentNullException(nameof(templates));
@@ -74,9 +80,12 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
         _schedulerFactory = schedulerFactory ?? throw new ArgumentNullException(nameof(schedulerFactory));
         _consent = consent ?? throw new ArgumentNullException(nameof(consent));
         _renderPreparation = templateResources is not null && renderPlans is not null
-            ? new AiRenderPreparationService(resultReader, templateResources, renderPlans, sizeTables, sizeTableRasterizer)
+            ? new AiRenderPreparationService(resultReader, templateResources, renderPlans, sizeTables, sizeTableRasterizer,
+                productionEvidence, instanceSnapshots, templates, planValidator)
             : null;
         _checkpointPort = checkpointPort;
+        _productionEvidence = productionEvidence;
+        _rendering = rendering;
     }
 
     public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken cancellationToken) =>
@@ -89,7 +98,7 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
         _consent.RevokeAsync(AiConsentScopes.AnalysisCopy, cancellationToken);
 
     public Task<AiBatchAnalysisProjection> StartAsync(string batchId, CancellationToken cancellationToken) =>
-        ExecuteAsync(batchId, (commands, token) => commands.StartAsync(token), cancellationToken);
+        ExecuteAsync(batchId, (commands, token) => commands.StartAsync(token), cancellationToken, changesFacts: true);
 
     public async Task<AiBatchAnalysisProjection?> RefreshAsync(string batchId, CancellationToken cancellationToken)
     {
@@ -123,17 +132,19 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
     public Task<AiBatchAnalysisProjection> LockSelectionAsync(
         string batchId, string styleId, string requirementId, string assetId, CancellationToken cancellationToken) =>
         ExecuteAsync(batchId, (commands, token) =>
-            commands.LockSelectionAsync(styleId, requirementId, assetId, token), cancellationToken);
+            commands.CaptureSnapshot().Batch.TemplateSnapshot is BatchRuleTemplateContext
+                ? throw new InvalidOperationException("TPL_INSTANCE_SELECTION_REQUIRED")
+                : commands.LockSelectionAsync(styleId, requirementId, assetId, token), cancellationToken, changesFacts: true);
 
     public Task<AiBatchAnalysisProjection> SelectSizeTableSourceAsync(
         string batchId, string styleId, string assetId, CancellationToken cancellationToken) =>
         ExecuteAsync(batchId, (commands, token) =>
-            commands.SelectSizeTableSourceAsync(styleId, assetId, token), cancellationToken);
+            commands.SelectSizeTableSourceAsync(styleId, assetId, token), cancellationToken, changesFacts: true);
 
     public Task<AiBatchAnalysisProjection> AnalyzeSelectedAssetAsync(
         string batchId, string styleId, string assetId, bool includeSizeTableSource, CancellationToken cancellationToken) =>
         ExecuteAsync(batchId, (commands, token) =>
-            commands.AnalyzeSelectedAssetAsync(styleId, assetId, includeSizeTableSource, token), cancellationToken);
+            commands.AnalyzeSelectedAssetAsync(styleId, assetId, includeSizeTableSource, token), cancellationToken, changesFacts: true);
 
     public async Task<AiRenderPlanPreparation> PrepareRenderingAsync(
         string batchId,
@@ -151,13 +162,21 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
             await context.RefreshForRenderingAsync(cancellationToken).ConfigureAwait(false);
             var snapshot = context.CaptureSnapshot();
             var projection = await _projections.BuildAsync(snapshot, cancellationToken, context.CaptureTerminalErrors).ConfigureAwait(false);
-            return await _renderPreparation.PrepareAsync(
+            var prepared = await _renderPreparation.PrepareAsync(
                 new AiRenderPreparationSnapshot(
                     snapshot.Batch,
                     snapshot.TemplateRevision,
                     context.CaptureRequests(),
                     projection),
                 cancellationToken).ConfigureAwait(false);
+            if (prepared.UsesInstancePipeline && _rendering is not null)
+            {
+                var coordinator = _rendering();
+                await coordinator.PrepareAsync(prepared, cancellationToken).ConfigureAwait(false);
+                if (prepared.ReadyPageCount == 0)
+                    await coordinator.RunAsync(prepared.BatchId, cancellationToken).ConfigureAwait(false);
+            }
+            return prepared;
         }
         finally { _contextGate.Release(); }
     }
@@ -165,14 +184,50 @@ public sealed class AiBatchAnalysisWorkflow : IAiBatchAnalysisWorkflow, ISizeTab
     private async Task<AiBatchAnalysisProjection> ExecuteAsync(
         string batchId,
         Func<AiBatchCommandService, CancellationToken, Task> command,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool changesFacts = false)
     {
         var context = await LoadContextAsync(batchId, cancellationToken).ConfigureAwait(false);
         await _contextGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (changesFacts && _productionEvidence is not null)
+                foreach (var style in context.CaptureSnapshot().Batch.Styles)
+                    if (await _productionEvidence.ReadProductionEvidenceAsync(batchId, style.StyleId, cancellationToken).ConfigureAwait(false) is not null)
+                        throw new InvalidOperationException("TPL_INSTANCE_PRODUCTION_FACTS_FROZEN");
             await command(context, cancellationToken).ConfigureAwait(false);
             return await BuildProjectionAsync(context, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _contextGate.Release(); }
+    }
+
+    internal AiRenderPreparationService RenderPreparationForTesting => _renderPreparation
+        ?? throw new InvalidOperationException("AI_RENDER_FACTORY_NOT_CONFIGURED");
+    public Task<TemplateInstanceSelectionReview?> ReviewInstanceSelectionAsync(string batchId, string styleId,
+        string frameId, string assetId, CancellationToken token) => WithInstanceSelectionAsync(batchId,
+            (source, cancellation) => _renderPreparation!.ReviewInstanceSelectionAsync(source, styleId, frameId, assetId, cancellation), token);
+
+    public async Task LockInstanceSelectionAsync(TemplateInstanceSelectionCommand command, CancellationToken token) =>
+        _ = await WithInstanceSelectionAsync(command.BatchId, async (source, cancellation) =>
+        {
+            await _renderPreparation!.LockInstanceSelectionAsync(source, command, cancellation).ConfigureAwait(false);
+            return true;
+        }, token).ConfigureAwait(false);
+
+    private async Task<T> WithInstanceSelectionAsync<T>(string batchId,
+        Func<AiRenderPreparationSnapshot, CancellationToken, Task<T>> action, CancellationToken token)
+    {
+        if (_renderPreparation is null) throw new InvalidOperationException("AI_RENDER_FACTORY_NOT_CONFIGURED");
+        var context = await LoadContextAsync(batchId, token).ConfigureAwait(false);
+        await _contextGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            await context.RefreshForRenderingAsync(token).ConfigureAwait(false);
+            var snapshot = context.CaptureSnapshot();
+            var projection = await _projections.BuildAsync(snapshot, token, context.CaptureTerminalErrors).ConfigureAwait(false);
+            if (projection.Status is not (AiBatchUiStatus.Ready or AiBatchUiStatus.ReviewRequired or AiBatchUiStatus.NotGeneratable))
+                throw new InvalidOperationException("AI_RENDER_ANALYSIS_NOT_CLOSED");
+            return await action(new(snapshot.Batch, snapshot.TemplateRevision, context.CaptureRequests(), projection), token).ConfigureAwait(false);
         }
         finally { _contextGate.Release(); }
     }

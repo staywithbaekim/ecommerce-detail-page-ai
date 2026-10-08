@@ -10,6 +10,27 @@ namespace Desktop.Application.Tests;
 
 public sealed class AiBatchProjectionServiceTests
 {
+    [Fact]
+    public async Task ResultReaderTreatsOnlyValidatedReviewOrClosedAsReadable()
+    {
+        var fixture = new Fixture();
+        var reader = new AiAnalysisResultReader(fixture.Store, fixture.Results);
+        foreach (var status in new[] { "Validated", "ManualReview", "PlanClosed" })
+        {
+            fixture.SetLedger(fixture.Ledger with { Status = status, ResultReference = "results/first.json" });
+            var inputs = await reader.LoadStyleResultsAsync([fixture.Request], fixture.Request.StyleId, CancellationToken.None);
+            Assert.Equal(AiAnalysisResultReadFailure.None, Assert.Single(inputs).Failure);
+        }
+
+        foreach (var status in new[] { "Queued", "Uploading", "Analysing", "RetryableError", "TerminalError", "AiResultUnknown", "Cancelled" })
+        {
+            fixture.SetLedger(fixture.Ledger with { Status = status, ResultReference = null });
+            var inputs = await reader.LoadStyleResultsAsync([fixture.Request], fixture.Request.StyleId, CancellationToken.None);
+            Assert.Equal(AiAnalysisResultReadFailure.None, Assert.Single(inputs).Failure);
+            Assert.Null(Assert.Single(inputs).Result);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

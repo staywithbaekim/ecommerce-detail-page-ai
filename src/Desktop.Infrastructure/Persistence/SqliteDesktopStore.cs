@@ -125,7 +125,7 @@ public sealed partial class SqliteDesktopStore :
             {
                 // Render manifests and checkpoints are one journal. Generic callers may
                 // neither create half of it nor replace its page index during recovery.
-                if (checkpoint.Stage == "render_output" || checkpoint.OutputVariantId is not null) throw RenderConflict();
+                if (checkpoint.Stage == "render_output" || checkpoint.OutputVariantId is not null || checkpoint.Instance is not null) throw RenderConflict();
                 await using var command = connection.CreateCommand();
                 command.CommandText = "SELECT COUNT(*) FROM render_page_checkpoints WHERE task_id=$task_id AND style_id=$style_id AND page_id=$page_id;";
                 AddCheckpointParameters(command, checkpoint);
@@ -161,11 +161,11 @@ public sealed partial class SqliteDesktopStore :
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT style_id, page_id, stage, attempt, plan_digest,
-                   bridge_execution_id, output_commit_state, updated_at, '' AS output_variant_id
+                   bridge_execution_id, output_commit_state, updated_at, '' AS output_variant_id, NULL AS instance_json, '' AS page_instance_id
             FROM checkpoints
             WHERE task_id = $task_id AND stage <> 'render_output'
             UNION ALL
-            SELECT style_id,page_id,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at,output_variant_id
+            SELECT style_id,page_id,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at,output_variant_id,instance_json,page_instance_id
             FROM render_page_checkpoints WHERE task_id=$task_id
             ORDER BY style_id, page_id, output_variant_id, attempt;
             """;
@@ -175,6 +175,11 @@ public sealed partial class SqliteDesktopStore :
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            var identity = reader.IsDBNull(9) ? null : System.Text.Json.JsonSerializer.Deserialize<Desktop.Application.Rendering.RenderInstanceIdentity>(reader.GetString(9), RenderBatchJson);
+            if (reader.GetString(10) != (identity?.PageInstanceId ?? "")
+                || identity is not null && (!Desktop.Application.Rendering.RenderPlanInstanceIdentity.IsValid(identity)
+                    || identity.BatchId != taskId || identity.StyleId != reader.GetString(0) || identity.SourcePageId != reader.GetString(1)
+                    || reader.GetString(8).Length != 0)) throw RenderConflict();
             checkpoints.Add(new TaskCheckpoint(
                 taskId,
                 reader.GetString(0),
@@ -185,7 +190,8 @@ public sealed partial class SqliteDesktopStore :
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 Enum.Parse<OutputCommitState>(reader.GetString(6), ignoreCase: false),
                 DateTimeOffset.Parse(reader.GetString(7), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-                reader.GetString(8).Length == 0 ? null : reader.GetString(8)));
+                reader.GetString(8).Length == 0 ? null : reader.GetString(8),
+                identity));
         }
 
         return checkpoints;

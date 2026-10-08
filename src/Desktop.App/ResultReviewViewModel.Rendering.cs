@@ -100,7 +100,7 @@ public sealed partial class ResultReviewViewModel
     {
         if (State.RenderJournal is not { } journal || SelectedResultPage is not { } selected) return null;
         var page = journal.Pages.Where(item => item.StyleId == selected.StyleId && item.PageId == selected.PageId
-            && item.OutputVariantId == selected.OutputVariantId).MaxBy(item => item.Attempt);
+            && item.OutputVariantId == selected.OutputVariantId && item.Instance?.PageInstanceId == selected.PageInstanceId).MaxBy(item => item.Attempt);
         if (page is null || !RenderBatchJournalValidator.CanRegenerate(journal, page)) return null;
         return _host.CanEditRenderedBatch(journal.BatchId) || _host.CanRecoverFailedPage(journal.BatchId, page)
             ? page : null;
@@ -117,8 +117,11 @@ public sealed partial class ResultReviewViewModel
         var prepared = false;
         try
         {
-            var next = await _rendering.PrepareRegenerationAsync(journal.BatchId, page.StyleId, page.PageId,
-                page.OutputVariantId, page.Attempt, _renderLifetime.Token).ConfigureAwait(true);
+            var next = page.Instance is { } instance
+                ? await _rendering.PrepareInstanceRetryAsync(journal.BatchId, page.StyleId, instance.PageInstanceId,
+                    page.Attempt, _renderLifetime.Token).ConfigureAwait(true)
+                : await _rendering.PrepareRegenerationAsync(journal.BatchId, page.StyleId, page.PageId,
+                    page.OutputVariantId, page.Attempt, _renderLifetime.Token).ConfigureAwait(true);
             State.ApplyRenderJournal(next);
             // A retried page leaves the failure filter; keep it visible without losing its selection.
             State.SelectResultFilter(ResultPageFilter.All);
@@ -158,14 +161,14 @@ public sealed partial class ResultReviewViewModel
         if (_rendering is null) return false;
         var journal = await _rendering.LoadAsync(batchId, _renderLifetime.Token).ConfigureAwait(true);
         if (journal is null || journal.BatchId != batchId) return false;
-        var pages = journal.Pages.GroupBy(page => (page.StyleId, page.PageId, page.OutputVariantId))
+        var pages = journal.Pages.GroupBy(page => (page.StyleId, page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId))
             .Select(group => group.MaxBy(page => page.Attempt)!).Select(page =>
             {
                 using var plan = page.PlanJson is null ? null : JsonDocument.Parse(page.PlanJson);
                 return new AiRenderPagePreparation(page.StyleId, page.PageId,
                     page.PlanJson is null ? AiRenderPagePreparationStatus.BusinessBlocked : AiRenderPagePreparationStatus.ReadyToRender,
                     page.PreparationReasonCode ?? "RENDER_PREPARATION_REVIEW_REQUIRED", page.PlanJson,
-                    plan?.RootElement.GetProperty("plan_digest").GetString(), page.OutputVariantId, page.OutputVariantName);
+                    plan?.RootElement.GetProperty("plan_digest").GetString(), page.OutputVariantId, page.OutputVariantName, page.Instance);
             }).ToArray();
         // Clear only after the requested journal and its preparation have been confirmed, before new reads.
         if (State.RenderPreparation?.BatchId != batchId)
@@ -254,9 +257,9 @@ public sealed partial class ResultReviewViewModel
             {
                 var selected = SelectedResultPage;
                 var previewPages = journal.Pages.Where(page => page.Status == RenderBatchPageStatus.Committed && page.Commit is not null)
-                    .GroupBy(page => (page.StyleId, page.PageId, page.OutputVariantId)).Select(group => group.MaxBy(page => page.Attempt)!)
+                    .GroupBy(page => (page.StyleId, page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId)).Select(group => group.MaxBy(page => page.Attempt)!)
                     .OrderByDescending(page => selected is not null && page.StyleId == selected.StyleId
-                        && page.PageId == selected.PageId && page.OutputVariantId == selected.OutputVariantId).Take(96).ToArray();
+                        && page.PageId == selected.PageId && page.OutputVariantId == selected.OutputVariantId && page.Instance?.PageInstanceId == selected.PageInstanceId).Take(96).ToArray();
                 var retained = previewPages.Select(page => page.Commit!.ManifestSha256).ToHashSet(StringComparer.Ordinal);
                 foreach (var key in _renderPreviews.Keys.Where(key => !retained.Contains(key)).ToArray()) _renderPreviews.Remove(key);
                 foreach (var page in previewPages)

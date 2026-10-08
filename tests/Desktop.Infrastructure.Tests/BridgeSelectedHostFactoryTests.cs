@@ -9,6 +9,27 @@ namespace Desktop.Infrastructure.Tests;
 public sealed partial class BridgeLoopbackHostTests
 {
     [Fact]
+    public async Task E3ProductionOwnerRefusesOldAdapterBeforeExecutionAndAcceptsInstanceCapability()
+    {
+        using var fixture = new BridgeResourceLeaseTests.Fixture();
+        var paths = new LocalAppPathPolicy(fixture.Root);
+        var path = Path.Combine(fixture.Root, "Photoshop.exe");
+        await using var selection = new PhotoshopHostSelectionService(paths, TimeProvider.System,
+            new SelectedFactoryReader(), new SelectedFactoryPeers(path));
+        await selection.SelectAsync(path, default);
+        var secret = RandomNumberGenerator.GetBytes(32);
+        await using var factory = new BridgeSessionOwnerFactory(new PairingMemoryStore { Value = secret.ToArray() }, paths, TimeProvider.System, selection);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var owner = await factory.StartTaskOwnerAsync("task_e3_capability", stop.Token, instanceContract: true);
+        await AuthenticateDevice(secret.ToArray(), () => { }, stop.Token, expectCapabilityRejection: true);
+        Assert.False((await owner.GetStatusAsync(stop.Token)).Ready);
+        Assert.Empty(await owner.ListExecutionsAsync(stop.Token));
+        await AuthenticateDevice(secret.ToArray(), () => { }, stop.Token, instanceIdentity: true);
+        Assert.True((await owner.GetStatusAsync(stop.Token)).Ready);
+        Assert.Empty(await owner.ListExecutionsAsync(stop.Token));
+    }
+
+    [Fact]
     public async Task SelectedHostFactoryRequiresSelectionBeforeSecretsListenerOrPairingCode()
     {
         using var fixture = new BridgeResourceLeaseTests.Fixture();

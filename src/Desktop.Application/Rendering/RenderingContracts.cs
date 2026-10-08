@@ -44,6 +44,9 @@ public sealed class RenderPlanValidator(IJsonContractValidator validator) : IRen
                 StringComparer.Ordinal);
             var documentResourceId = root.GetProperty("document")
                 .GetProperty("template_resource_id").GetString()!;
+            var documentNode = root.GetProperty("document");
+            if (!RenderPlanInstanceIdentity.MatchesPlan(root))
+                return Failure("RENDER_PLAN_INSTANCE_IDENTITY_INVALID");
             if (!resourcesById.TryGetValue(documentResourceId, out var templateResource)
                 || !string.Equals(
                     templateResource.GetProperty("role").GetString(),

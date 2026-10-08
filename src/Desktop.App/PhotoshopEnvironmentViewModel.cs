@@ -30,7 +30,7 @@ public sealed class PhotoshopEnvironmentItem(PhotoshopInstallation installation)
     public string Summary => $"Photoshop {Installation.NumericFileVersion} · "
         + (Installation.IsRunning ? "检测时有运行进程" : "检测时未发现对应进程");
     public string ExecutablePath => Installation.ExecutablePath;
-    public string VersionDetail => $"实际文件版本：{Installation.FileVersionDisplay}；数字版本：{Installation.NumericFileVersion}";
+    public string VersionDetail => $"版本：{Installation.NumericFileVersion}";
     public string SourceText => "检测来源：" + string.Join("、", new[]
     {
         (PhotoshopDiscoverySource.RunningProcess, "运行进程"),
@@ -39,8 +39,8 @@ public sealed class PhotoshopEnvironmentItem(PhotoshopInstallation installation)
         (PhotoshopDiscoverySource.UserSelectedFile, "手动选择文件")
     }.Where(item => Installation.Source.HasFlag(item.Item1)).Select(item => item.Item2));
     public string VersionScope => Installation.IsVersionCandidate
-        ? "26.8.1版本候选；保存为正式宿主后仍须通过配对、认证和逐机能力验证，不代表可生产。"
-        : "不在当前首发支持版本范围；不是普通连接失败。";
+        ? "支持版本候选；保存后仍需完成设备配对和连接检查。"
+        : "不在当前首发支持版本范围，请更换受支持版本。";
 }
 
 /// <summary>
@@ -129,11 +129,12 @@ public sealed class PhotoshopEnvironmentViewModel : INotifyPropertyChanged, IDis
         }
     }
 
-    public string ObservationText => _snapshot is null ? "尚无版本快照；未检查实时连接。"
-        : $"检测时间：{_snapshot.ObservedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}；下列状态仅代表该时刻。";
-    public string OperatingSystemText => _snapshot is null ? "系统范围尚未检测。"
-        : $"本机 Windows {_snapshot.OsVersion} / {_snapshot.OsArchitecture}："
-            + (_snapshot.IsOsCandidate ? "命中Windows 11 x64版本门，仍需安装与能力验收。" : "不在当前首发支持系统范围，或无法确认Windows客户端类型。");
+    public string ObservationText => _snapshot is null ? "尚未检查本机环境。"
+        : $"上次检查：{_snapshot.ObservedAt.ToLocalTime():yyyy-MM-dd HH:mm}。结果只代表当时的环境。";
+    public string OperatingSystemText => _snapshot is null ? "尚未检查系统环境。"
+        : _snapshot.IsOsCandidate
+            ? "本机系统符合首发支持范围，仍需完成安装和连接检查。"
+            : "本机系统不在当前首发支持范围，或无法确认客户端类型。";
 
     public string SavedHostPathText => _savedHostSelection switch
     {
@@ -141,8 +142,8 @@ public sealed class PhotoshopEnvironmentViewModel : INotifyPropertyChanged, IDis
         { Status: PhotoshopHostSelectionStatus.NotSelected } => "已保存程序路径：无。",
         { Status: PhotoshopHostSelectionStatus.InvalidRecord } => "已保存程序路径：记录损坏，未采用其中内容。",
         { Status: PhotoshopHostSelectionStatus.Unavailable } => "已保存程序路径：暂时不可读。",
-        { ExecutablePath: { Length: > 0 } path } => $"已保存程序路径：{path}",
-        _ => "已保存程序路径：记录未提供。"
+        { ExecutablePath: { Length: > 0 } } => "已保存 Photoshop 程序。",
+        _ => "已保存的 Photoshop 程序记录未提供。"
     };
 
     public string SavedHostVersionText => _savedHostSelection switch
@@ -327,13 +328,11 @@ public sealed class PhotoshopEnvironmentViewModel : INotifyPropertyChanged, IDis
             PhotoshopHostSelectionStatus.NotSelected => wasExplicitSave
                 ? "服务未确认新的正式宿主，当前没有已保存选择。请重新查看候选并明确重试。"
                 : "尚未选择正式宿主。请先只读检测或选择程序检查版本，再对确认的查看项点击“设为正式宿主”。",
-            PhotoshopHostSelectionStatus.Valid => wasExplicitSave
-                ? "正式宿主已保存，且保存时程序文件身份匹配。此结果不代表已连接、已配对、逐机准入或可生产。"
-                : "已保存正式宿主的程序文件与记录匹配。这里只说明本地文件身份匹配，不代表已连接、已配对、逐机准入或可生产。",
-            PhotoshopHostSelectionStatus.Missing => "已保存正式宿主的程序文件已缺失或路径不再可到达。该选择不可用于新的检查、配对或生成；请重新选择并保存。",
-            PhotoshopHostSelectionStatus.Changed => "已保存路径处的程序已更新或被替换，文件身份与保存记录不再匹配。该选择已失效；请重新选择并保存。",
-            PhotoshopHostSelectionStatus.InvalidRecord => "正式宿主选择记录损坏、重复字段或版本不受支持，未采用其中内容。请重新选择并保存。",
-            PhotoshopHostSelectionStatus.Unavailable => "正式宿主选择记录或程序暂时不可安全读取。这不等同于“尚未选择”；请解决本机读取问题后重试。",
+            PhotoshopHostSelectionStatus.Valid => "正式宿主已保存；不代表已连接，请继续设备配对和连接检查。",
+            PhotoshopHostSelectionStatus.Missing => "已保存的 Photoshop 程序已找不到，请重新选择并保存。",
+            PhotoshopHostSelectionStatus.Changed => "已保存的 Photoshop 程序已发生变化，请重新选择并保存。",
+            PhotoshopHostSelectionStatus.InvalidRecord => "已保存的 Photoshop 程序记录无效，请重新选择并保存。",
+            PhotoshopHostSelectionStatus.Unavailable => "暂时无法读取已保存的 Photoshop 程序，请稍后重试。",
             _ => "正式宿主选择返回未知状态，未据此确认选择有效。"
         };
         Notify();

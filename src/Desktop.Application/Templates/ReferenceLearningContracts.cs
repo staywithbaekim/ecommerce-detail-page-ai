@@ -375,6 +375,12 @@ public sealed record ReferenceLearningCommitResult(
 
 public interface IReferenceLearningCommitService
 {
+    // Stage validated evidence into the existing draft; never publish a revision.
+    Task<ReferenceLearningCommitResult> StageDraftAsync(
+        IReadOnlyList<ReferenceLearningDocument> documents, TemplateDraftSession draftSession,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("TPL_LEARN_DRAFT_STAGING_UNAVAILABLE");
+
     Task<ReferenceLearningCommitResult> CommitAsync(
         ReferenceLearningDocument document,
         TemplateDraftSession draftSession,

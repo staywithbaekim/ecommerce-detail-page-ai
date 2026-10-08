@@ -18,7 +18,7 @@ using Desktop.Infrastructure.SizeTables;
 
 namespace Desktop.Infrastructure.Tests;
 
-public sealed class AiBatchWorkflowRenderPlanIntegrationTests
+public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
 {
     [Fact]
     public async Task LocalCheckpointMismatchBlocksBeforeProviderAndProjectsLocalStateFailure()
@@ -1204,12 +1204,18 @@ public sealed class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.Contains(histories, request =>
             request.AnalysisKind == AiAnalysisKind.SelectedAssetGeometry
             && request.CorrelationId == "rogue-parent-correlation");
+        // The fixture used to race a still-running background checkpoint with a
+        // deliberately corrupt write. Stop its writer before injecting corruption;
+        // do not weaken the production stale-write check or sleep for timing.
+        workflow.Dispose();
+        state = (await store.LoadSchedulingStateAsync(stateKey, CancellationToken.None))!;
         await store.SaveSchedulingStateAsync(
             stateKey,
             state with { HistoricalRequests = histories, UpdatedAt = state.UpdatedAt.AddTicks(1) },
             CancellationToken.None);
 
-        var failed = await workflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
+        using var resumedWorkflow = Workflow(store, resultStore, provider);
+        var failed = await resumedWorkflow.RefreshAsync(fixture.Batch.BatchId, CancellationToken.None);
         Assert.NotNull(failed);
         var page = Assert.Single(Assert.Single(failed!.Styles).Pages);
         Assert.Equal(AiPageUiStatus.SystemError, page.Status);

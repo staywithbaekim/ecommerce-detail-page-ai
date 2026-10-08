@@ -46,7 +46,7 @@ public static class RenderPageCommitter
         IReadOnlyList<RenderCommittedFile> files, IReadOnlyDictionary<string, FileStream> sources,
         CancellationToken cancellationToken)
     {
-        var manifest = new RenderPageManifest("render-page/v1", outputDirectory, artifact, page, media, files);
+        var manifest = new RenderPageManifest(page.Instance is null ? "render-page/v1" : "render-page/v2", outputDirectory, artifact, page, media, files);
         Validate(manifest);
         var payloadRelative = Path.Combine(stagingDirectory, "page");
         if (stagingDirectory != StagingDirectory(outputDirectory, page.TaskId, page.StyleId, page.PageId, page.PlanDigest)) throw Invalid();
@@ -86,7 +86,7 @@ public static class RenderPageCommitter
         Validate(manifest, allowLegacyVerificationReceipt: true);
         if (expectedExecution is not null && (manifest.Page.TaskId != expectedExecution.TaskId
             || manifest.Page.BridgeExecutionId != expectedExecution.ExecutionId || manifest.Page.PageId != expectedExecution.PageId
-            || manifest.Page.PlanDigest != expectedExecution.PlanDigest)) throw Invalid();
+            || manifest.Page.PlanDigest != expectedExecution.PlanDigest || manifest.Page.Instance != expectedExecution.Instance)) throw Invalid();
         var stage = Path.Combine(StagingDirectory(manifest.OutputDirectory, manifest.Page.TaskId,
             manifest.Page.StyleId, manifest.Page.PageId, manifest.Page.PlanDigest), "page");
         var final = Path.Combine(manifest.OutputDirectory, manifest.ArtifactSetId);
@@ -146,13 +146,17 @@ public static class RenderPageCommitter
 
     internal static void Validate(RenderPageManifest manifest, bool allowLegacyVerificationReceipt = false)
     {
-        if (manifest.Version != "render-page/v1" || manifest.Page is null || manifest.Media?.Files is null || manifest.Files is null)
+        if (manifest.Version is not ("render-page/v1" or "render-page/v2") || manifest.Page is null || manifest.Media?.Files is null || manifest.Files is null)
             throw Invalid();
+        if ((manifest.Version == "render-page/v2") != (manifest.Page.Instance is not null)
+            || manifest.Page.Instance is { } identity && (!RenderPlanInstanceIdentity.IsValid(identity)
+                || identity.BatchId != manifest.Page.TaskId || identity.StyleId != manifest.Page.StyleId
+                || identity.SourcePageId != manifest.Page.PageId || manifest.Page.OutputVariantId is not null)) throw Invalid();
         // Historical JPG-only v1 manifests retained one verified temporary PSD
         // receipt, never a formal PSD. Read/recovery must preserve those bytes;
         // only the matching durable checkpoint can authorize their use below.
         // New preparation deliberately keeps the current JPG-only contract.
-        var legacyReceipt = allowLegacyVerificationReceipt && manifest.Files.Count == 1
+        var legacyReceipt = allowLegacyVerificationReceipt && manifest.Version == "render-page/v1" && manifest.Files.Count == 1
             && manifest.Files[0].Kind == "jpg" && manifest.Media.Files.Count == 2
             && manifest.Media.Files.Count(file => file.Kind == "verification_psd") == 1;
         if (manifest.Page.OutputVariantId is { } variant && (variant.Length is < 1 or > 128

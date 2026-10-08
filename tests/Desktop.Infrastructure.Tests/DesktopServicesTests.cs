@@ -83,17 +83,10 @@ public sealed class DesktopServicesTests
         {
             var services = new ServiceCollection();
             services.AddDesktopFoundation(new DesktopDataOptions(root));
-            var descriptor = Assert.Single(services, item => item.ServiceType == typeof(IAiServicePort));
             var logger = new NullLogger();
-            var provider = new FixedServiceProvider(new Dictionary<Type, object>
-            {
-                [typeof(IAiCredentialSource)] = new EmptyCredentialSource(),
-                [typeof(IAiAnalysisCopySource)] = new EmptyCopySource(),
-                [typeof(IJsonContractValidator)] = new JsonSchemaContractValidator(),
-                [typeof(VolcArkAiOptions)] = new VolcArkAiOptions(),
-                [typeof(IRedactedLogger)] = logger
-            });
-            var adapter = Assert.IsType<VolcArkAiAdapter>(descriptor.ImplementationFactory!(provider));
+            services.AddSingleton<IRedactedLogger>(logger);
+            using var provider = services.BuildServiceProvider();
+            var adapter = Assert.IsType<VolcArkAiAdapter>(provider.GetRequiredService<IAiServicePort>());
             var field = typeof(VolcArkAiAdapter).GetField(
                 "_httpClient",
                 BindingFlags.Instance | BindingFlags.NonPublic);

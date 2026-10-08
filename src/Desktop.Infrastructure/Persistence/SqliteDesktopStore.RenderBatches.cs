@@ -23,13 +23,20 @@ public sealed partial class SqliteDesktopStore
     public async Task<RenderBatchJournal?> LoadRenderBatchAsync(string batchId, CancellationToken cancellationToken)
     {
         await using var connection = await OpenReadConnectionAsync(cancellationToken).ConfigureAwait(false);
-        return await ReadBatch(connection, null, batchId, cancellationToken).ConfigureAwait(false);
+        var result = await ReadBatch(connection, null, batchId, cancellationToken).ConfigureAwait(false);
+        if (result?.Version == 4)
+        {
+            var initial = await ReadBatchRevision(connection, null, batchId, 1, cancellationToken).ConfigureAwait(false) ?? throw BatchInvalid();
+            await ValidateInstanceRegistrationAsync(initial, cancellationToken).ConfigureAwait(false);
+        }
+        return result;
     }
 
     public Task SaveRenderBatchAsync(RenderBatchJournal journal, long expectedRevision, CancellationToken cancellationToken) =>
         _writer.ExecuteAsync(async (connection, token) =>
         {
             RenderBatchJournalValidator.Validate(journal, BatchPlanValidator);
+            if (expectedRevision == 0) await ValidateInstanceRegistrationAsync(journal, token).ConfigureAwait(false);
             var payload = JsonSerializer.Serialize(journal, RenderBatchJson);
             if (Encoding.UTF8.GetByteCount(payload) > RenderBatchJournalValidator.MaxBytes) throw BatchInvalid();
             await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
@@ -57,6 +64,7 @@ public sealed partial class SqliteDesktopStore
         if (latest is null) return null;
         var initial = latest.Revision == 1 ? latest
             : await ReadBatchRevision(connection, transaction, batchId, 1, token).ConfigureAwait(false) ?? throw BatchInvalid();
+        if (!(latest.InstanceSets ?? []).SequenceEqual(initial.InstanceSets ?? [])) throw BatchInvalid();
         RenderBatchJournalValidator.ValidateUpdate(null, initial);
         var prepared = initial.Pages.ToList();
         if (latest.Version >= 2)
@@ -71,7 +79,7 @@ public sealed partial class SqliteDesktopStore
         {
             var prepared = origins[index];
             var reason = prepared.PreparationReasonCode ?? prepared.ReasonCode;
-            if (page.StyleId != prepared.StyleId || page.PageId != prepared.PageId || page.OutputVariantId != prepared.OutputVariantId
+            if (page.Instance != prepared.Instance || page.StyleId != prepared.StyleId || page.PageId != prepared.PageId || page.OutputVariantId != prepared.OutputVariantId
                 || page.Attempt != prepared.Attempt || page.PlanJson != prepared.PlanJson
                 || page.PreparationReasonCode is not null && page.PreparationReasonCode != reason
                 || prepared.PreparationReasonCode is not null && page.PreparationReasonCode is null

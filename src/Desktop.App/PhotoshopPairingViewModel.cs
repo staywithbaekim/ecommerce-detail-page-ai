@@ -41,6 +41,8 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
         RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => _port is not null && _pending is null && !_disposed);
         CheckConnectionCommand = new AsyncRelayCommand(CheckConnectionAsync,
             () => _connectionCheck is not null && _pending is null && !_disposed);
+        CheckInstanceConnectionCommand = new AsyncRelayCommand(CheckInstanceConnectionAsync,
+            () => _connectionCheck is not null && _pending is null && !_disposed);
         CancelCommand = new RelayCommand(Cancel,
             () => _pending is not null && !_pending.IsCancellationRequested && !_disposed);
     }
@@ -48,6 +50,7 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
     public ICommand PairCommand { get; }
     public ICommand RefreshCommand { get; }
     public ICommand CheckConnectionCommand { get; }
+    public ICommand CheckInstanceConnectionCommand { get; }
     public ICommand CancelCommand { get; }
     public string Status => _status;
     public string ConnectionStatus => _connectionStatus;
@@ -161,19 +164,27 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
         }
     }
 
-    public async Task CheckConnectionAsync()
+    public Task CheckConnectionAsync() => CheckConnectionAsync(false);
+
+    public Task CheckInstanceConnectionAsync() => CheckConnectionAsync(true);
+
+    private async Task CheckConnectionAsync(bool instanceContract)
     {
         if (_connectionCheck is null || _pending is not null || _disposed) return;
         using var pending = new CancellationTokenSource();
         _pending = pending;
         _pendingOperation = PendingOperation.ConnectionCheck;
-        _connectionStatus = "正在测试认证连接…等待已保存正式宿主中的配套插件自动接入。请确保 Photoshop 已启动且组件已初始化、未暂停等待；最多等待 60 秒完成认证与心跳验证。不会重新配对、改设置或渲染。";
+        _connectionStatus = "正在检查 Photoshop 连接…请确保 Photoshop 和配套组件已启动并完成设备配对。最多等待 60 秒，不会重新配对、改设置或渲染。";
+        if (instanceContract) _connectionStatus = "正在检查 Photoshop 的实例能力；" + _connectionStatus;
         Notify();
         try
         {
-            var result = await _connectionCheck.CheckAsync(pending.Token).ConfigureAwait(true);
+            var result = await (instanceContract ? _connectionCheck.CheckInstanceIdentityAsync(pending.Token)
+                : _connectionCheck.CheckAsync(pending.Token)).ConfigureAwait(true);
             pending.Token.ThrowIfCancellationRequested();
             if (_disposed || !ReferenceEquals(_pending, pending)) return;
+            if (result.InstanceIdentityRequired != instanceContract)
+                throw new InvalidOperationException("BRIDGE_INSTANCE_CHECK_NOT_VERIFIED");
             _latestConnectionCheck = result;
             _connectionStatus = DescribeConnectionCheck(result);
         }
@@ -192,6 +203,7 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
             if (!_disposed)
                 _connectionStatus = error.Message switch
                 {
+                    "BRIDGE_INSTANCE_CHECK_UNSUPPORTED" or "BRIDGE_INSTANCE_CHECK_NOT_VERIFIED" => "实例能力检查未完成：此入口未返回显式实例契约验证，不能用基础连接结果替代。未执行渲染。",
                     "PHOTOSHOP_HOST_SELECTION_REQUIRED" => "无法测试认证连接：尚未保存正式 Photoshop 宿主。请先在上方查看候选，明确点击“设为正式宿主”并等待保存成功。",
                     "PHOTOSHOP_HOST_SELECTION_INVALID" => "无法测试认证连接：已保存的正式宿主缺失、已更新、记录损坏或不可读。请先在上方重新读取并重新设为正式宿主。",
                     _ => "认证连接检查失败；未保留连接。请确认已有配对、有效正式宿主和正式插件状态后重试。"
@@ -237,6 +249,7 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
         ((AsyncRelayCommand)PairCommand).RaiseCanExecuteChanged();
         ((AsyncRelayCommand)RefreshCommand).RaiseCanExecuteChanged();
         ((AsyncRelayCommand)CheckConnectionCommand).RaiseCanExecuteChanged();
+        ((AsyncRelayCommand)CheckInstanceConnectionCommand).RaiseCanExecuteChanged();
         ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
     }
 
@@ -253,27 +266,32 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
     private static string DescribeConnectionCheck(PhotoshopConnectionCheckResult result)
     {
         var observedAt = result.ObservedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
-        return result.Status switch
+        var scope = result.InstanceIdentityRequired
+            ? result.Status == PhotoshopConnectionCheckStatus.Ready
+                ? "实例能力检查已通过；不代表真实出图通过。"
+                : "实例能力检查未通过。"
+            : "基础连接检查未包含实例能力验证。";
+        return scope + (result.Status switch
         {
             PhotoshopConnectionCheckStatus.Ready =>
-                $"认证连接检查通过（检查时间：{observedAt}）。检查时使用的已保存正式宿主通过了选择重验；监听已释放。下次测试或生成由桌面发起，已初始化且未暂停的配套插件可自动接入；交付状态不明时停止自动等待。此结果不证明组件已安装或自动等待仍可用。这是历史结果，不代表当前连接，也不会因上方查看下拉变化而证明新查看项或之后更换的正式宿主有效；不代表逐机能力或可生产。",
+                $"认证连接检查通过（检查时间：{observedAt}）。这是本次检查的历史结果，不代表当前连接或可直接出图。更换宿主或组件后请重新检查。",
             PhotoshopConnectionCheckStatus.PairingRequired =>
-                "无法测试认证连接：本机尚未保存设备配对。请先显式完成设备配对；检查不会自动生成或更换秘密。",
+                "无法测试认证连接：本机尚未保存设备配对，请先完成设备配对。",
             PhotoshopConnectionCheckStatus.Busy =>
-                "无法测试认证连接：渲染通道或固定端口正在使用。不会抢占当前任务，请等待释放后重试。",
+                "无法测试认证连接：当前任务正在使用连接通道，请稍后重试。",
             PhotoshopConnectionCheckStatus.TimedOut =>
-                "认证连接检查在 60 秒上限内未完成。请检查已保存宿主是否启动、配套组件是否安装并初始化、是否暂停等待或因未知执行而停止，以及批准完整构建与两端配对；超时本身不能确定具体原因。未知执行请先在桌面查询恢复，不要强行重投。监听已释放，未证明当前连接。",
+                "认证连接检查超时。请确认 Photoshop 和配套组件已启动并完成配对；未知执行请先查询恢复，不要直接重试。",
             PhotoshopConnectionCheckStatus.HostNotReady =>
-                "已收到至少 3 次认证心跳，但检查时 Photoshop 宿主不是 ready，检查已立即结束。请处理宿主忙碌或模态窗口后重试；本次未执行渲染。",
+                "Photoshop 当前无法开始检查，请关闭阻塞窗口或完成当前操作后重试；本次未执行渲染。",
             PhotoshopConnectionCheckStatus.Failed =>
-                "认证连接检查自身未能完成。请检查本机受保护配对存储、正式宿主选择与受控通道后重试；本次未执行渲染，也未保存新配对。",
+                "认证连接检查未完成，请确认正式宿主和设备配对后重试；本次未执行渲染。",
             PhotoshopConnectionCheckStatus.HostSelectionRequired =>
-                "无法测试认证连接：尚未保存正式 Photoshop 宿主。请先在上方查看候选，明确点击“设为正式宿主”并等待保存成功。",
+                "无法测试认证连接：尚未选择正式 Photoshop 程序，请先在上方保存选择。",
             PhotoshopConnectionCheckStatus.HostSelectionInvalid =>
-                "无法测试认证连接：已保存的正式宿主缺失、已更新、记录损坏或不可读。请先在上方重新读取并重新设为正式宿主。",
+                "无法测试认证连接：已保存的 Photoshop 程序已失效，请重新读取并保存选择。",
             _ =>
-                "认证连接检查返回未知状态。请重新检查；本次未执行渲染，也未保留连接。"
-        };
+                "认证连接检查返回未知状态，请重新检查；本次未执行渲染。"
+        });
     }
 
     private static string DescribeConnectionHistory(PhotoshopConnectionCheckResult result)
@@ -281,10 +299,9 @@ public sealed class PhotoshopPairingViewModel : INotifyPropertyChanged, IDisposa
         var build = string.IsNullOrWhiteSpace(result.MatchedPhotoshopBuild)
             ? "未匹配"
             : result.MatchedPhotoshopBuild;
-        return $"检查时间：{result.ObservedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}；"
-            + $"认证心跳：{Math.Max(0, result.AuthenticatedHeartbeats)} 次；"
-            + $"匹配完整构建：{build}。这是进程内历史；结果仅在监听释放后发布，检查结束后不保留连接，下次测试或生成需重新连接。"
-            + "它不会随上方查看下拉改变而证明新查看项有效；如果正式宿主后来被更换、更新或失效，必须重新检查。";
+        var status = result.Status == PhotoshopConnectionCheckStatus.Ready ? "已通过" : "未通过";
+        return $"上次检查：{result.ObservedAt.ToLocalTime():yyyy-MM-dd HH:mm} · {(result.InstanceIdentityRequired ? "实例能力" : "基础连接")} · {status}。"
+            + "结果只代表当时的检查；更换宿主或组件后请重新检查。";
     }
 
     public void Dispose()

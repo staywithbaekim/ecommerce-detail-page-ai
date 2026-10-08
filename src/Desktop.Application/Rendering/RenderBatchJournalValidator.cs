@@ -9,14 +9,23 @@ public static class RenderBatchJournalValidator
 
     public static void Validate(RenderBatchJournal journal, IRenderPlanValidator plans)
     {
-        if (journal.Version is not (1 or 2 or 3) || !Id(journal.BatchId) || journal.Revision < 1
-            || !Enum.IsDefined(journal.Status) || journal.Pages is null || journal.Pages.Count is < 1 or > 10000)
+        if (journal.Version is not (1 or 2 or 3 or 4) || !Id(journal.BatchId) || journal.Revision < 1
+            || !Enum.IsDefined(journal.Status) || journal.Pages is null || journal.Pages.Count > 10000
+            || journal.Version < 4 && journal.Pages.Count == 0)
             throw Invalid();
+        if (journal.Version < 4 && journal.InstanceSets is not null
+            || journal.Version == 4 && (journal.InstanceSets is not { Count: > 0 and <= 10000 }
+                || journal.InstanceSets.Any(set => set is null || !Id(set.StyleId)
+                    || set.SchemaVersion is not ("template-instance-render-batch/v2" or "template-instance-render-batch/v3")
+                    || !Digest(set.BatchPlanDigest) || !Digest(set.InputFactsDigest))
+                || journal.InstanceSets.Select(set => set.StyleId).Distinct(StringComparer.Ordinal).Count() != journal.InstanceSets.Count
+                || journal.Pages.Any(page => !journal.InstanceSets.Any(set => set.StyleId == page.StyleId)))) throw Invalid();
         if (journal.Version == 1 && journal.RegenerationPageIndex is not null
-            || journal.Version >= 2 && journal.RegenerationPageIndex != journal.Pages.Count - 1
+            || journal.Version is 2 or 3 && journal.RegenerationPageIndex != journal.Pages.Count - 1
+            || journal.Version == 4 && journal.RegenerationPageIndex is not null && journal.RegenerationPageIndex != journal.Pages.Count - 1
             || journal.Version < 3 && journal.Pages.Any(page => page?.SizeTableRepair is not null)
             || journal.Version == 3 && !journal.Pages.Any(page => page?.SizeTableRepair is not null)) throw Invalid();
-        var identities = new HashSet<(string, string, string?, int)>();
+        var identities = new HashSet<(string, string, string?, string?, int)>();
         var keys = new HashSet<string>(StringComparer.Ordinal);
         var planIds = new HashSet<string>(StringComparer.Ordinal);
         var artifacts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -29,7 +38,11 @@ public static class RenderBatchJournalValidator
                 || page.ExecutionId is { } execution && !Id(execution)
                 || page.PreparationReasonCode is { } preparationReason && !Id(preparationReason)
                 || page.OutputVariantName is { } name && (string.IsNullOrWhiteSpace(name) || name.Length > 256 || name.Any(char.IsControl))
-                || !identities.Add((page.StyleId, page.PageId, page.OutputVariantId, page.Attempt))) throw Invalid();
+                || !identities.Add((page.StyleId, page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId, page.Attempt))) throw Invalid();
+            if (journal.Version < 4 && page.Instance is not null
+                || journal.Version == 4 && (page.Instance is null || !RenderPlanInstanceIdentity.IsValid(page.Instance)
+                    || page.Instance.BatchId != journal.BatchId || page.Instance.StyleId != page.StyleId
+                    || page.Instance.SourcePageId != page.PageId || page.OutputVariantId is not null)) throw Invalid();
             if (page.SizeTableRepair is { } repair)
             {
                 if (!repairRequests.Add(repair.RequestId) || repair.ExpectedJournalRevision >= journal.Revision) throw Invalid();
@@ -50,6 +63,7 @@ public static class RenderBatchJournalValidator
                 || plan.GetProperty("product_id").GetString() != page.StyleId
                 || plan.GetProperty("document").GetProperty("page_id").GetString() != page.PageId
                 || RenderPlanVariantIdentity.Read(plan) != page.OutputVariantId
+                || RenderPlanInstanceIdentity.Read(plan) != page.Instance
                 || !planIds.Add(plan.GetProperty("plan_id").GetString()!)
                 || !keys.Add(plan.GetProperty("idempotency_key").GetString()!)
                 || !artifacts.Add(plan.GetProperty("output").GetProperty("artifact_set_id").GetString()!)) throw Invalid();
@@ -60,6 +74,7 @@ public static class RenderBatchJournalValidator
                 || (page.Status == RenderBatchPageStatus.Committed) != (page.Commit is not null)) throw Invalid();
             if (page.Commit is { } commit && (commit.Page.TaskId != journal.BatchId
                 || commit.Page.StyleId != page.StyleId || commit.Page.PageId != page.PageId
+                || commit.Page.Instance != page.Instance
                 || commit.Page.OutputVariantId != page.OutputVariantId || commit.Page.Attempt != page.Attempt
                 || commit.Page.BridgeExecutionId != page.ExecutionId
                 || commit.Page.PlanDigest != plan.GetProperty("plan_digest").GetString())) throw Invalid();
@@ -70,12 +85,13 @@ public static class RenderBatchJournalValidator
     {
         if (previous is null)
         {
-            if (next.Version != 1 || next.Revision != 1 || next.Status != RenderBatchStatus.Prepared
+            if (next.Version is not (1 or 4) || next.Revision != 1 || next.Status != RenderBatchStatus.Prepared
                 || next.Pages.Any(page => page.Status is not (RenderBatchPageStatus.Planned or RenderBatchPageStatus.Blocked)
                     || page.PreparationReasonCode is not null && page.PreparationReasonCode != page.ReasonCode)) throw Invalid();
             return;
         }
-        if (previous.BatchId != next.BatchId || next.Revision != previous.Revision + 1)
+        if (previous.BatchId != next.BatchId || next.Revision != previous.Revision + 1
+            || !(previous.InstanceSets ?? []).SequenceEqual(next.InstanceSets ?? []))
             throw Invalid();
         if (next.Pages.Count != previous.Pages.Count)
         {
@@ -86,11 +102,11 @@ public static class RenderBatchJournalValidator
         for (var i = 0; i < previous.Pages.Count; i++)
         {
             var before = previous.Pages[i]; var after = next.Pages[i];
-            if (previous.Version >= 2 && previous.RegenerationPageIndex != i && before != after) throw Invalid();
+            if (previous.RegenerationPageIndex is not null && previous.RegenerationPageIndex != i && before != after) throw Invalid();
             if (before.StyleId != after.StyleId || before.PageId != after.PageId || before.OutputVariantId != after.OutputVariantId
                 || before.Attempt != after.Attempt || before.PlanJson != after.PlanJson
                 || before.PreparationReasonCode != after.PreparationReasonCode || before.OutputVariantName != after.OutputVariantName
-                || before.SizeTableRepair != after.SizeTableRepair
+                || before.Instance != after.Instance || before.SizeTableRepair != after.SizeTableRepair
                 || before.ExecutionId is not null && before.ExecutionId != after.ExecutionId
                 || before.Commit is not null && before.Commit != after.Commit
                 || before.Status is RenderBatchPageStatus.Committed or RenderBatchPageStatus.Failed or RenderBatchPageStatus.Cancelled && after.Status != before.Status
@@ -100,7 +116,8 @@ public static class RenderBatchJournalValidator
     }
 
     public static bool CanRegenerate(RenderBatchJournal journal, RenderBatchPage page) =>
-        journal.Status is RenderBatchStatus.Completed or RenderBatchStatus.CompletedWithIssues or RenderBatchStatus.Cancelled or RenderBatchStatus.Paused
+        (journal.Version < 4 || page.Status == RenderBatchPageStatus.Failed)
+        && journal.Status is RenderBatchStatus.Completed or RenderBatchStatus.CompletedWithIssues or RenderBatchStatus.Cancelled or RenderBatchStatus.Paused or RenderBatchStatus.Failed
         && journal.Pages.All(item => item.Status is not (RenderBatchPageStatus.Submitting or RenderBatchPageStatus.Running or RenderBatchPageStatus.Unknown))
         && page.PlanJson is not null && page.Status is RenderBatchPageStatus.Committed or RenderBatchPageStatus.Failed or RenderBatchPageStatus.Cancelled
         && journal.Pages.Where(item => SamePage(item, page)).Max(item => item.Attempt) == page.Attempt;
@@ -141,9 +158,12 @@ public static class RenderBatchJournalValidator
     }
 
     public static bool SamePage(RenderBatchPage left, RenderBatchPage right) => left.StyleId == right.StyleId
-        && left.PageId == right.PageId && left.OutputVariantId == right.OutputVariantId;
+        && left.PageId == right.PageId && left.OutputVariantId == right.OutputVariantId
+        && left.Instance == right.Instance;
 
     private static bool Id(string? value) => value is { Length: > 0 and <= 128 }
         && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or ':');
+    private static bool Digest(string? value) => value is { Length: 71 } && value.StartsWith("sha256:", StringComparison.Ordinal)
+        && value[7..].All(char.IsAsciiHexDigitLower);
     private static InvalidDataException Invalid() => new("RENDER_BATCH_JOURNAL_INVALID");
 }

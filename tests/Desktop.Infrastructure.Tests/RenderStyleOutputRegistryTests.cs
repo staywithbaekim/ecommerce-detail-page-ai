@@ -342,7 +342,7 @@ public sealed class RenderStyleOutputRegistryTests
             await fixture.Seed(store);
             input = JsonSerializer.Serialize(await store.GetAsync("batch_test", default));
         }
-        await fixture.Sql("DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DELETE FROM schema_migrations WHERE version>=20;"
+        await fixture.Sql(LegacyMigrationFixture.RemoveTpl02Schema + "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DELETE FROM schema_migrations WHERE version>=20;"
             + (fail ? "CREATE TRIGGER fail_v20 BEFORE INSERT ON schema_migrations WHEN NEW.version=20 BEGIN SELECT RAISE(ABORT,'TEST_FAIL'); END;" : ""));
         var migrations = await fixture.Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations ORDER BY version);");
         await using var reopened = new SqliteDesktopStore(fixture.Options);
@@ -353,7 +353,7 @@ public sealed class RenderStyleOutputRegistryTests
             Assert.Equal(input, JsonSerializer.Serialize(await reopened.GetAsync("batch_test", default)));
         }
         Assert.Equal(migrations, await fixture.Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations WHERE version<=19 ORDER BY version);"));
-        Assert.Equal(fail ? "19" : "21", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "19" : "28", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
         Assert.Equal(fail ? "0" : "2", await fixture.Scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('render_output_registrations','render_output_stages');"));
     }
 

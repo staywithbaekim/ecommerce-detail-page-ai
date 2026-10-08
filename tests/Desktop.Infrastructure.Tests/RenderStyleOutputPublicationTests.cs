@@ -294,7 +294,7 @@ public sealed class RenderStyleOutputPublicationTests
             stages = await fixture.Scalar("SELECT group_concat(payload_json||payload_sha256,'|') FROM render_output_stages;");
             journal = await fixture.Scalar("SELECT group_concat(payload_json||payload_sha256,'|') FROM render_batch_journals;");
         }
-        await fixture.Sql("DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DELETE FROM schema_migrations WHERE version=21;"
+        await fixture.Sql(LegacyMigrationFixture.RemoveTpl02Schema + "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DELETE FROM schema_migrations WHERE version=21;"
             + (fail ? "CREATE TRIGGER fail_v21 BEFORE INSERT ON schema_migrations WHEN NEW.version=21 BEGIN SELECT RAISE(ABORT,'TEST_FAIL'); END;" : ""));
         var migrations = await fixture.Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations ORDER BY version);");
         await using var reopened = new SqliteDesktopStore(fixture.Options);
@@ -304,7 +304,7 @@ public sealed class RenderStyleOutputPublicationTests
             await reopened.InitializeAsync();
             Assert.Equal(input, JsonSerializer.Serialize(await reopened.GetAsync("batch_test", default)));
         }
-        Assert.Equal(fail ? "20" : "21", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "20" : "28", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
         Assert.Equal(fail ? "0" : "2", await fixture.Scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('render_output_publications','render_output_publication_files');"));
         Assert.Equal(migrations, await fixture.Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations WHERE version<=20 ORDER BY version);"));
         Assert.Equal(registration, await fixture.Scalar("SELECT payload_json||payload_sha256 FROM render_output_registrations;"));

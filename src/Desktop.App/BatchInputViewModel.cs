@@ -719,7 +719,7 @@ public sealed class BatchInputViewModel : INotifyPropertyChanged, IDisposable
         "INPUT_PERSISTENCE_FAILURE" =>
             "本地状态未能安全保存，未发送 AI 请求。请重新扫描并建立新批次；源图片未修改。",
         "INPUT_MANIFEST_DATABASE_MISMATCH" =>
-            "本地批次清单与数据库记录不一致，已阻止 AI 请求。请点击“重试扫描”；系统会使用同一文件夹建立新批次，源图片和 PSD 不会修改。",
+            "本地批次清单与保存记录不一致，已阻止 AI 请求。请点击“重试扫描”；系统会使用同一文件夹建立新批次，源图片和 PSD 不会修改。",
         _ => "批次未能安全恢复，请重新选择模板和目录后重试。"
     };
 

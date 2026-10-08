@@ -67,7 +67,7 @@ public sealed class DiagnosticExportViewModel : INotifyPropertyChanged, IDisposa
             var path = _picker.ChoosePath();
             if (path is null) { SetStatus("已取消选择；没有导出诊断包。"); return; }
             pending.Token.ThrowIfCancellationRequested();
-            SetStatus("正在本机生成脱敏诊断包…不会读取图片、Key或业务数据库。");
+            SetStatus("正在本机生成脱敏诊断包…不会读取图片、API Key 或内部数据。");
             var result = await _exporter.ExportAsync(path, pending.Token).ConfigureAwait(true);
             if (_disposed) return;
             var limits = result.LogStatus switch
@@ -79,16 +79,16 @@ public sealed class DiagnosticExportViewModel : INotifyPropertyChanged, IDisposa
             var photoshopEvidence = result.PhotoshopEnvironmentStatus switch
             {
                 DiagnosticPhotoshopEnvironmentStatus.HistoricalExecutableMetadata =>
-                    "已附检测时间点的历史Photoshop可执行文件元数据；不代表认证宿主完整构建、能力或连接。",
+                    "已附上次 Photoshop 环境检查结果；不代表当前连接或可直接出图。",
                 _ => "尚无Photoshop环境检测快照。"
             };
             var photoshopConnectionEvidence = result.PhotoshopConnectionStatus switch
             {
                 DiagnosticPhotoshopConnectionStatus.HistoricalAuthenticatedBuildMatch =>
-                    "已附认证连接检查时间点的批准完整构建匹配证据；仅代表该检查时间点，不代表持续连接或正式宿主选择，逐机渲染/ICC能力仍未验收。",
+                    "已附上次连接检查结果；只代表当时的检查，不代表当前连接或正式出图。",
                 DiagnosticPhotoshopConnectionStatus.HistoricalCheck =>
-                    "已附认证连接检查历史，但没有可信的批准完整构建匹配证据；持续连接和逐机渲染/ICC能力仍未验收。",
-                _ => "尚无认证连接检查历史；认证宿主版本仍未采集，持续连接和逐机渲染/ICC能力仍未验收。"
+                    "已附连接检查历史，但当时未完成检查；请重新检查后再继续。",
+                _ => "尚无连接检查历史；完成设备配对后可在这里检查。"
             };
             SetStatus($"诊断包已保存到所选位置，未上传。{limits}"
                 + (result.Truncated ? "日志已按安全上限截断。" : string.Empty)

@@ -233,10 +233,13 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         {
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
         }
-        if (manifest.Protocol is not (TemplatePackageProtocol.Version or TemplatePackageProtocol.CurrentVersion))
+        if (manifest.Protocol is not (TemplatePackageProtocol.Version or TemplatePackageProtocol.Version2 or TemplatePackageProtocol.CurrentVersion))
         {
             throw new InvalidDataException("TPL_PACKAGE_VERSION_UNSUPPORTED");
         }
+        if (manifest.Protocol != TemplatePackageProtocol.CurrentVersion && (manifest.RuleWorkspace is not null
+            || manifest.Pages?.Any(page => page.Notes is not null) == true))
+            throw new InvalidDataException("TPL_PACKAGE_INVALID");
 
         if (string.IsNullOrWhiteSpace(manifest.GroupName)
             || manifest.GroupName.Length > 256
@@ -320,7 +323,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                     || binding.VectorMask != layer.HasVectorMask
                     || binding.Opacity != layer.Opacity
                     || !string.Equals(binding.BlendMode, layer.BlendMode, StringComparison.Ordinal)
-                    || !binding.SelectionCriteria.Any(criterion => string.Equals(
+                    || manifest.Protocol != TemplatePackageProtocol.CurrentVersion && !binding.SelectionCriteria.Any(criterion => string.Equals(
                         criterion.Key,
                         "asset_id",
                         StringComparison.Ordinal)))
@@ -467,13 +470,33 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
     private void ValidateSchema(TemplatePackageManifest manifest, string? originalJson = null)
     {
         var result = _contracts.Validate(
-            manifest.Protocol == TemplatePackageProtocol.CurrentVersion
-                ? ContractDocumentKind.TemplatePackageManifestV2 : ContractDocumentKind.TemplatePackageManifest,
+            manifest.Protocol switch
+            {
+                TemplatePackageProtocol.CurrentVersion => ContractDocumentKind.TemplatePackageManifestV3,
+                TemplatePackageProtocol.Version2 => ContractDocumentKind.TemplatePackageManifestV2,
+                _ => ContractDocumentKind.TemplatePackageManifest
+            },
             originalJson ?? JsonSerializer.Serialize(manifest, JsonOptions));
         if (!result.IsValid)
         {
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
         }
+        try
+        {
+            if (manifest.RuleWorkspace is not null)
+            {
+                // Also reject duplicate properties and numeric/unknown enums before accepting a portable rule payload.
+                if (originalJson is not null)
+                {
+                    using var document = JsonDocument.Parse(originalJson);
+                    _ = TemplateRuleCodec.Deserialize<Desktop.Domain.Templates.TemplateRuleWorkspace>(
+                        document.RootElement.GetProperty("ruleWorkspace").GetRawText());
+                }
+                TemplateRuleCodec.ValidatePackageRules(manifest);
+            }
+        }
+        catch (Desktop.Domain.Templates.TemplateRuleViolationException error)
+        { throw new InvalidDataException("TPL_PACKAGE_INVALID", error); }
     }
 
     private sealed class LengthLimitedReadStream(Stream inner, long maximumLength) : Stream

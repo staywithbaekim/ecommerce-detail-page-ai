@@ -7,7 +7,8 @@ namespace Desktop.Infrastructure.Persistence;
 
 public sealed partial class SqliteDesktopStore
 {
-    private static string RegenerationPageKey(RenderBatchPage page) => $"{page.StyleId}/{page.PageId}"
+    private static string RegenerationPageKey(RenderBatchPage page) => page.Instance is { } instance
+        ? $"{page.StyleId}/instance/{instance.PageInstanceId}" : $"{page.StyleId}/{page.PageId}"
         + (page.OutputVariantId is { } variant ? $"/{variant}" : "");
 
     private static async Task SaveRegenerationOrigin(SqliteConnection connection, SqliteTransaction transaction,

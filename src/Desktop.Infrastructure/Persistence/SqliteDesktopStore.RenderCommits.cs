@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Desktop.Application.Rendering;
 using Desktop.Application.Tasks;
 using Desktop.Domain.Tasks;
@@ -41,10 +42,12 @@ public sealed partial class SqliteDesktopStore
             {
                 page.Transaction = transaction;
                 page.CommandText = """
-                    INSERT INTO render_page_checkpoints(task_id,style_id,page_id,output_variant_id,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at)
-                    VALUES($task_id,$style_id,$page_id,$variant,$stage,$attempt,$plan_digest,$bridge_execution_id,$output_commit_state,$updated_at);
+                    INSERT INTO render_page_checkpoints(task_id,style_id,page_id,output_variant_id,page_instance_id,instance_json,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at)
+                    VALUES($task_id,$style_id,$page_id,$variant,$instance,$identity,$stage,$attempt,$plan_digest,$bridge_execution_id,$output_commit_state,$updated_at);
                     """;
                 AddCheckpointParameters(page, checkpoint.Page);
+                page.Parameters.AddWithValue("$instance", checkpoint.Page.Instance?.PageInstanceId ?? "");
+                page.Parameters.AddWithValue("$identity", checkpoint.Page.Instance is null ? DBNull.Value : JsonSerializer.Serialize(checkpoint.Page.Instance, RenderBatchJson));
                 page.Parameters.AddWithValue("$variant", checkpoint.Page.OutputVariantId ?? "");
                 await page.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             }
@@ -82,7 +85,8 @@ public sealed partial class SqliteDesktopStore
             var current = TaskStateReducer.Replay(checkpoint.Page.TaskId, events);
             // Page keys include product identity: the same template page in two styles
             // must contribute two outputs while duplicate recovery contributes only one.
-            var pageKey = $"{checkpoint.Page.StyleId}/{checkpoint.Page.PageId}"
+            var pageKey = checkpoint.Page.Instance is { } identity ? $"{checkpoint.Page.StyleId}/instance/{identity.PageInstanceId}"
+                : $"{checkpoint.Page.StyleId}/{checkpoint.Page.PageId}"
                 + (checkpoint.Page.OutputVariantId is { } variant ? $"/{variant}" : "");
             var completed = TaskEvent.Create(checkpoint.Page.TaskId, current.LastSequence + 1,
                 TaskEventType.PageCommitted, pageKey, checkpoint.ManifestSha256);
@@ -94,12 +98,13 @@ public sealed partial class SqliteDesktopStore
                 write.Transaction = transaction;
                 write.CommandText = """
                     UPDATE render_page_checkpoints SET output_commit_state='Committed'
-                    WHERE task_id=$task AND style_id=$style AND page_id=$page AND output_variant_id=$variant AND attempt=$attempt;
+                    WHERE task_id=$task AND style_id=$style AND page_id=$page AND output_variant_id=$variant AND page_instance_id=$instance AND attempt=$attempt;
                     UPDATE manifests SET state='render_committed' WHERE manifest_id=$id;
                     """;
                 write.Parameters.AddWithValue("$task", checkpoint.Page.TaskId);
                 write.Parameters.AddWithValue("$style", checkpoint.Page.StyleId);
                 write.Parameters.AddWithValue("$page", checkpoint.Page.PageId);
+                write.Parameters.AddWithValue("$instance", checkpoint.Page.Instance?.PageInstanceId ?? "");
                 write.Parameters.AddWithValue("$variant", checkpoint.Page.OutputVariantId ?? "");
                 write.Parameters.AddWithValue("$attempt", checkpoint.Page.Attempt);
                 write.Parameters.AddWithValue("$id", checkpoint.ManifestId);
@@ -123,12 +128,13 @@ public sealed partial class SqliteDesktopStore
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at
-            FROM render_page_checkpoints WHERE task_id=$task AND style_id=$style AND page_id=$page AND output_variant_id=$variant AND attempt=$attempt;
+            SELECT stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at,instance_json
+            FROM render_page_checkpoints WHERE task_id=$task AND style_id=$style AND page_id=$page AND output_variant_id=$variant AND page_instance_id=$instance AND attempt=$attempt;
             """;
         command.Parameters.AddWithValue("$task", expected.Page.TaskId);
         command.Parameters.AddWithValue("$style", expected.Page.StyleId);
         command.Parameters.AddWithValue("$page", expected.Page.PageId);
+        command.Parameters.AddWithValue("$instance", expected.Page.Instance?.PageInstanceId ?? "");
         command.Parameters.AddWithValue("$variant", expected.Page.OutputVariantId ?? "");
         command.Parameters.AddWithValue("$attempt", expected.Page.Attempt);
         OutputCommitState? state = null;
@@ -136,7 +142,8 @@ public sealed partial class SqliteDesktopStore
         {
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (reader.GetString(0) != expected.Page.Stage || reader.GetInt32(1) != expected.Page.Attempt
+                if ((reader.IsDBNull(6) ? null : JsonSerializer.Deserialize<RenderInstanceIdentity>(reader.GetString(6), RenderBatchJson)) != expected.Page.Instance
+                    || reader.GetString(0) != expected.Page.Stage || reader.GetInt32(1) != expected.Page.Attempt
                     || reader.GetString(2) != expected.Page.PlanDigest || reader.IsDBNull(3) || reader.GetString(3) != expected.Page.BridgeExecutionId
                     || reader.GetString(5) != expected.Page.UpdatedAt.ToString("O")
                     || reader.GetString(4) is not ("Verified" or "Committed")) throw RenderConflict();
@@ -168,6 +175,9 @@ public sealed partial class SqliteDesktopStore
         static bool Id(string? value) => value is { Length: > 0 and <= 128 } && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or ':');
         static bool Hash(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
         if (!Id(checkpoint.Page.TaskId) || !Id(checkpoint.Page.StyleId) || !Id(checkpoint.Page.PageId)
+            || checkpoint.Page.Instance is { } instance && (!RenderPlanInstanceIdentity.IsValid(instance)
+                || instance.BatchId != checkpoint.Page.TaskId || instance.StyleId != checkpoint.Page.StyleId
+                || instance.SourcePageId != checkpoint.Page.PageId || checkpoint.Page.OutputVariantId is not null)
             || checkpoint.Page.OutputVariantId is { } variant && !Id(variant)
             || !Id(checkpoint.Page.BridgeExecutionId) || checkpoint.Page.Attempt < 1 || checkpoint.Page.Stage != "render_output"
             || checkpoint.Page.OutputState != OutputCommitState.Verified || checkpoint.Page.PlanDigest.Length != 71

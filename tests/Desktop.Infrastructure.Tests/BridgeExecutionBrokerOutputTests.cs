@@ -295,7 +295,7 @@ public sealed partial class BridgeExecutionBrokerTests
     }
 
     private async Task<(BridgeResourceLeaseTests.Fixture, BridgeOutputReservation, AdapterClaim)> PrepareOutput(BridgeExecutionBroker broker,
-        bool includePsd = false, bool verificationPsd = false, bool sizeTable = false, bool sizeInsertion = false, int attempt = 1)
+        bool includePsd = false, bool verificationPsd = false, bool sizeTable = false, bool sizeInsertion = false, int attempt = 1, string? instanceTag = null)
     {
         await broker.InitializeAsync(CancellationToken.None);
         var fixture = new BridgeResourceLeaseTests.Fixture();
@@ -356,6 +356,21 @@ public sealed partial class BridgeExecutionBrokerTests
             fixture.Plan["idempotency_key"] = $"batch_page_attempt_{attempt}";
             fixture.Plan["document"]!["page_id"] = $"page_{attempt:00}";
             fixture.Plan["output"]!["artifact_set_id"] = $"artifact_page_{attempt}";
+            fixture.Rehash();
+        }
+        if (instanceTag is not null)
+        {
+            fixture.Plan["document"]!["page_id"] = "page_01";
+            fixture.Plan["required_capabilities"]!.AsArray().Add(RenderPlanInstanceIdentity.Capability);
+            fixture.Plan["document"]!["instance_identity"] = System.Text.Json.JsonSerializer.SerializeToNode(new
+            {
+                page_instance_id = "instance_" + new string(instanceTag[0], 64), source_page_id = "page_01", snapshot_id = "snapshot_test",
+                rule_digest = "sha256:" + new string('b', 64), input_facts_digest = "sha256:" + new string('c', 64),
+                projection_digest = "sha256:" + new string('d', 64), branch_id = "branch", recipe_id = "recipe_" + instanceTag,
+                repetition_index = 0, stable_order = attempt - 1, slots = new[] { new { slot_id = "slot", variant_id = "red" } },
+                frames = fixture.Plan["targets"]!.AsArray().Select(target => new { frame_id = target!["frame_id"]!.GetValue<string>(),
+                    slot_id = "slot", variant_id = "red", asset_id = target["asset_resource_id"]!.GetValue<string>() })
+            });
             fixture.Rehash();
         }
         _resources.Add(fixture);

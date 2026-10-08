@@ -28,7 +28,7 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="选择本批次页面" />
+                    <TextBlock Style="{StaticResource PageTitleTextStyle}" Text="选择本批次页面" />
                     <TextBlock Grid.Row="1"
                                Margin="0,6,0,0"
                                Style="{StaticResource SmallBodyTextStyle}"

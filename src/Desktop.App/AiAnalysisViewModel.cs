@@ -9,7 +9,7 @@ using Desktop.Application.Templates;
 namespace Desktop.App;
 
 /// <summary>Owns AI page workflows, consent, selection and refresh; the host supplies cross-page navigation.</summary>
-public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
+public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly AiAnalysisPageState _aiPageState;
     private readonly IAiBatchAnalysisWorkflow? _aiBatchWorkflow;
@@ -24,6 +24,9 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
         _aiBatchWorkflow = workflow;
         _host = host ?? throw new ArgumentNullException(nameof(host));
         InitializeCommands();
+        ConfirmInstanceSelectionCommand = new AsyncRelayCommand(ConfirmInstanceSelectionAsync,
+            () => SelectedInstanceTarget is not null && !_aiBusy);
+        CancelInstanceSelectionCommand = new RelayCommand(CloseInstanceSelection);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -224,6 +227,11 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
         get => _aiPageState.SelectReplacementAssetCommand;
         internal set => _aiPageState.SelectReplacementAssetCommand = value;
     }
+    public ICommand BeginAiSizeTableSourceReplacementCommand
+    {
+        get => _aiPageState.BeginSizeTableSourceReplacementCommand;
+        internal set => _aiPageState.BeginSizeTableSourceReplacementCommand = value;
+    }
     public ICommand ConfirmAiReplacementCommand
     {
         get => _aiPageState.ConfirmReplacementCommand;
@@ -312,14 +320,24 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
             _ => $"{_aiBatchProjection.ExecutablePageCount} 个可执行页面 · 隔离 {_aiBatchProjection.IsolatedPageCount} 个红色页面"
         };
 
-    public string AiTemplateSummary => _aiBatchProjection?.TemplateSummary ?? "当前已校准模板";
-    public string AiTemplateMeta => _aiBatchProjection?.TemplateMeta ?? "模板快照已冻结";
+    public string AiTemplateSummary => NormalizeUserTemplateName(
+        _aiBatchProjection?.TemplateSummary ?? "当前已校准模板");
+    public string AiTemplateMeta => _aiBatchProjection?.TemplateMeta ?? "模板已准备好";
     public string AiBatchSummary => _aiBatchProjection?.BatchSummary ?? "当前输入批次";
     public string AiBatchMeta => _aiBatchProjection?.BatchMeta ?? "素材清单已登记";
     public string AiOutputSummary => _aiBatchProjection?.OutputSummary ?? "仅 JPG";
     public string AiOutputMeta => _aiBatchProjection?.OutputMeta ?? "正式输出目录已确认";
     public string AiPageSummary => _aiBatchProjection?.PageSummary ?? "0 个页面";
     public string AiPageMeta => _aiBatchProjection?.PageMeta ?? "等待分析";
+
+    private static string NormalizeUserTemplateName(string value) =>
+        string.IsNullOrWhiteSpace(value)
+        || value.Contains("TPL", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("规则实机", StringComparison.Ordinal)
+        || value.Contains('_')
+        || value.Length > 28
+            ? "已校准模板"
+            : value;
     public GridLength AiSummaryHeight => _host.IsBatchNarrowLayout
         ? new GridLength(124)
         : new GridLength(104);
@@ -689,6 +707,12 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
+        if (requirement.IsSizeTableSource)
+        {
+            BeginAiSizeTableSourceReplacement();
+            return;
+        }
+
         // Explicitly selecting the current AI photo confirms it without
         // replacing the source. Nothing is saved merely by opening this UI.
         SetAiReplacementState(requirement, null);
@@ -703,6 +727,17 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
 
     internal void SelectAiReplacementAsset(AiStyleAssetViewModel? asset)
     {
+        var selectedStyle = SelectedAiStyle;
+        var sizeTableSource = selectedStyle?.SizeTableSource;
+        if (asset is not null
+            && sizeTableSource is not null
+            && _aiPageState.IsSizeTableSourceReplacementActive
+            && string.Equals(asset.StyleId, selectedStyle!.StyleId, StringComparison.Ordinal))
+        {
+            _ = SelectAiSizeTableSourceFromLibraryAsync(sizeTableSource, asset);
+            return;
+        }
+
         if (!IsAiReplacementAssetSelectable(asset))
         {
             return;
@@ -720,6 +755,53 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
         NotifyAiChanged();
     }
 
+    private async Task SelectAiSizeTableSourceFromLibraryAsync(
+        AiSizeTableSourceViewModel sizeTableSource,
+        AiStyleAssetViewModel asset)
+    {
+        if (_aiBatchWorkflow is null || _aiBusy) return;
+        _aiBusy = true;
+        NotifyAiChanged();
+        try
+        {
+            var projection = await _aiBatchWorkflow.SelectSizeTableSourceAsync(
+                asset.BatchId,
+                asset.StyleId,
+                asset.AssetId,
+                CancellationToken.None).ConfigureAwait(true);
+            ApplyAiProjection(projection);
+            _aiPageState.IsSizeTableSourceReplacementActive = false;
+            AiStatusMessage = $"已将{asset.DisplayName}设为尺码表来源；本款照片列表已同步更新。";
+        }
+        catch (InvalidOperationException exception)
+        {
+            AiStatusMessage = ToAiUserMessage(exception.Message);
+        }
+        catch (Exception)
+        {
+            AiStatusMessage = "尺码表来源未能保存；当前选择没有更改，请刷新后重试。";
+        }
+        finally
+        {
+            _aiBusy = false;
+            NotifyAiChanged();
+        }
+    }
+
+    internal bool CanSelectAiAssetFromLibrary(AiStyleAssetViewModel? asset) =>
+        asset is not null && !_aiBusy &&
+        (AiReplacementTarget is not null
+            && string.Equals(asset.StyleId, AiReplacementTarget.StyleId, StringComparison.Ordinal)
+         || (SelectedAiStyle?.SizeTableSource is not null
+             && string.Equals(asset.StyleId, SelectedAiStyle.StyleId, StringComparison.Ordinal)));
+
+    internal void BeginAiSizeTableSourceReplacement()
+    {
+        _aiPageState.IsSizeTableSourceReplacementActive = true;
+        AiStatusMessage = "请选择右侧照片作为尺码表来源。";
+        NotifyAiChanged();
+    }
+
     internal async Task ConfirmAiReplacementAsync()
     {
         var target = AiReplacementTarget;
@@ -733,6 +815,8 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
         NotifyAiChanged();
         try
         {
+            if (await BeginInstanceSelectionAsync(target.BatchId, target.StyleId, target.RequirementId, asset.AssetId).ConfigureAwait(true))
+                return;
             var projection = await _aiBatchWorkflow.LockSelectionAsync(
                 target.BatchId,
                 target.StyleId,
@@ -787,6 +871,7 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
 
     internal void ClearAiReplacementState()
     {
+        _aiPageState.IsSizeTableSourceReplacementActive = false;
         _aiReplacementTarget = null;
         _selectedAiReplacementAsset = null;
         foreach (var style in AiStyles)
@@ -1093,6 +1178,8 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
         NotifyAiChanged();
         try
         {
+            if (await BeginInstanceSelectionAsync(candidate.BatchId, candidate.StyleId, candidate.RequirementId, candidate.AssetId).ConfigureAwait(true))
+                return false; // The explicit instance confirmation, not this preview, persists the choice.
             ApplyAiProjection(await _aiBatchWorkflow.LockSelectionAsync(
                 candidate.BatchId,
                 candidate.StyleId,
@@ -1101,7 +1188,7 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
                 CancellationToken.None).ConfigureAwait(true));
             return true;
         }
-        catch (InvalidOperationException exception)
+        catch (Exception exception) when (exception is InvalidOperationException or System.IO.InvalidDataException)
         {
             AiStatusMessage = ToAiUserMessage(exception.Message);
             return false;
@@ -1338,11 +1425,15 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
             "INPUT_PERSISTENCE_FAILURE" or "AI_INPUT_PERSISTENCE_FAILURE" =>
                 "本地状态未能安全保存，未发送 AI 请求。请重新扫描并建立新批次；源图片未修改。",
             "INPUT_MANIFEST_DATABASE_MISMATCH" =>
-                "本地批次清单与数据库记录不一致，已阻止 AI 请求。请重新扫描并建立新批次。",
+                "本地批次清单与保存记录不一致，已阻止 AI 请求。请重新扫描并建立新批次。",
             "AI_SESSION_NOT_FOUND" => "分析状态缺失，需要恢复；未启动生成。",
             "AI_SELECTION_NOT_AVAILABLE" => "当前页面还没有可供人工锁定的分析结果。",
             "AI_SELECTION_STATE_MISMATCH" => "本地分析状态不一致，当前用图没有更改；请刷新后重新选择。",
             "AI_SELECTION_REVISION_CONFLICT" => "分析结果已更新，请刷新后重新选择。",
+            "TPL_INSTANCE_PRODUCTION_FACTS_FROZEN" => "该批次实例事实已冻结；修改用图或尺码请新建批次，原批次只用于恢复。",
+            "TPL_INSTANCE_SELECTION_REQUIRED" => "请选择明确的输出实例后锁定用图。",
+            "TPL_INSTANCE_SELECTION_FACTS_CHANGED" or "TPL_INSTANCE_SELECTION_REVISION_CONFLICT" => "实例选图事实或版本已变化；未更改原锁，请刷新核对，必要时新建批次。",
+            "TPL_INSTANCE_COLOR_FACTS_UNRESOLVED" => "本款颜色事实尚未闭合；不会猜测主色或副色，请核对分析输入后新建批次。",
             "AI_REFINEMENT_SELECTION_INVALID" => "所选素材已失效，请刷新后重新选择。",
             "AI_REFINEMENT_SELECTION_NOT_LOCKED" => "请先锁定选中的候选图，再进行逐图主体分析。",
             "AI_UPLOAD_CONSENT_REQUIRED" => "首次使用 AI 前请先同意上传授权：仅上传压缩分析副本到火山方舟，不上传 PSD、原始高清图片、本地路径或正式输出；可在设置中确认。",
@@ -1409,7 +1500,8 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
             _ => !IsAiBusy);
         _aiPageState.SelectReplacementAssetCommand = new RelayCommand<AiStyleAssetViewModel>(
             SelectAiReplacementAsset,
-            IsAiReplacementAssetSelectable);
+            CanSelectAiAssetFromLibrary);
+        _aiPageState.BeginSizeTableSourceReplacementCommand = new RelayCommand(BeginAiSizeTableSourceReplacement);
         _aiPageState.ConfirmReplacementCommand = new AsyncRelayCommand(
             ConfirmAiReplacementAsync,
             () => CanConfirmAiReplacement);
@@ -1558,7 +1650,7 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
                 .ConfigureAwait(true));
             _host.ShowResultOverview();
         }
-        catch (InvalidOperationException exception)
+        catch (Exception exception) when (exception is InvalidOperationException or System.IO.InvalidDataException)
         {
             AiStatusMessage = ToRenderUserMessage(exception.Message);
         }
@@ -1571,6 +1663,7 @@ public sealed class AiAnalysisViewModel : INotifyPropertyChanged, IDisposable
 
     private static string ToRenderUserMessage(string code) => code switch
     {
+        "TPL_INSTANCE_PRODUCTION_FACTS_FROZEN" => "本批次实例事实已冻结；修改选图或尺码后请创建新批次，原批次只使用冻结事实恢复。",
         "AI_RENDER_ANALYSIS_NOT_CLOSED" => "分析尚未收口，不能生成页面计划。",
         "AI_RENDER_FACTORY_NOT_CONFIGURED" => "页面计划服务暂不可用；未启动 Photoshop。",
         "AI_RENDER_TEMPLATE_RESOURCE_NOT_FOUND" => "模板内部副本缺失，请返回模板检查。",

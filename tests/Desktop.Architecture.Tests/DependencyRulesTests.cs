@@ -118,7 +118,10 @@ public sealed class DependencyRulesTests
         Type[] allowedPorts =
         [
             typeof(IAiAnalysisResultReader), typeof(ITemplateResourceRepository), typeof(IAiRenderPlanFactory),
-            typeof(ISizeTableRepository), typeof(ISizeTableRasterizer)
+            typeof(ISizeTableRepository), typeof(ISizeTableRasterizer),
+            // ADR-035 E3: durable facts/revision ports and renderer-neutral validation, never a runtime controller.
+            typeof(ITemplateInstanceProductionEvidenceStore), typeof(ITemplateInstanceProjectionSnapshotStore),
+            typeof(ITemplateRepository), typeof(IRenderPlanValidator)
         ];
         Assert.All(Assert.Single(typeof(AiRenderPreparationService).GetConstructors()).GetParameters(),
             parameter => Assert.Contains(parameter.ParameterType, allowedPorts));

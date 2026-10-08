@@ -235,7 +235,7 @@ public sealed class BatchInputInfrastructureTests
             await service.ScanAsync(command.BatchId);
             before = System.Text.Json.JsonSerializer.Serialize(await store.GetAsync(command.BatchId, default));
         }
-        await ExecuteIntentSql(options, "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DELETE FROM schema_migrations WHERE version>=19;"
+        await ExecuteIntentSql(options, LegacyMigrationFixture.RemoveTpl02Schema + "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DELETE FROM schema_migrations WHERE version>=19;"
             + (fail ? "CREATE TRIGGER fail_v19 BEFORE INSERT ON schema_migrations WHEN NEW.version=19 BEGIN SELECT RAISE(ABORT,'TEST_V19_FAILURE'); END;" : ""));
         var migrations = await ReadIntentScalar(options,
             "SELECT group_concat(version || ':' || checksum || ':' || applied_at, '|') FROM (SELECT * FROM schema_migrations ORDER BY version);");
@@ -251,7 +251,7 @@ public sealed class BatchInputInfrastructureTests
         }
         Assert.Equal(migrations, await ReadIntentScalar(options,
             "SELECT group_concat(version || ':' || checksum || ':' || applied_at, '|') FROM (SELECT * FROM schema_migrations WHERE version<=18 ORDER BY version);"));
-        Assert.Equal(fail ? "18" : "21", await ReadIntentScalar(options, "SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "18" : "28", await ReadIntentScalar(options, "SELECT max(version) FROM schema_migrations;"));
         if (fail) Assert.Equal("0", await ReadIntentScalar(options,
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='input_output_selections';"));
     }

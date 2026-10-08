@@ -981,7 +981,7 @@ public sealed class ReferenceLearningService(
     private static int LastPathSegment(IReadOnlyList<int> path) =>
         path.Count == 0 ? -1 : path[^1];
 
-    private static string StableFrameId(
+    internal static string StableFrameId(
         string pageId,
         int layerId,
         IReadOnlyList<int> layerPath)

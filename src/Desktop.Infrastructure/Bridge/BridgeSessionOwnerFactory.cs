@@ -29,25 +29,29 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
 
     public PhotoshopConnectionCheckResult? Latest => Volatile.Read(ref _latestConnectionCheck);
 
-    public Task<PhotoshopConnectionCheckResult> CheckAsync(CancellationToken cancellationToken)
+    public Task<PhotoshopConnectionCheckResult> CheckAsync(CancellationToken cancellationToken) => CheckAsync(false, cancellationToken);
+
+    public Task<PhotoshopConnectionCheckResult> CheckInstanceIdentityAsync(CancellationToken cancellationToken) => CheckAsync(true, cancellationToken);
+
+    private Task<PhotoshopConnectionCheckResult> CheckAsync(bool instanceContract, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         // Credential Manager and host construction must not block the WPF dispatcher.
-        return Task.Run(() => CheckCoreAsync(cancellationToken), cancellationToken);
+        return Task.Run(() => CheckCoreAsync(instanceContract, cancellationToken), cancellationToken);
     }
 
-    private async Task<PhotoshopConnectionCheckResult> CheckCoreAsync(CancellationToken cancellationToken)
+    private async Task<PhotoshopConnectionCheckResult> CheckCoreAsync(bool instanceContract, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         if (!TryBeginSetup(operation.Token, operation))
-            return PublishCheck(new(PhotoshopConnectionCheckStatus.Busy, timeProvider.GetUtcNow()), operation.Token);
+            return PublishCheck(new(PhotoshopConnectionCheckStatus.Busy, timeProvider.GetUtcNow(), InstanceIdentityRequired: instanceContract), operation.Token);
         try
         {
-            var result = await CheckOwnerAsync(operation.Token).ConfigureAwait(false);
+            var result = await CheckOwnerAsync(instanceContract, operation.Token).ConfigureAwait(false);
             // CheckOwnerAsync has disposed its listener/session before any result is published.
-            return PublishCheck(result, operation.Token);
+            return PublishCheck(result with { InstanceIdentityRequired = instanceContract }, operation.Token);
         }
         finally { EndSetup(); }
     }
@@ -74,7 +78,7 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
     }
 
     /// <summary>Production startup has priority over a diagnostic check, never over another render or pairing.</summary>
-    public async Task<BridgeSessionOwner> StartTaskOwnerAsync(string taskId, CancellationToken cancellationToken)
+    public async Task<BridgeSessionOwner> StartTaskOwnerAsync(string taskId, CancellationToken cancellationToken, bool instanceContract = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -106,7 +110,7 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
                 acquired = true;
             }
             operation.Token.ThrowIfCancellationRequested();
-            var owner = await CreateSelectedTaskOwnerAsync(taskId, operation.Token).ConfigureAwait(false);
+            var owner = await CreateSelectedTaskOwnerAsync(taskId, instanceContract, operation.Token).ConfigureAwait(false);
             try
             {
                 await owner.StartAsync(operation.Token).ConfigureAwait(false);
@@ -136,7 +140,7 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
         return result;
     }
 
-    private async Task<PhotoshopConnectionCheckResult> CheckOwnerAsync(CancellationToken operationToken)
+    private async Task<PhotoshopConnectionCheckResult> CheckOwnerAsync(bool instanceContract, CancellationToken operationToken)
     {
         var expires = timeProvider.GetUtcNow().Add(ConnectionCheckWaitLimit);
         using var timeout = new CancellationTokenSource(ConnectionCheckWaitLimit, timeProvider);
@@ -154,7 +158,7 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
                 if (secret is not { Length: 32 })
                     return new(PhotoshopConnectionCheckStatus.PairingRequired, timeProvider.GetUtcNow());
                 owner = new(secret, new($"connection_check_{Guid.NewGuid():N}", "0.1.0", SupportedPhotoshopBuild,
-                    Capabilities), new ConnectionCheckJournal(), timeProvider, selectedHost, selectedHost);
+                    RequiredCapabilities(instanceContract)), new ConnectionCheckJournal(), timeProvider, selectedHost, selectedHost);
             }
             finally { if (secret is not null) CryptographicOperations.ZeroMemory(secret); }
             await using (owner.ConfigureAwait(false))
@@ -234,13 +238,13 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
         finally { CryptographicOperations.ZeroMemory(secret); }
     }
 
-    private async Task<BridgeSessionOwner> CreateSelectedTaskOwnerAsync(string taskId, CancellationToken token)
+    private async Task<BridgeSessionOwner> CreateSelectedTaskOwnerAsync(string taskId, bool instanceContract, CancellationToken token)
     {
         var selectedHost = hostSelection is null ? null : await hostSelection.AcquireAsync(token).ConfigureAwait(false);
         try
         {
             var secret = secrets.Read() ?? throw new InvalidOperationException("BRIDGE_PAIRING_REQUIRED");
-            try { return Create(secret, taskId, null, selectedHost); }
+            try { return Create(secret, taskId, null, selectedHost, instanceContract); }
             finally { CryptographicOperations.ZeroMemory(secret); }
         }
         catch { selectedHost?.Dispose(); throw; }
@@ -293,14 +297,19 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
         }
     }
 
-    private BridgeSessionOwner Create(byte[] secret, string taskId, DateTimeOffset? expires, PhotoshopSelectedHostLease? selectedHost = null)
+    private BridgeSessionOwner Create(byte[] secret, string taskId, DateTimeOffset? expires, PhotoshopSelectedHostLease? selectedHost = null,
+        bool instanceContract = false)
     {
         var key = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(taskId)));
+        var capabilities = RequiredCapabilities(instanceContract);
         return new(secret, new(taskId, "0.1.0", SupportedPhotoshopBuild,
-            expires is null ? Capabilities : Capabilities.Append(ProtectedPairingCapability).ToArray(), expires),
+            expires is null ? capabilities : capabilities.Append(ProtectedPairingCapability).ToArray(), expires),
             new FileBridgeExecutionJournalStore(paths, $"render/tasks/{key}/bridge-executions-v1.json"), timeProvider,
             selectedHost, selectedHost);
     }
+
+    private static string[] RequiredCapabilities(bool instanceContract) =>
+        instanceContract ? [.. Capabilities, RenderPlanInstanceIdentity.Capability] : Capabilities;
 
     internal void RecordSessionFaults(string taskId, BridgeLoopbackHost.TransportFault? transport,
         BridgeExecutionBroker.BindingFault? binding)

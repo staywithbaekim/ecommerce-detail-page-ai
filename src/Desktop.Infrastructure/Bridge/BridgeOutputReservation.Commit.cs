@@ -16,7 +16,7 @@ public sealed partial class BridgeOutputReservation
         if (plan.GetProperty("batch_id").GetString() != taskId) throw Invalid();
         var page = new TaskCheckpoint(taskId, plan.GetProperty("product_id").GetString()!,
             plan.GetProperty("document").GetProperty("page_id").GetString()!, "render_output", attempt,
-            PlanDigest, executionId, OutputCommitState.Verified, DateTimeOffset.UtcNow, RenderPlanVariantIdentity.Read(plan));
+            PlanDigest, executionId, OutputCommitState.Verified, DateTimeOffset.UtcNow, RenderPlanVariantIdentity.Read(plan), RenderPlanInstanceIdentity.Read(plan));
         var files = _verifiedMedia.Files.Select(file => new RenderCommittedFile(file.Kind,
             plan.GetProperty("output").GetProperty(file.Kind).GetProperty("file_name").GetString()!,
             file.ByteLength, file.Sha256)).ToArray();

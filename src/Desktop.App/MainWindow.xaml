@@ -18,12 +18,8 @@
         AutomationProperties.AutomationId="DesktopMainWindow">
     <Window.Resources>
         <DataTemplate x:Key="TaskRowTemplate">
-            <Border Height="68"
-                    Padding="16"
-                    Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="6">
+            <Border Height="72"
+                    Style="{StaticResource TaskRowCardStyle}">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -47,7 +43,7 @@
                                VerticalAlignment="Center"
                                FontSize="13"
                                Foreground="{StaticResource TextMutedBrush}"
-                               Text="{Binding TemplateName}"
+                               Text="批次记录"
                                TextTrimming="CharacterEllipsis" />
                     <Grid Grid.Column="4" VerticalAlignment="Center">
                         <Grid.ColumnDefinitions>
@@ -189,10 +185,10 @@
                                                 </Border>
                                                 <ControlTemplate.Triggers>
                                                     <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter TargetName="ItemChrome" Property="Background" Value="#F5F5F6" />
+                                                        <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
                                                     </Trigger>
                                                     <Trigger Property="IsSelected" Value="True">
-                                                        <Setter TargetName="ItemChrome" Property="Background" Value="#F1F1F2" />
+                                                        <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource SurfaceStrongBrush}" />
                                                     </Trigger>
                                                 </ControlTemplate.Triggers>
                                             </ControlTemplate>
@@ -470,7 +466,7 @@
                                 <TextBlock Margin="0,8,0,0"
                                            Foreground="{StaticResource TextMutedBrush}"
                                            TextWrapping="Wrap"
-                                           Text="选择具体批次查看已有分析和结果；不会自动重投未知执行。仅列出本机保存的输入批次。" />
+                                           Text="选择任务查看已保存内容；不会自动继续处理。" />
                                 <ItemsControl Margin="0,18,0,0"
                                               ItemsSource="{Binding Tasks}"
                                               ItemTemplate="{StaticResource TaskRowTemplate}"

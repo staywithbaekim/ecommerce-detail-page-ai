@@ -348,7 +348,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
     private static async Task EnsureInputSnapshotAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        BatchTemplateSnapshot snapshot,
+        IBatchTemplateContext snapshot,
         CancellationToken cancellationToken)
     {
         var pagesJson = SerializeSnapshotPages(snapshot.Pages);
@@ -400,14 +400,14 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
     private static async Task<bool> InputSnapshotMatchesAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        BatchTemplateSnapshot snapshot,
+        IBatchTemplateContext snapshot,
         string pagesJson,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT snapshot_id, batch_id, revision_id, pages_json, rules_digest, created_at
+            SELECT snapshot_id, batch_id, revision_id, pages_json, rules_digest, created_at, context_version, business_rule_digest
             FROM batch_template_snapshots
             WHERE snapshot_id = $snapshot_id OR batch_id = $batch_id
             LIMIT 1;
@@ -421,13 +421,15 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             && string.Equals(reader.GetString(2), snapshot.RevisionId, StringComparison.Ordinal)
             && string.Equals(reader.GetString(3), pagesJson, StringComparison.Ordinal)
             && string.Equals(reader.GetString(4), snapshot.RulesDigest, StringComparison.Ordinal)
-            && ParseTimestamp(reader.GetString(5)).Equals(snapshot.CreatedAt);
+            && ParseTimestamp(reader.GetString(5)).Equals(snapshot.CreatedAt)
+            && reader.GetString(6) == (snapshot is BatchRuleTemplateContext ? BatchRuleTemplateContext.SchemaVersion : "batch-template-snapshot/v1")
+            && (reader.IsDBNull(7) ? null : reader.GetString(7)) == (snapshot as BatchRuleTemplateContext)?.BusinessRuleDigest;
     }
 
     private static async Task<InputSnapshotIdentity?> FindInputSnapshotAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        BatchTemplateSnapshot snapshot,
+        IBatchTemplateContext snapshot,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
@@ -449,7 +451,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
     private static async Task InsertInputSnapshotAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        BatchTemplateSnapshot snapshot,
+        IBatchTemplateContext snapshot,
         string pagesJson,
         CancellationToken cancellationToken)
     {
@@ -457,8 +459,8 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO batch_template_snapshots(
-                snapshot_id, batch_id, revision_id, pages_json, rules_digest, created_at)
-            VALUES($snapshot_id, $batch_id, $revision_id, $pages_json, $rules_digest, $created_at);
+                snapshot_id, batch_id, revision_id, pages_json, rules_digest, created_at, context_version, business_rule_digest)
+            VALUES($snapshot_id, $batch_id, $revision_id, $pages_json, $rules_digest, $created_at, $context_version, $business_rule_digest);
             """;
         AddInputSnapshotParameters(command, snapshot, pagesJson);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -482,7 +484,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
     private static async Task UpdateInputSnapshotAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        BatchTemplateSnapshot snapshot,
+        IBatchTemplateContext snapshot,
         string pagesJson,
         CancellationToken cancellationToken)
     {
@@ -493,7 +495,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             SET revision_id = $revision_id,
                 pages_json = $pages_json,
                 rules_digest = $rules_digest,
-                created_at = $created_at
+                created_at = $created_at, context_version=$context_version, business_rule_digest=$business_rule_digest
             WHERE snapshot_id = $snapshot_id AND batch_id = $batch_id;
             """;
         AddInputSnapshotParameters(command, snapshot, pagesJson);
@@ -505,9 +507,11 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
 
     private static void AddInputSnapshotParameters(
         SqliteCommand command,
-        BatchTemplateSnapshot snapshot,
+        IBatchTemplateContext snapshot,
         string pagesJson)
     {
+        command.Parameters.AddWithValue("$context_version", snapshot is BatchRuleTemplateContext ? BatchRuleTemplateContext.SchemaVersion : "batch-template-snapshot/v1");
+        command.Parameters.AddWithValue("$business_rule_digest", (object?)(snapshot as BatchRuleTemplateContext)?.BusinessRuleDigest ?? DBNull.Value);
         command.Parameters.AddWithValue("$snapshot_id", snapshot.SnapshotId);
         command.Parameters.AddWithValue("$batch_id", snapshot.BatchId);
         command.Parameters.AddWithValue("$revision_id", snapshot.RevisionId);
@@ -516,7 +520,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
         command.Parameters.AddWithValue("$created_at", snapshot.CreatedAt.ToString("O"));
     }
 
-    private static async Task<BatchTemplateSnapshot> LoadSnapshotByIdAsync(
+    private static async Task<IBatchTemplateContext> LoadSnapshotByIdAsync(
         SqliteConnection connection,
         string snapshotId,
         string batchId,
@@ -524,7 +528,7 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT revision_id, pages_json, rules_digest, created_at
+            SELECT revision_id, pages_json, rules_digest, created_at, context_version, business_rule_digest
             FROM batch_template_snapshots
             WHERE snapshot_id = $snapshot_id AND batch_id = $batch_id;
             """;
@@ -536,6 +540,11 @@ public sealed partial class SqliteDesktopStore : IBatchRepository
             throw new InvalidDataException("INPUT_TEMPLATE_SNAPSHOT_MISSING");
         }
 
+        if (reader.GetString(4) == BatchRuleTemplateContext.SchemaVersion)
+            return BatchRuleTemplateContext.Restore(reader.GetString(4), snapshotId, batchId, reader.GetString(0),
+                DeserializeSnapshotPages(reader.GetString(1)), reader.GetString(2), reader.GetString(5), ParseTimestamp(reader.GetString(3)));
+        if (reader.GetString(4) != "batch-template-snapshot/v1" || !reader.IsDBNull(5))
+            throw new InvalidDataException("TPL_RULE_CONTEXT_VERSION_UNSUPPORTED");
         return BatchTemplateSnapshot.Restore(
             snapshotId,
             batchId,

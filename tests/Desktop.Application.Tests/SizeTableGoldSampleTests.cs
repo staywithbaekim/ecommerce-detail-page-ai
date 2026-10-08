@@ -3,7 +3,6 @@ using Desktop.Application.Inputs;
 using Desktop.Application.SizeTables;
 using Desktop.Contracts.Ai;
 using Desktop.Domain.SizeTables;
-using Xunit.Sdk;
 
 namespace Desktop.Application.Tests;
 
@@ -12,7 +11,7 @@ public sealed class SizeTableGoldSampleTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 9, 2, 9, 0, 0, TimeSpan.FromHours(8));
 
-    [Fact]
+    [RealSizeGoldSampleFact("size-real-a-577fa4d19f919a7a.jpg")]
     public void RealGoldSampleAMatchesEveryCellAndPreservesSlashColumn()
     {
         AssertGoldSample(
@@ -30,7 +29,7 @@ public sealed class SizeTableGoldSampleTests
             ]);
     }
 
-    [Fact]
+    [RealSizeGoldSampleFact("size-real-b-9231ad299120bba6.jpg")]
     public void RealGoldSampleBMatchesEveryCellAndPreservesDecimalText()
     {
         AssertGoldSample(
@@ -61,10 +60,7 @@ public sealed class SizeTableGoldSampleTests
             "SIZE-01金标",
             "真实来源",
             fileName);
-        if (!File.Exists(path))
-        {
-            throw SkipException.ForSkip($"本地真实金标不存在：{fileName}");
-        }
+        Assert.True(File.Exists(path), $"已发现的真实金标在执行前消失：{fileName}");
 
         var bytes = File.ReadAllBytes(path);
         var actualSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -115,6 +111,15 @@ public sealed class SizeTableGoldSampleTests
             rows.Select(row => row.ToArray()),
             result.Table.Rows.Select(row => row.Cells.Select(cell => cell.SourceText).ToArray()));
         Assert.Equal(expectedSha256, result.Table.Source.ContentDigest[7..]);
+    }
+
+    private sealed class RealSizeGoldSampleFactAttribute : FactAttribute
+    {
+        public RealSizeGoldSampleFactAttribute(string fileName)
+        {
+            if (!File.Exists(Path.Combine(FindRepositoryRoot(), "需求样本", "SIZE-01金标", "真实来源", fileName)))
+                Skip = $"外部验收素材缺失（不代表通过）：{fileName}";
+        }
     }
 
     private static string FindRepositoryRoot()

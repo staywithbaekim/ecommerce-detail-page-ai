@@ -75,6 +75,14 @@ public sealed class TemplateCalibrationService(
 
             _states.TryAdd(key, state);
         }
+        if (revision.RuleWorkspace is { } rules && state.RuleVersion != rules.Version)
+        {
+            // Registration is owned by the persisted revision, not a stale calibration cache.
+            state.RegisteredFrames.Clear();
+            state.PersistedBindingIds.Clear();
+            foreach (var binding in revision.FrameBindings.Where(binding => binding.PageId == pageId)) state.ApplyBinding(binding);
+            state.RuleVersion = rules.Version;
+        }
         return state.ToView(
             revision.RevisionId,
             pageId,
@@ -134,7 +142,7 @@ public sealed class TemplateCalibrationService(
         var existingBinding = FindPersistedBinding(revision, state, frameId);
         if (existingBinding is null)
         {
-            state.PersistedBindingIds[frameId] = frameId;
+            state.PersistedBindingIds[frameId] = NewBindingIdentity(revision, pageId, frameId, state.Frames.Single(frame => frame.FrameId == frameId));
             await templates.SaveDraftRevisionAsync(
                 revision.AddFrameBinding(state.BuildFrameBinding(pageId, frameId)),
                 cancellationToken).ConfigureAwait(false);
@@ -351,7 +359,7 @@ public sealed class TemplateCalibrationService(
                             layoutIntent: state.BuildLayoutIntent(frameId))
                         : revision.AddFrameBinding(state.BuildFrameBinding(pageId, frameId)),
                     cancellationToken).ConfigureAwait(false);
-                state.PersistedBindingIds[frameId] = existingBinding?.FrameId ?? frameId;
+                state.PersistedBindingIds[frameId] = existingBinding?.FrameId ?? NewBindingIdentity(revision, pageId, frameId, state.Frames.Single(frame => frame.FrameId == frameId));
             }
             else
             {
@@ -391,15 +399,20 @@ public sealed class TemplateCalibrationService(
             ;
         if (binding is null)
         {
+            var target = state.Frames.SingleOrDefault(frame => frame.FrameId == frameId)
+                ?? throw new InvalidOperationException("TPL_FRAME_NOT_FOUND");
+            if (!CanSetRule(target, state.CanvasWidth, state.CanvasHeight))
+                throw new InvalidOperationException("TPL_PSD_UNSUPPORTED_STRUCTURE");
             // A template can be authored from PSD structure alone.  A rule-only
             // binding is deliberate and is resolved against a product's photos
             // later during batch analysis; it never fabricates an asset id.
             state.SelectionRequirements[frameId] = normalized;
+            state.PersistedBindingIds[frameId] = NewBindingIdentity(revision, pageId, frameId, state.Frames.Single(frame => frame.FrameId == frameId));
             binding = state.BuildFrameBinding(pageId, frameId);
             await templates.SaveDraftRevisionAsync(
                 revision.AddFrameBinding(binding),
                 cancellationToken).ConfigureAwait(false);
-            state.PersistedBindingIds[frameId] = frameId;
+            state.PersistedBindingIds[frameId] = NewBindingIdentity(revision, pageId, frameId, state.Frames.Single(frame => frame.FrameId == frameId));
             state.RegisteredFrames.Add(frameId);
         }
         else
@@ -487,7 +500,51 @@ public sealed class TemplateCalibrationService(
     {
         var persistedFrameId = state.ResolvePersistedBindingId(frameId);
         return revision.FrameBindings.SingleOrDefault(binding =>
-            string.Equals(binding.FrameId, persistedFrameId, StringComparison.Ordinal));
+            string.Equals(binding.FrameId, persistedFrameId, StringComparison.Ordinal)
+            && binding.PageId == state.Frames.SingleOrDefault(frame => frame.FrameId == frameId)?.PageId);
+    }
+
+    internal static string NewBindingIdentity(TemplateRevision revision, string pageId, string frameId,
+        TemplateFrameProjection? target = null)
+    {
+        var legacy = revision.RuleWorkspace is null ? frameId
+            : "frame_" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(pageId + ":" + frameId)));
+        if (target is not null && revision.RuleWorkspace is { } rules
+            && !rules.Aliases.Any(alias => alias.PageId == pageId && alias.FrameId == legacy))
+        {
+            var reserved = ReferenceLearningService.StableFrameId(pageId, target.LayerId, target.LayerPath);
+            if (rules.Aliases.Any(alias => alias.PageId == pageId && alias.FrameId == reserved)) return reserved;
+        }
+        return legacy;
+    }
+
+    internal static string CandidateBindingIdentity(TemplateRevision revision, TemplateFrameProjection target)
+    {
+        var legacy = NewBindingIdentity(revision, target.PageId, target.FrameId);
+        return revision.RuleWorkspace?.Aliases.Any(alias => alias.PageId == target.PageId && alias.FrameId == legacy) == true
+            ? legacy : ReferenceLearningService.StableFrameId(target.PageId, target.LayerId, target.LayerPath);
+    }
+
+    internal static bool CanSetRule(TemplateFrameProjection target, int width, int height) =>
+        target.IsPreviewSupported && target.IsVisible && target.HasCompositeContribution != false
+        && target.LayerPath.Count > 0 && target.LayerPath.All(segment => segment >= 0 && segment < int.MaxValue)
+        && Math.Min(width, (long)target.Left + target.Width) > Math.Max(0, target.Left)
+        && Math.Min(height, (long)target.Top + target.Height) > Math.Max(0, target.Top);
+
+    internal static FrameBinding CreateRuleOnlyBinding(TemplateRevision revision, TemplateFrameProjection target,
+        PsdCanvasInspection canvas, string description)
+    {
+        if (!CanSetRule(target, canvas.Width, canvas.Height) || target.HasCompositeContribution != true)
+            throw new TemplateRuleViolationException("TPL_PSD_UNSUPPORTED_STRUCTURE");
+        return FrameBinding.Create(CandidateBindingIdentity(revision, target), target.PageId,
+            LayerPath.Create(target.LayerPath.Select(segment => checked(segment + 1))),
+            ExpectedLayerEvidence.Create(target.LayerId, target.LayerName, target.IsVisible, target.IsClipping,
+                target.HasMask, target.HasVectorMask, target.Opacity, target.BlendMode,
+                LayerStructureSignature.Create(NormalizeStructureSignature(target.StructureSignature))), [],
+            SelectionRequirement.Create(description), LayoutIntent.Create("subject_complete", 1, 0, 0,
+                TemplateRect.Create(Math.Max(0, target.Left), Math.Max(0, target.Top),
+                    Math.Min(canvas.Width, (double)target.Left + target.Width), Math.Min(canvas.Height, (double)target.Top + target.Height))));
     }
 
     private static void EnsurePageEditable(TemplateDraftSession session, string pageId)
@@ -514,7 +571,13 @@ public sealed class TemplateCalibrationService(
         PsdInspectionDocument inspection,
         string? templatePreviewSource)
     {
-        var frames = inspection.Layers
+        return new CalibrationState(InspectFrames(pageId, inspection), inspection.Canvas.Width,
+            inspection.Canvas.Height, templatePreviewSource);
+    }
+
+    internal static IReadOnlyList<TemplateFrameProjection> InspectFrames(string pageId, PsdInspectionDocument inspection)
+    {
+        return inspection.Layers
             .Where(layer => layer.SmartObject is not null && layer.Visible && layer.EffectiveVisible)
             .Select(layer => new TemplateFrameProjection(
                 $"frame_{layer.LayerId}",
@@ -536,13 +599,18 @@ public sealed class TemplateCalibrationService(
                 IsPreviewSupported: !layer.HasMask
                     && !layer.HasVectorMask
                     && IsAxisAlignedTransform(layer.SmartObject!.TransformBox),
-                IsRegistered: false))
+                IsRegistered: false)
+            {
+                HasCompositeContribution = layer.PixelEvidence.Available
+                    ? layer.PixelEvidence.RenderedPixelCount > 0
+                        && layer.PixelEvidence.CompositeContributionPixelCount > 0
+                        && layer.PixelEvidence.CompositeContributionBounds is not null
+                    : null,
+                PreviewBounds = layer.PixelEvidence.CompositeContributionBounds is { } bounds
+                    ? new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top)
+                    : null
+            })
             .ToArray();
-        return new CalibrationState(
-            frames,
-            inspection.Canvas.Width,
-            inspection.Canvas.Height,
-            templatePreviewSource);
     }
 
     private static bool IsAxisAlignedTransform(IReadOnlyList<double> transformBox)
@@ -605,10 +673,12 @@ public sealed class TemplateCalibrationService(
         public Dictionary<string, Geometry> FrameGeometry { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, string> SelectionRequirements { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, string> PersistedBindingIds { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, TemplateFramePreviewBounds> PreviewBounds { get; } = new(StringComparer.Ordinal);
         public HashSet<string> RegisteredFrames { get; } = new(StringComparer.Ordinal);
         public Stack<TemplateCalibrationOperation> Undo { get; } = new();
         public Stack<TemplateCalibrationOperation> Redo { get; } = new();
         public long Sequence { get; private set; }
+        public long RuleVersion { get; set; } = -1;
         public string? SelectedAssetId { get; set; }
         public string? SelectedFrameId { get; set; }
 
@@ -665,7 +735,7 @@ public sealed class TemplateCalibrationService(
                 frameId,
                 StringComparison.Ordinal));
             return FrameBinding.Create(
-                frameId,
+                ResolvePersistedBindingId(frameId),
                 pageId,
                 LayerPath.Create(frame.LayerPath.Select(segment => checked(segment + 1))),
                 ExpectedLayerEvidence.Create(
@@ -741,6 +811,8 @@ public sealed class TemplateCalibrationService(
 
             var frameId = frame.FrameId;
             PersistedBindingIds[frameId] = binding.FrameId;
+            var bounds = binding.LayoutIntent.SafeBounds;
+            PreviewBounds[frameId] = new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top);
             SelectionRequirements[frameId] = NormalizeSelectionRequirement(
                 binding.SelectionRequirement.Description);
             RegisteredFrames.Add(frameId);
@@ -845,6 +917,7 @@ public sealed class TemplateCalibrationService(
 
             var projectedFrames = Frames.Select(frame => frame with
             {
+                PreviewBounds = PreviewBounds.GetValueOrDefault(frame.FrameId) ?? frame.PreviewBounds,
                 BoundAssetId = FrameAssets.GetValueOrDefault(frame.FrameId),
                 Scale = GetGeometry(frame.FrameId).Scale,
                 OffsetX = GetGeometry(frame.FrameId).OffsetX,
@@ -855,6 +928,7 @@ public sealed class TemplateCalibrationService(
                 IsRegistered = RegisteredFrames.Contains(frame.FrameId)
                     && FrameAssets.ContainsKey(frame.FrameId),
                 HasPersistedBinding = RegisteredFrames.Contains(frame.FrameId),
+                PersistedFrameId = RegisteredFrames.Contains(frame.FrameId) ? ResolvePersistedBindingId(frame.FrameId) : null,
                 IsSelected = string.Equals(frame.FrameId, selectedFrameId, StringComparison.Ordinal)
             }).ToArray();
             var selectedFrame = projectedFrames.SingleOrDefault(frame => frame.IsSelected);

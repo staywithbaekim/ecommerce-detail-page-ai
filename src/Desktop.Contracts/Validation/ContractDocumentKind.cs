@@ -11,5 +11,8 @@ public enum ContractDocumentKind
     ReferenceLearning,
     ReferenceLearningAi,
     AdapterTransport,
-    TemplatePackageManifestV2
+    TemplatePackageManifestV2,
+    TemplatePackageManifestV3,
+    TemplateRuleWorkspace,
+    TemplateRuleAiResult
 }

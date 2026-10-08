@@ -32,10 +32,12 @@ internal static class InputCommitJournalConsistency
     }
 
     private static bool SnapshotMatches(
-        BatchTemplateSnapshot expected,
-        BatchTemplateSnapshot actual)
+        IBatchTemplateContext expected,
+        IBatchTemplateContext actual)
     {
-        return string.Equals(expected.SnapshotId, actual.SnapshotId, StringComparison.Ordinal)
+        return expected.GetType() == actual.GetType()
+            && (expected as BatchRuleTemplateContext)?.BusinessRuleDigest == (actual as BatchRuleTemplateContext)?.BusinessRuleDigest
+            && string.Equals(expected.SnapshotId, actual.SnapshotId, StringComparison.Ordinal)
             && string.Equals(expected.BatchId, actual.BatchId, StringComparison.Ordinal)
             && string.Equals(expected.RevisionId, actual.RevisionId, StringComparison.Ordinal)
             && string.Equals(expected.RulesDigest, actual.RulesDigest, StringComparison.Ordinal)

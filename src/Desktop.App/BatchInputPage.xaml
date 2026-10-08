@@ -58,7 +58,8 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0">
+                <Border Grid.Column="0" Padding="16" Style="{StaticResource SectionCardStyle}">
+                <StackPanel>
                     <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="模板与目录" />
                     <TextBlock Margin="0,4,0,12"
                                Style="{StaticResource CaptionTextStyle}"
@@ -182,8 +183,10 @@
                                    AutomationProperties.AutomationId="BatchOutputConfirmationStatus" />
                     </Grid>
                 </StackPanel>
+                </Border>
 
-                <StackPanel Grid.Column="2">
+                <Border Grid.Column="2" Padding="16" Style="{StaticResource SectionCardStyle}">
+                <StackPanel>
                     <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="生成设置" />
                     <TextBlock Margin="0,4,0,12"
                                Style="{StaticResource CaptionTextStyle}"
@@ -296,6 +299,7 @@
                         </StackPanel>
                     </Border>
                 </StackPanel>
+                </Border>
             </Grid>
 
             <Border Grid.Row="4"

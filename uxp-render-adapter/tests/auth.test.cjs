@@ -35,3 +35,14 @@ test("legacy pairing proof uses decoded nonce followed by UTF-8 fields", () => {
   const data = Buffer.concat([Buffer.alloc(32, 7), Buffer.from("session_10.1.026.8.1")]);
   assert.equal(auth.pairingProof(key, request), createHmac("sha256", key).update(data).digest("base64url"));
 });
+
+test("approved full build and base/instance capability public vectors remain cross-language stable", () => {
+  const data = JSON.parse(require("node:child_process").execFileSync(process.execPath,
+    [require("node:path").join(__dirname, "auth-vector.cjs")], { encoding: "utf8" }));
+  assert.deepEqual(data.current_build_cases.map(value => [value.challenge.server_proof, value.key, value.context_proof, value.response_mac]), [
+    ["t0VnCAz-UQvOeUuhmgE18b3I6BTLWeiuC7yn2dndrJA", "B5f2bQo9UodqBLGqxh2at7GasXvp8h0fUssYu_fdsKU",
+      "zm_r9_xfhdad_lw-Jgw7zl77S9iaUJXQc7Z8sgnZcsk", "EuvXC41no4h2otIo81iZSuXeBr_ezIp9qMB7Vrrom9c"],
+    ["Tu62e3oqcsTPgIfr9BYNC99fD7mQBhR5eTmf-BBauCw", "WpduFqE-U836zlwIhn7PA7qa4yksaD3TR5NYwUzmHAk",
+      "THmEzq6z8wWNymTIdL4HCo4wvLmasnNQPMM_orSRlKM", "_40iHXlCgk_PkYAotfopB9X54KFFFq23mcZ8R-Ag5ug"]
+  ]);
+});

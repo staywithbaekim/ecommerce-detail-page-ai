@@ -424,7 +424,7 @@ public sealed class BatchInputViewModelTests
 
     [Theory]
     [InlineData(false, "目录暂时不可访问")]
-    [InlineData(true, "清单与数据库记录不一致")]
+    [InlineData(true, "清单与保存记录不一致")]
     public void ScanFailuresRemainBlockedWithoutAiHandoff(bool inconsistent, string message)
     {
         var workflow = new BatchWorkflow

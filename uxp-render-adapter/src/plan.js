@@ -3,6 +3,7 @@ const { parseTree } = require("jsonc-parser");
 const validators = require("../dist/validators.cjs");
 const { hash } = require("./auth");
 const { rawPlanJson, parseStrict } = require("./json");
+const { validInstanceIdentity } = require("./instance-identity");
 
 const fail = (code = "BRIDGE_PLAN_INVALID") => { throw new Error(code); };
 const sameDigest = (a, b) => typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
@@ -63,7 +64,7 @@ function validateClaim(claim, session) {
     || claim.state !== "claimed" || !claim.plan || !validators.bridge(claim.plan)
     || claim.plan.envelope_kind !== "request" || claim.plan.body.operation !== "submit_plan") return fail();
   const body = claim.plan.body, payload = body.payload, plan = payload.render_plan;
-  if (!validators.plan(plan) || body.session_id !== session.session_id || body.token !== session.token
+  if (!validators.plan(plan) || !validInstanceIdentity(plan) || body.session_id !== session.session_id || body.token !== session.token
     || !Array.isArray(session.capabilities) || plan.required_capabilities.some(capability => !session.capabilities.includes(capability))
     || body.correlation_id !== plan.correlation_id || body.idempotency_key !== plan.idempotency_key
     || !sameDigest(payload.plan_digest, plan.plan_digest) || !sameDigest(claim.plan_digest, plan.plan_digest)

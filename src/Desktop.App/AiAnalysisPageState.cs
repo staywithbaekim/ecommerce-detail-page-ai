@@ -19,6 +19,7 @@ internal sealed class AiAnalysisPageState
     public AiUploadConsentRecord? UploadConsent { get; set; }
     public AiConsentContinuation PendingConsentContinuation { get; set; }
     public bool Busy { get; set; }
+    public bool IsSizeTableSourceReplacementActive { get; set; }
     public bool IsUploadConsentDialogVisible { get; set; }
     public bool UploadConsentAcknowledged { get; set; }
     public bool IsCandidatePreviewVisible { get; set; }
@@ -59,6 +60,7 @@ internal sealed class AiAnalysisPageState
     public ICommand OpenSizeTableSourcePreviewCommand { get; set; } = null!;
     public ICommand BeginReplacementCommand { get; set; } = null!;
     public ICommand SelectReplacementAssetCommand { get; set; } = null!;
+    public ICommand BeginSizeTableSourceReplacementCommand { get; set; } = null!;
     public ICommand ConfirmReplacementCommand { get; set; } = null!;
     public ICommand CancelReplacementCommand { get; set; } = null!;
     public ICommand OpenStyleReviewCommand { get; set; } = null!;

@@ -78,7 +78,7 @@
                                 <Border Grid.Row="1" Background="{StaticResource SurfaceStrongBrush}" CornerRadius="5" ClipToBounds="True">
                                     <Grid>
                                         <Image Margin="8" Source="{Binding SizeTableEditor.SourcePreviewPath, Converter={StaticResource BoundedPreviewImageConverter}, ConverterParameter=800}" Stretch="Uniform" Visibility="{Binding SizeTableEditor.HasSourcePreview, Converter={StaticResource BooleanToVisibilityConverter}}" AutomationProperties.Name="只读市场尺码图" />
-                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource CaptionTextStyle}" Text="来源预览不可用；仍保留 hash 引用" Visibility="{Binding SizeTableEditor.HasNoSourcePreview, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource CaptionTextStyle}" Text="来源预览暂不可用" Visibility="{Binding SizeTableEditor.HasNoSourcePreview, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                     </Grid>
                                 </Border>
                                 <StackPanel Grid.Row="2" Margin="0,10,0,0">

@@ -14,6 +14,131 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class SqliteDesktopStoreTests
 {
     [Fact]
+    public async Task HighFrequencyQueriesUseExpectedPrimaryOrExplicitIndexes()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await connection.OpenAsync();
+
+        static async Task<string[]> ExplainAsync(SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "EXPLAIN QUERY PLAN " + sql;
+            foreach (var (name, value) in parameters) command.Parameters.AddWithValue(name, value);
+            await using var reader = await command.ExecuteReaderAsync();
+            var details = new List<string>();
+            while (await reader.ReadAsync()) details.Add(reader.GetString(3));
+            return details.ToArray();
+        }
+
+        var fingerprint = await ExplainAsync(connection,
+            "SELECT request_id FROM ai_request_ledger WHERE fingerprint=$fingerprint;",
+            ("$fingerprint", "sha256:" + new string('a', 64)));
+        Assert.Contains(fingerprint, detail => detail.Contains("fingerprint", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("sqlite_autoindex_ai_request_ledger", StringComparison.OrdinalIgnoreCase));
+
+        var facts = await ExplainAsync(connection,
+            "SELECT payload_json FROM template_instance_production_facts WHERE batch_id=$batch AND style_id=$style;",
+            ("$batch", "batch_probe"), ("$style", "style_probe"));
+        Assert.Contains(facts, detail => detail.Contains("PRIMARY KEY", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("sqlite_autoindex_template_instance_production_facts", StringComparison.OrdinalIgnoreCase));
+
+        var render = await ExplainAsync(connection,
+            "SELECT payload_json FROM render_batch_journals WHERE batch_id=$batch ORDER BY revision DESC LIMIT 1;",
+            ("$batch", "batch_probe"));
+        Assert.Contains(render, detail => detail.Contains("PRIMARY KEY", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("sqlite_autoindex_render_batch_journals", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task TemplateRepositoryQueriesUseExpectedIndexes()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = options.DatabasePath, Pooling = false }.ToString());
+        await connection.OpenAsync();
+
+        static async Task<string[]> ExplainAsync(SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "EXPLAIN QUERY PLAN " + sql;
+            foreach (var (name, value) in parameters) command.Parameters.AddWithValue(name, value);
+            await using var reader = await command.ExecuteReaderAsync();
+            var details = new List<string>();
+            while (await reader.ReadAsync()) details.Add(reader.GetString(3));
+            return details.ToArray();
+        }
+
+        var latest = await ExplainAsync(connection,
+            "SELECT revision_id FROM template_revisions WHERE group_id=$group ORDER BY revision_no DESC LIMIT 1;",
+            ("$group", "group_probe"));
+        Assert.Contains(latest, detail => detail.Contains("IX_template_revisions_group", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase));
+
+        var pages = await ExplainAsync(connection,
+            "SELECT page_id FROM template_pages WHERE revision_id=$revision ORDER BY order_index;",
+            ("$revision", "revision_probe"));
+        Assert.Contains(pages, detail => detail.Contains("IX_template_pages_revision_order", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("sqlite_autoindex_template_pages", StringComparison.OrdinalIgnoreCase));
+
+        var blockers = await ExplainAsync(connection,
+            "SELECT snapshot.batch_id FROM batch_template_snapshots snapshot JOIN template_revisions revision ON revision.revision_id=snapshot.revision_id LEFT JOIN tasks task ON task.task_id=snapshot.batch_id WHERE revision.group_id=$group AND (task.task_id IS NULL OR task.status NOT IN ('Failed','Cancelled','Completed','CompletedWithIssues')) ORDER BY snapshot.batch_id;",
+            ("$group", "group_probe"));
+        Assert.Contains(blockers, detail => detail.Contains("USING INDEX", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("USING COVERING INDEX", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("SEARCH", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task InitializedSchemaPassesIntegrityForeignKeyAndPlanChecks()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using var store = new SqliteDesktopStore(options);
+        await store.InitializeAsync();
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = options.DatabasePath,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync();
+
+        async Task<string?> ScalarAsync(string sql)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return (string?)(await command.ExecuteScalarAsync());
+        }
+
+        Assert.Equal("ok", await ScalarAsync("PRAGMA integrity_check;"));
+        await using (var foreignKeys = connection.CreateCommand())
+        {
+            foreignKeys.CommandText = "PRAGMA foreign_key_check;";
+            await using var foreignReader = await foreignKeys.ExecuteReaderAsync();
+            Assert.False(await foreignReader.ReadAsync());
+        }
+        Assert.Contains("template_instance_production_facts", await ScalarAsync(
+            "SELECT group_concat(name, ',') FROM sqlite_master WHERE type='table';"));
+
+        await using var plan = connection.CreateCommand();
+        plan.CommandText = "EXPLAIN QUERY PLAN SELECT payload_json FROM template_instance_production_facts WHERE batch_id=$batch AND style_id=$style;";
+        plan.Parameters.AddWithValue("$batch", "batch_probe");
+        plan.Parameters.AddWithValue("$style", "style_probe");
+        await using var reader = await plan.ExecuteReaderAsync();
+        var details = new List<string>();
+        while (await reader.ReadAsync()) details.Add(reader.GetString(3));
+        Assert.Contains(details, detail => detail.Contains("PRIMARY KEY", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("sqlite_autoindex_template_instance_production_facts", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task DisposeAsyncIsIdempotentForSharedServiceRegistrations()
     {
         using var directory = new TestDirectory();
@@ -109,7 +234,7 @@ public sealed class SqliteDesktopStoreTests
             CultureInfo.InvariantCulture);
 
         Assert.Equal("wal", journalMode, ignoreCase: true);
-        Assert.Equal(21, migrationVersion);
+        Assert.Equal(28, migrationVersion);
     }
 
     [Fact]
@@ -592,7 +717,7 @@ public sealed class SqliteDesktopStoreTests
         var requestTime = DateTimeOffset.UtcNow;
         var request = new AiRequestLedgerEntry("request_01", "sha256:" + new string('b', 64), "batch_01", "style_01", "Queued", null, requestTime, requestTime);
         var amount = 1234567890.1234567890123456789m;
-        var usage = new AiUsageEventRecord("usage_01", "request_01", "model", 1, 2, false, 0, amount, "USD", DateTimeOffset.UtcNow);
+        var usage = new AiUsageEventRecord("usage_01", "request_01", "model", 10, 2, true, 0, amount, "USD", DateTimeOffset.UtcNow, CachedInputUnits: 7);
         var cache = new AiCacheReference("sha256:" + new string('c', 64), "results/session.json", "consent", "model", "usage_01", DateTimeOffset.UtcNow);
         await store.RecordRequestAsync(request, CancellationToken.None);
         await store.UpdateRequestStatusAsync("request_01", "Queued", "Uploading", null, DateTimeOffset.UtcNow, CancellationToken.None);
@@ -620,7 +745,10 @@ public sealed class SqliteDesktopStoreTests
         await store.RecordUsageAsync(usage, CancellationToken.None);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
             usage with { OutputUnits = 3 }, CancellationToken.None));
-        Assert.Equal(amount, Assert.Single(await store.LoadUsageAsync("request_01", CancellationToken.None)).ProviderCostAmount);
+        var loadedUsage = Assert.Single(await store.LoadUsageAsync("request_01", CancellationToken.None));
+        Assert.Equal(amount, loadedUsage.ProviderCostAmount);
+        Assert.Equal(7, loadedUsage.CachedInputUnits);
+        Assert.Equal(3, loadedUsage.BillableInputUnits);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordRequestAsync(
             request with { Fingerprint = "not-a-digest" }, CancellationToken.None));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RecordUsageAsync(
@@ -817,7 +945,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints; ALTER TABLE template_pages DROP COLUMN size_table_calibration_json; DELETE FROM schema_migrations WHERE version>=6; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
+            command.CommandText = "DROP TABLE template_instance_production_facts; DROP TABLE template_instance_manual_selections; ALTER TABLE batch_template_snapshots DROP COLUMN context_version; ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest; DROP TABLE template_rule_references; DROP TABLE template_rule_commands; DROP TABLE template_rule_workspaces; DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints; ALTER TABLE template_pages DROP COLUMN size_table_calibration_json; DELETE FROM schema_migrations WHERE version>=6; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me');";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -836,7 +964,7 @@ public sealed class SqliteDesktopStoreTests
         tablesCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_sessions','ai_request_ledger','ai_cache_references','ai_usage_events');";
         await using var columnCommand = verify.CreateCommand();
         columnCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('ai_usage_events') WHERE name='provider_cost_amount_text';";
-        Assert.Equal(21L, (long)(await versionCommand.ExecuteScalarAsync())!);
+        Assert.Equal(28L, (long)(await versionCommand.ExecuteScalarAsync())!);
         Assert.Equal("preserve-me", await sentinelCommand.ExecuteScalarAsync());
         Assert.Equal(4L, (long)(await tablesCommand.ExecuteScalarAsync())!);
         Assert.Equal(1L, (long)(await columnCommand.ExecuteScalarAsync())!);
@@ -856,7 +984,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints; ALTER TABLE template_pages DROP COLUMN size_table_calibration_json; DELETE FROM schema_migrations WHERE version>=6; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
+            command.CommandText = "DROP TABLE template_instance_production_facts; DROP TABLE template_instance_manual_selections; ALTER TABLE batch_template_snapshots DROP COLUMN context_version; ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest; DROP TABLE template_rule_references; DROP TABLE template_rule_commands; DROP TABLE template_rule_workspaces; DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints; ALTER TABLE template_pages DROP COLUMN size_table_calibration_json; DELETE FROM schema_migrations WHERE version>=6; DROP TABLE IF EXISTS ai_analysis_scheduler_state; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE ai_analysis_sessions; DROP TABLE ai_request_ledger; DROP TABLE ai_cache_references; DROP TABLE ai_usage_events; CREATE TABLE v5_sentinel(value TEXT NOT NULL); INSERT INTO v5_sentinel(value) VALUES('preserve-me'); CREATE TRIGGER fail_v6 BEFORE INSERT ON schema_migrations WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT, 'TEST_V6_FAILURE'); END;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -889,7 +1017,7 @@ public sealed class SqliteDesktopStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints; ALTER TABLE template_pages DROP COLUMN size_table_calibration_json; DELETE FROM schema_migrations WHERE version>=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE IF EXISTS ai_analysis_scheduler_state; ALTER TABLE ai_cache_references DROP COLUMN is_reusable; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
+            command.CommandText = "DROP TABLE template_instance_production_facts; DROP TABLE template_instance_manual_selections; ALTER TABLE batch_template_snapshots DROP COLUMN context_version; ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest; DROP TABLE template_rule_references; DROP TABLE template_rule_commands; DROP TABLE template_rule_workspaces; DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations; DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints; ALTER TABLE template_pages DROP COLUMN size_table_calibration_json; DELETE FROM schema_migrations WHERE version>=7; DROP TABLE ai_analysis_checkpoint_items; DROP TABLE ai_analysis_checkpoint_journal; DROP TABLE IF EXISTS ai_analysis_scheduler_state; ALTER TABLE ai_cache_references DROP COLUMN is_reusable; CREATE TABLE v6_sentinel(value TEXT NOT NULL); INSERT INTO v6_sentinel(value) VALUES('preserve-v6');";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -906,7 +1034,7 @@ public sealed class SqliteDesktopStoreTests
         sentinel.CommandText = "SELECT value FROM v6_sentinel;";
         await using var tables = verify.CreateCommand();
         tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_analysis_checkpoint_journal','ai_analysis_checkpoint_items');";
-        Assert.Equal(21L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(28L, (long)(await version.ExecuteScalarAsync())!);
         Assert.Equal("preserve-v6", await sentinel.ExecuteScalarAsync());
         Assert.Equal(2L, (long)(await tables.ExecuteScalarAsync())!);
     }

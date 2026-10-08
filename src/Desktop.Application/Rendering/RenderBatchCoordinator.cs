@@ -27,13 +27,26 @@ public sealed partial class RenderBatchCoordinator(IRenderBatchStore store, IRen
         {
             var previous = await store.LoadRenderBatchAsync(preparation.BatchId, cancellationToken).ConfigureAwait(false);
             // A new projection must never replace an existing execution or recovery intent.
-            if (previous is not null) return previous;
-            var journal = new RenderBatchJournal(1, preparation.BatchId, 1, RenderBatchStatus.Prepared, false, false,
+            if (previous is not null)
+            {
+                if (previous.Version == 4)
+                {
+                    var logical = previous.Pages.GroupBy(page => (page.StyleId, page.Instance!.PageInstanceId)).ToArray();
+                    if (!(preparation.InstanceSets ?? []).SequenceEqual(previous.InstanceSets ?? [])
+                        || preparation.Pages.Count != logical.Length || preparation.Pages.Any(page =>
+                        !logical.Any(group => group.Key == (page.StyleId, page.Instance?.PageInstanceId)
+                            && group.Any(saved => saved.Instance == page.Instance && saved.PlanJson == page.RenderPlanJson))))
+                        throw new InvalidDataException("TPL_INSTANCE_PRODUCTION_PREPARATION_MISMATCH");
+                }
+                return previous;
+            }
+            var journal = new RenderBatchJournal(preparation.UsesInstancePipeline || preparation.Pages.Any(page => page.Instance is not null) ? 4 : 1, preparation.BatchId, 1, RenderBatchStatus.Prepared, false, false,
                 preparation.Pages.Select(page => new RenderBatchPage(page.StyleId, page.PageId, page.OutputVariantId, 1,
                     page.Status == AiRenderPagePreparationStatus.ReadyToRender ? page.RenderPlanJson : null,
                     page.Status == AiRenderPagePreparationStatus.ReadyToRender && page.HasPlan
                         ? RenderBatchPageStatus.Planned : RenderBatchPageStatus.Blocked, page.ReasonCode,
-                    PreparationReasonCode: page.ReasonCode, OutputVariantName: page.OutputVariantName)).ToArray());
+                    PreparationReasonCode: page.ReasonCode, OutputVariantName: page.OutputVariantName, Instance: page.Instance)).ToArray(),
+                InstanceSets: preparation.InstanceSets?.ToArray());
             RenderBatchJournalValidator.Validate(journal, plans);
             await store.SaveRenderBatchAsync(journal, 0, cancellationToken).ConfigureAwait(false);
             return journal;
@@ -58,7 +71,7 @@ public sealed partial class RenderBatchCoordinator(IRenderBatchStore store, IRen
             return await Change(batchId, journal =>
             {
                 var page = journal.Pages.SingleOrDefault(item => item.StyleId == styleId && item.PageId == pageId
-                    && item.OutputVariantId == outputVariantId && item.Attempt == expectedAttempt);
+                    && item.OutputVariantId == outputVariantId && item.Instance is null && item.Attempt == expectedAttempt);
                 if (page is null || !RenderBatchJournalValidator.CanRegenerate(journal, page))
                     throw new InvalidOperationException("RENDER_REGENERATION_NOT_ALLOWED");
                 var added = page with { Attempt = checked(page.Attempt + 1),
@@ -66,6 +79,31 @@ public sealed partial class RenderBatchCoordinator(IRenderBatchStore store, IRen
                     Status = RenderBatchPageStatus.Planned, ReasonCode = page.PreparationReasonCode!, ExecutionId = null, Commit = null,
                     SizeTableRepair = null };
                 return journal with { Version = Math.Max(2, journal.Version), Status = RenderBatchStatus.Prepared, PauseRequested = false, CancelRequested = false,
+                    RegenerationPageIndex = journal.Pages.Count, Pages = [.. journal.Pages, added] };
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _run.Release(); }
+    }
+
+    public async Task<RenderBatchJournal> PrepareInstanceRetryAsync(string batchId, string styleId, string pageInstanceId,
+        int expectedAttempt, CancellationToken cancellationToken)
+    {
+        if (!await _run.WaitAsync(0, cancellationToken).ConfigureAwait(false)) throw new InvalidOperationException("RENDER_BATCH_BUSY");
+        try
+        {
+            if (publicOutputs is not null && await publicOutputs.UsesPublicOutputAsync(batchId, cancellationToken).ConfigureAwait(false)
+                && !await publicOutputs.CanRecoverFailedInstanceAsync(batchId, styleId, pageInstanceId, expectedAttempt, cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException("RENDER_PUBLIC_OUTPUT_EDITING_NOT_AVAILABLE");
+            return await Change(batchId, journal =>
+            {
+                var page = journal.Pages.SingleOrDefault(item => item.StyleId == styleId
+                    && item.Instance?.PageInstanceId == pageInstanceId && item.Attempt == expectedAttempt);
+                if (journal.Version != 4 || page is null || !RenderBatchJournalValidator.CanRegenerate(journal, page))
+                    throw new InvalidOperationException("RENDER_REGENERATION_NOT_ALLOWED");
+                var added = page with { Attempt = checked(page.Attempt + 1),
+                    PlanJson = RenderPlanRegeneration.Create(page.PlanJson!, time.GetUtcNow()),
+                    Status = RenderBatchPageStatus.Planned, ReasonCode = page.PreparationReasonCode!, ExecutionId = null, Commit = null };
+                return journal with { Status = RenderBatchStatus.Prepared, PauseRequested = false, CancelRequested = false,
                     RegenerationPageIndex = journal.Pages.Count, Pages = [.. journal.Pages, added] };
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -86,6 +124,9 @@ public sealed partial class RenderBatchCoordinator(IRenderBatchStore store, IRen
             if (journal.Status == RenderBatchStatus.Cancelled) return journal;
             var publicOutput = publicOutputs is not null && await publicOutputs.UsesPublicOutputAsync(batchId, cancellationToken).ConfigureAwait(false);
             await EnsureTask(batchId, cancellationToken).ConfigureAwait(false);
+            // A legal empty expansion or entirely business-red batch has no renderer work.
+            if (journal.Pages.All(page => page.Status == RenderBatchPageStatus.Blocked))
+                return await Finish(batchId, cancellationToken).ConfigureAwait(false);
             // Public-copy/rename recovery uses already verified internal receipts, not a Photoshop
             // connection or another execution. Uncertain/submitting/planned pages never take this path.
             if (publicOutput && journal.Pages.All(page => page.Status is RenderBatchPageStatus.Committed
@@ -222,7 +263,7 @@ public sealed partial class RenderBatchCoordinator(IRenderBatchStore store, IRen
     private async Task<RenderBatchJournal> Finish(string batchId, CancellationToken token)
     {
         var journal = await Require(batchId, token).ConfigureAwait(false);
-        var latestPages = journal.Pages.GroupBy(page => (page.StyleId, page.PageId, page.OutputVariantId))
+        var latestPages = journal.Pages.GroupBy(page => (page.StyleId, page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId))
             .Select(group => group.MaxBy(page => page.Attempt)!);
         var issues = latestPages.Count(page => page.Status is RenderBatchPageStatus.Blocked or RenderBatchPageStatus.Failed or RenderBatchPageStatus.Cancelled
             || journal.Version >= 2 && page.Status == RenderBatchPageStatus.Planned);
@@ -233,15 +274,19 @@ public sealed partial class RenderBatchCoordinator(IRenderBatchStore store, IRen
         {
             while (task.IssueCount < issues)
                 task = (await tasks.RecordAsync(TaskEvent.Create(batchId, task.LastSequence + 1, TaskEventType.IssueRecorded), token).ConfigureAwait(false)).State;
-            var kind = journal.CancelRequested ? TaskEventType.Cancelled
-                : journal.Pages.All(page => page.Status != RenderBatchPageStatus.Committed) ? TaskEventType.UserActionRequired
+            var kind = journal.CancelRequested || journal.Version == 4 && latestPages.Any() && latestPages.All(page => page.Status == RenderBatchPageStatus.Cancelled) ? TaskEventType.Cancelled
+                : !latestPages.Any(page => page.Status == RenderBatchPageStatus.Committed)
+                    ? journal.Version == 4 && latestPages.Any(page => page.Status == RenderBatchPageStatus.Failed) ? TaskEventType.Failed : TaskEventType.UserActionRequired
                 : issues > 0 ? TaskEventType.CompletedWithIssues : TaskEventType.Completed;
             await SetTask(batchId, kind, token).ConfigureAwait(false);
         }
         return await Change(batchId, value => value with
         {
-            Status = value.CancelRequested ? RenderBatchStatus.Cancelled
-                : value.Pages.All(page => page.Status != RenderBatchPageStatus.Committed) ? RenderBatchStatus.Paused
+            Status = value.CancelRequested || value.Version == 4 && latestPages.Any() && latestPages.All(page => page.Status == RenderBatchPageStatus.Cancelled) ? RenderBatchStatus.Cancelled
+                : value.Version == 4 && value.Pages.Count == 0 ? RenderBatchStatus.Empty
+                : !latestPages.Any(page => page.Status == RenderBatchPageStatus.Committed)
+                    ? value.Version == 4 && latestPages.Any(page => page.Status == RenderBatchPageStatus.Failed) ? RenderBatchStatus.Failed
+                        : value.Version == 4 ? RenderBatchStatus.UserActionRequired : RenderBatchStatus.Paused
                 : issues > 0 ? RenderBatchStatus.CompletedWithIssues : RenderBatchStatus.Completed
         }, token).ConfigureAwait(false);
     }

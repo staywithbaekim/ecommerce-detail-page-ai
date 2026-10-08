@@ -13,6 +13,7 @@ const capabilities = Object.freeze([
   "size-table/calibrated-target-v1",
   "size-table/insert-layer-v1",
   "output/variant-identity-v1",
+  "template/page-instance-identity-v1",
   "pairing/protected-storage-v1"
 ]);
 

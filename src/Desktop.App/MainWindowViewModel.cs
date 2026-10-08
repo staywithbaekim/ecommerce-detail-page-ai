@@ -45,7 +45,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         IDiagnosticPackageExporter? diagnosticExporter = null,
         IPhotoshopEnvironmentProbe? photoshopEnvironment = null,
         IPhotoshopConnectionCheckPort? photoshopConnectionCheck = null,
-        IPhotoshopHostSelectionPort? photoshopHostSelection = null)
+        IPhotoshopHostSelectionPort? photoshopHostSelection = null,
+        ITemplateRuleInterpreter? templateRuleInterpreter = null)
     {
         NavigationItems =
         [
@@ -67,7 +68,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         TemplateWorkspacePageViewModel = new TemplateWorkspacePageViewModel(this,
             new TemplateWorkspaceViewModel(templateWorkspace, templateCalibration, templatePackages,
                 referenceLearningService, referenceLearningCommitService, referenceLearningAiService,
-                folderPicker, this));
+                folderPicker, this, templateRuleInterpreter));
         TemplateWorkspace.PropertyChanged += TemplateWorkspace_PropertyChanged;
         SettingsPageViewModel = new SettingsPageViewModel(this, aiCredentialManagement, photoshopPairing,
             diagnosticExporter, photoshopEnvironment, photoshopConnectionCheck, photoshopHostSelection);
@@ -229,8 +230,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             foreach (var row in rows.Take(3)) RecentTasks.Add(row);
             _hasTaskListSnapshot = true;
 
-            TaskListStatusText = Tasks.Count == 0 ? "尚无可恢复的批次。"
-                : $"共 {Tasks.Count} 个批次，按最近更新时间排序。状态来自本地任务记录；无生成记录时显示输入阶段，分析状态请查看详情。";
+            TaskListStatusText = Tasks.Count == 0 ? "暂无任务记录。"
+                : $"共 {Tasks.Count} 个批次，按最近更新时间排序。";
         }
         catch (OperationCanceledException) when (_taskListLifetime.IsCancellationRequested) { }
         catch (Exception)
@@ -407,9 +408,10 @@ public sealed record TaskRowViewModel(
     public static TaskRowViewModel FromSummary(BatchRecoverySummary batch, string templateName)
     {
         ArgumentNullException.ThrowIfNull(batch);
+        templateName = NormalizeTemplateName(templateName);
         var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(batch.InputDirectory));
         var (text, state, detail, description) = ProjectStatus(batch);
-        return new TaskRowViewModel(string.IsNullOrWhiteSpace(name) ? batch.BatchId : name,
+        return new TaskRowViewModel(string.IsNullOrWhiteSpace(name) ? "当前款式" : name,
             batch.BatchId, templateName, text, state,
             batch.LatestUpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture),
             "查看/恢复")
@@ -419,12 +421,21 @@ public sealed record TaskRowViewModel(
         };
     }
 
+    private static string NormalizeTemplateName(string value) =>
+        string.IsNullOrWhiteSpace(value)
+        || value.Contains("TPL", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("规则实机", StringComparison.Ordinal)
+        || value.Contains('_')
+        || value.Length > 28
+            ? "已校准模板"
+            : value;
+
     private static (string Text, string State, string Detail, string Description) ProjectStatus(BatchRecoverySummary batch)
     {
         var task = batch.Task;
         if (batch.TaskStateUnavailable || task is not null &&
             (task.TaskId != batch.BatchId || task.OutputCount < 0 || task.IssueCount < 0 || task.LastSequence < 0))
-            return ("任务状态读取失败", "Recoverable", "请检查本地记录后刷新", "未重新扫描或生成；其他批次仍可查看。请检查本地存储后刷新列表。");
+            return ("状态待核对", "Recoverable", "请刷新后查看", "当前记录需要核对，请刷新任务列表。其他任务不受影响。");
 
         if (task is null || task is { Status: "None", LastSequence: 0, OutputCount: 0, IssueCount: 0 })
         {
@@ -437,7 +448,7 @@ public sealed record TaskRowViewModel(
             };
             return (text, batch.TemplateGroupId is null || batch.Status == BatchInputUiStatus.ScanBlocked
                     ? "Recoverable" : "Paused", "暂无生成任务记录",
-                "此行仅显示输入阶段，不能据此判断分析是否完成；请打开详情。未自动分析或生成。");
+                "当前只保存了输入信息，请打开查看详情。不会自动继续处理。");
         }
 
         var status = task.Status switch
@@ -458,8 +469,8 @@ public sealed record TaskRowViewModel(
         };
         var counts = $"已登记 {task.OutputCount} 页 · 历史问题 {task.IssueCount} 项";
         var action = task.Status is "Rendering" or "Scanning"
-            ? "这是已保存的执行记录，不代表进程仍在运行；请打开详情核对，不会自动重投未知执行。"
-            : "请打开详情查看结果、原因和可用操作；列表不会自动分析、恢复执行或重新生成。";
-        return (status.Item1, status.Item2, counts, $"{status.Item1}；{counts}。登记数不代表已重新核验输出文件。{action}");
+            ? "记录待核对，请打开详情。"
+            : "打开详情查看结果和可用操作。";
+        return (status.Item1, status.Item2, counts, $"{status.Item1}；{counts}。{action}");
     }
 }

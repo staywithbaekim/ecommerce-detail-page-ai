@@ -112,6 +112,17 @@ public sealed partial class BridgeExecutionBrokerTests
         var after = await File.ReadAllBytesAsync(Path.Combine(fixture.Root, recovered.Checkpoint.ManifestRelativePath));
         Assert.Equal(before, after);
         var media = System.Text.Json.Nodes.JsonNode.Parse(after)!["media"]!;
+        if (!includePsd)
+        {
+            // ADR-014 2026-09-24/P0: new JPG-only executions do not produce PSD structural receipts.
+            // Size facts remain bound by the persisted plan digest; do not fabricate an embedded-layer proof.
+            Assert.Null(media["size_table"]);
+            Assert.Equal(fixture.Plan["plan_digest"]!.GetValue<string>(), recovered.Checkpoint.Page.PlanDigest);
+            Assert.Equal("size_commit_01", fixture.Plan["size_table"]!["size_table_id"]!.GetValue<string>());
+            Assert.Equal(sourceHashes, fixture.Hashes());
+            Assert.Equal(1, (await new TaskCoordinator(store).LoadAsync("batch_01JEXAMPLE")).OutputCount);
+            return;
+        }
         var size = media["size_table"]!;
         Assert.Equal("size_commit_01", size["size_table_id"]!.GetValue<string>());
         Assert.Equal("sha256:" + new string('c', 64), size["structured_data_digest"]!.GetValue<string>());
@@ -324,9 +335,9 @@ public sealed partial class BridgeExecutionBrokerTests
         Assert.All(committedFiles, pair => Assert.Equal(pair.Value, Hash(File.ReadAllBytes(pair.Key))));
     }
 
-    private async Task<(BridgeResourceLeaseTests.Fixture Fixture, string Execution)> ValidatedPage(BridgeExecutionBroker broker, bool includePsd = true, bool sizeTable = false, bool sizeInsertion = false, int attempt = 1)
+    private async Task<(BridgeResourceLeaseTests.Fixture Fixture, string Execution)> ValidatedPage(BridgeExecutionBroker broker, bool includePsd = true, bool sizeTable = false, bool sizeInsertion = false, int attempt = 1, string? instanceTag = null)
     {
-        var (fixture, output, claim) = await PrepareOutput(broker, includePsd, verificationPsd: false, sizeTable: sizeTable, sizeInsertion: sizeInsertion, attempt: attempt);
+        var (fixture, output, claim) = await PrepareOutput(broker, includePsd, verificationPsd: false, sizeTable: sizeTable, sizeInsertion: sizeInsertion, attempt: attempt, instanceTag: instanceTag);
         var pageId = fixture.Plan["document"]!["page_id"]!.GetValue<string>();
         await broker.ReportAsync("session_test", Report(claim, 2, "page_started", "running", pageId), default);
         byte[] psd = [56, 66, 80, 83, 0, 1, 0, 0];

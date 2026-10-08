@@ -59,7 +59,7 @@ public sealed class JsonInputCommitJournalStore(
             using var document = JsonDocument.Parse(bytes);
             var options = document.RootElement.TryGetProperty("schema_version", out var version)
                 && version.ValueKind == JsonValueKind.String
-                && version.GetString() == InputCommitJournalProtocol.OutputSelectionVersion
+                && version.GetString() is InputCommitJournalProtocol.OutputSelectionVersion or InputCommitJournalProtocol.RuleContextVersion
                     ? OutputSelectionOptions : Options;
             var envelope = JsonSerializer.Deserialize<JournalEnvelope>(bytes, options)
                 ?? throw new InvalidDataException("INPUT_COMMIT_JOURNAL_CORRUPT");
@@ -114,7 +114,8 @@ public sealed class JsonInputCommitJournalStore(
 
     private static JournalEnvelope ToEnvelope(InputCommitJournal journal)
     {
-        if (!ValidVersion(journal.SchemaVersion, journal.ReadyDraft.OutputSelection is not null)
+        if (!ValidVersion(journal.SchemaVersion, journal.ReadyDraft.OutputSelection is not null,
+                journal.ReadyDraft.TemplateSnapshot is BatchRuleTemplateContext)
             || !string.Equals(journal.BatchId, journal.ReadyDraft.BatchId, StringComparison.Ordinal)
             || !string.Equals(journal.BatchId, journal.StagedManifest.BatchId, StringComparison.Ordinal)
             || journal.ReadyDraft.ScanStatus != BatchScanStatus.ScanReady
@@ -151,7 +152,8 @@ public sealed class JsonInputCommitJournalStore(
                     page.GenerationMode,
                     page.VariantCapacity,
                     page.TemplateResourceId,
-                    page.FrameIds.ToArray())).ToArray()),
+                    page.FrameIds.ToArray())).ToArray(),
+                (draft.TemplateSnapshot as BatchRuleTemplateContext)?.BusinessRuleDigest),
             draft.Styles.Select(style => new StyleEnvelope(
                 style.StyleId,
                 style.DefaultStyleCode,
@@ -181,7 +183,8 @@ public sealed class JsonInputCommitJournalStore(
         JournalEnvelope envelope,
         string requestedBatchId)
     {
-        if (!ValidVersion(envelope.SchemaVersion, envelope.OutputSelection is not null)
+        if (!ValidVersion(envelope.SchemaVersion, envelope.OutputSelection is not null,
+                envelope.Snapshot?.BusinessRuleDigest is not null)
             || !string.Equals(envelope.BatchId, requestedBatchId, StringComparison.Ordinal)
             || !Enum.IsDefined(envelope.State)
             || string.IsNullOrWhiteSpace(envelope.ManifestReference)
@@ -205,7 +208,11 @@ public sealed class JsonInputCommitJournalStore(
             page.VariantCapacity,
             page.TemplateResourceId,
             (page.FrameIds ?? []).ToImmutableArray())).ToArray();
-        var snapshot = BatchTemplateSnapshot.Restore(
+        IBatchTemplateContext snapshot = envelope.SchemaVersion == InputCommitJournalProtocol.RuleContextVersion
+            ? BatchRuleTemplateContext.Restore(BatchRuleTemplateContext.SchemaVersion,
+                envelope.Snapshot.SnapshotId, envelope.Snapshot.BatchId, envelope.Snapshot.RevisionId,
+                pages, envelope.Snapshot.RulesDigest, envelope.Snapshot.BusinessRuleDigest!, envelope.Snapshot.CreatedAt)
+            : BatchTemplateSnapshot.Restore(
             envelope.Snapshot.SnapshotId,
             envelope.Snapshot.BatchId,
             envelope.Snapshot.RevisionId,
@@ -265,7 +272,8 @@ public sealed class JsonInputCommitJournalStore(
     private static string PathFor(string batchId) =>
         $"batches/{batchId}/asset-manifest/commit.journal.json";
 
-    private static bool ValidVersion(string version, bool hasSelection) => version == (hasSelection
+    private static bool ValidVersion(string version, bool hasSelection, bool ruleContext) => version == (ruleContext
+        ? InputCommitJournalProtocol.RuleContextVersion : hasSelection
         ? InputCommitJournalProtocol.OutputSelectionVersion : InputCommitJournalProtocol.Version);
 
     private static BatchOutputSelection? ReadOutputSelection(OutputSelectionEnvelope? value)
@@ -318,7 +326,8 @@ public sealed class JsonInputCommitJournalStore(
         string RevisionId,
         string RulesDigest,
         DateTimeOffset CreatedAt,
-        IReadOnlyList<PageEnvelope> Pages);
+        IReadOnlyList<PageEnvelope> Pages,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? BusinessRuleDigest = null);
 
     private sealed record PageEnvelope(
         string PageId,

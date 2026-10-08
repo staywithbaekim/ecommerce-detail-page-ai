@@ -465,6 +465,48 @@ public sealed class TemplateCalibrationServiceTests
         Assert.DoesNotContain(binding.SelectionRequirement.Criteria, item => item.Key == "asset_id");
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task ManualRuleRegistrationUsesCompositeEvidenceAndRejectsUnsupportedCandidates(bool contributes, bool masked)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var group = TemplateGroup.Create("group_cal", "Manual rule", now);
+        var revision = TemplateRevision.CreateDraft("revision_cal", group.GroupId, 1, now,
+            [TemplatePage.Create("page_cal", "revision_cal", 0, "规则页", TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct, null, true, "resource_cal")]);
+        var templates = new MemoryTemplateRepository(group, revision);
+        var resource = Resource();
+        var layer = Assert.Single(resource.Inspection.Layers) with
+        {
+            HasMask = masked,
+            PixelEvidence = new(true, 100, contributes ? 100 : 0,
+                contributes ? new PsdLayerBounds(10, 20, 110, 120) : null)
+        };
+        resource = resource with { Inspection = resource.Inspection with { Layers = [layer] } };
+        var service = new TemplateCalibrationService(templates, new MemoryResourceRepository(resource));
+        var session = new TemplateDraftSession(group.GroupId, group.Name, revision.RevisionId, revision.RevisionNo,
+            new HashSet<string>(StringComparer.Ordinal));
+        var initial = await service.LoadAsync(session, "page_cal", default);
+        var target = Assert.Single(initial.Frames);
+        Assert.Equal(contributes, target.HasCompositeContribution);
+        Assert.Equal(contributes ? new TemplateFramePreviewBounds(10, 20, 100, 100) : null, target.PreviewBounds);
+        if (contributes && !masked)
+        {
+            var saved = await service.SetSelectionRequirementAsync(session, "page_cal", target.FrameId, "假模特正面图", default);
+            Assert.True(Assert.Single(saved.Frames).HasPersistedBinding);
+            Assert.Null(Assert.Single(saved.Frames).BoundAssetId);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.SetSelectionRequirementAsync(session, "page_cal", target.FrameId, "假模特正面图", default));
+            Assert.Equal("TPL_PSD_UNSUPPORTED_STRUCTURE", error.Message);
+            Assert.Empty((await templates.GetRevisionAsync(revision.RevisionId, default))!.FrameBindings);
+        }
+    }
+
     [Fact]
     public async Task LoadingEditDraftSelectsPersistedRuleAndShowsItsDescription()
     {
@@ -525,6 +567,7 @@ public sealed class TemplateCalibrationServiceTests
         Assert.Equal("frame_257", view.SelectedFrameId);
         Assert.Equal("完整正面图，商品主体完整。", view.SelectionRequirement);
         Assert.True(Assert.Single(view.Frames).HasPersistedBinding);
+        Assert.Equal(new TemplateFramePreviewBounds(0, 0, 790, 1252), Assert.Single(view.Frames).PreviewBounds);
         Assert.True(Assert.Single(view.Frames).IsRegistered);
         Assert.Equal(1.2, view.SelectedScale);
         Assert.Equal(4, view.SelectedOffsetX);

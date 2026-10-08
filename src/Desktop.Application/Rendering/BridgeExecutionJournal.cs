@@ -6,7 +6,9 @@ namespace Desktop.Application.Rendering;
 public sealed record BridgeExecutionRecord(
     string TaskId, string ExecutionId, string IdempotencyKey, string PlanDigest,
     string PageId, string State, bool CancelRequested, int EventSeq,
-    IReadOnlyList<BridgeEventV1> Events);
+    IReadOnlyList<BridgeEventV1> Events,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RenderInstanceIdentity? Instance = null);
 
 public sealed record BridgeExecutionJournal(int Version, IReadOnlyList<BridgeExecutionRecord> Executions);
 

@@ -498,7 +498,138 @@ public sealed partial class SqliteDesktopStore
                 PRIMARY KEY(batch_id, style_id, file_name),
                 FOREIGN KEY(batch_id, style_id) REFERENCES render_output_publications(batch_id, style_id)
             );
-            """)
+            """),
+        new(22, "desktop-v22-template-rule-workspaces-001", """
+            CREATE TABLE template_rule_workspaces (
+                revision_id TEXT PRIMARY KEY,
+                version INTEGER NOT NULL CHECK(version > 0),
+                payload_json TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                business_digest TEXT NOT NULL,
+                FOREIGN KEY(revision_id) REFERENCES template_revisions(revision_id) ON DELETE CASCADE
+            );
+            CREATE TABLE template_rule_commands (
+                revision_id TEXT NOT NULL,
+                command_id TEXT NOT NULL,
+                request_digest TEXT NOT NULL,
+                result_version INTEGER NOT NULL,
+                applied_json TEXT,
+                inverse_json TEXT,
+                undo_of TEXT,
+                before_legacy INTEGER NOT NULL CHECK(before_legacy IN (0,1)),
+                PRIMARY KEY(revision_id, command_id),
+                UNIQUE(revision_id, undo_of),
+                FOREIGN KEY(revision_id) REFERENCES template_rule_workspaces(revision_id) ON DELETE CASCADE
+            );
+            CREATE TABLE template_rule_references (
+                revision_id TEXT NOT NULL,
+                branch_id TEXT NOT NULL,
+                recipe_id TEXT NOT NULL,
+                page_id TEXT NOT NULL,
+                frame_id TEXT NOT NULL,
+                PRIMARY KEY(revision_id, branch_id, recipe_id, page_id, frame_id),
+                FOREIGN KEY(revision_id) REFERENCES template_rule_workspaces(revision_id) ON DELETE CASCADE
+            );
+            CREATE INDEX ix_template_rule_target ON template_rule_references(revision_id, page_id, frame_id);
+            """),
+        new(23, "desktop-v23-template-instance-projection-snapshots-001", """
+            CREATE TABLE IF NOT EXISTS template_instance_projection_snapshots (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+                snapshot_version INTEGER NOT NULL CHECK(snapshot_version = 1),
+                snapshot_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                rule_digest TEXT NOT NULL,
+                input_facts_digest TEXT NOT NULL,
+                projection_digest TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                frozen_at TEXT NOT NULL,
+                command_id TEXT NOT NULL,
+                command_digest TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id)
+            );
+            CREATE TABLE IF NOT EXISTS template_instance_projection_commands (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                command_id TEXT NOT NULL,
+                command_digest TEXT NOT NULL,
+                result_version INTEGER NOT NULL CHECK(result_version > 0),
+                projection_digest TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id, command_id),
+                FOREIGN KEY(batch_id, style_id)
+                    REFERENCES template_instance_projection_snapshots(batch_id, style_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS template_instance_projection_members (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                page_instance_id TEXT NOT NULL,
+                source_page_id TEXT NOT NULL,
+                recipe_id TEXT NOT NULL,
+                repetition_index INTEGER NOT NULL CHECK(repetition_index >= 0),
+                stable_order INTEGER NOT NULL CHECK(stable_order >= 0),
+                PRIMARY KEY(batch_id, style_id, page_instance_id),
+                UNIQUE(batch_id, style_id, source_page_id, recipe_id, repetition_index),
+                UNIQUE(batch_id, style_id, stable_order),
+                FOREIGN KEY(batch_id, style_id)
+                    REFERENCES template_instance_projection_snapshots(batch_id, style_id) ON DELETE CASCADE
+            );
+            """),
+        new(24, "desktop-v24-rule-production-context-001", """
+            ALTER TABLE batch_template_snapshots ADD COLUMN context_version TEXT NOT NULL DEFAULT 'batch-template-snapshot/v1';
+            ALTER TABLE batch_template_snapshots ADD COLUMN business_rule_digest TEXT NULL;
+            CREATE TABLE template_instance_production_facts (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id),
+                FOREIGN KEY(batch_id) REFERENCES input_batches(batch_id)
+            );
+            """),
+        new(25, "desktop-v25-render-instance-checkpoints-001", """
+            ALTER TABLE render_page_checkpoints RENAME TO render_page_checkpoints_v15;
+            CREATE TABLE render_page_checkpoints (
+                task_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                page_id TEXT NOT NULL,
+                output_variant_id TEXT NOT NULL DEFAULT '',
+                page_instance_id TEXT NOT NULL DEFAULT '',
+                instance_json TEXT NULL,
+                stage TEXT NOT NULL CHECK(stage = 'render_output'),
+                attempt INTEGER NOT NULL CHECK(attempt > 0),
+                plan_digest TEXT NOT NULL UNIQUE,
+                bridge_execution_id TEXT NOT NULL,
+                output_commit_state TEXT NOT NULL CHECK(output_commit_state IN ('Verified','Committed')),
+                updated_at TEXT NOT NULL,
+                CHECK((page_instance_id = '' AND instance_json IS NULL) OR
+                    (page_instance_id <> '' AND output_variant_id = '' AND instance_json IS NOT NULL)),
+                PRIMARY KEY(task_id, style_id, page_id, output_variant_id, page_instance_id, attempt),
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+            );
+            INSERT INTO render_page_checkpoints(task_id,style_id,page_id,output_variant_id,stage,attempt,
+                plan_digest,bridge_execution_id,output_commit_state,updated_at)
+            SELECT task_id,style_id,page_id,output_variant_id,stage,attempt,
+                plan_digest,bridge_execution_id,output_commit_state,updated_at FROM render_page_checkpoints_v15;
+            DROP TABLE render_page_checkpoints_v15;
+            """),
+        new(26, "desktop-v26-instance-manual-selections-001", """
+            CREATE TABLE template_instance_manual_selections (
+                batch_id TEXT NOT NULL,
+                style_id TEXT NOT NULL,
+                revision INTEGER NOT NULL CHECK(revision > 0),
+                payload_json TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                PRIMARY KEY(batch_id, style_id),
+                FOREIGN KEY(batch_id) REFERENCES input_batches(batch_id)
+            );
+            """),
+        new(27, "desktop-v27-remove-redundant-request-fingerprint-index-001", """
+            DROP INDEX IF EXISTS IX_ai_request_ledger_fingerprint;
+            """),
+        new(28, "desktop-v28-ai-cached-input-units-001", """
+            ALTER TABLE ai_usage_events ADD COLUMN cached_input_units INTEGER NOT NULL DEFAULT 0;
+            """),
     ];
 
     private static async Task ApplyMigrationsAsync(
@@ -541,6 +672,7 @@ public sealed partial class SqliteDesktopStore
                 continue;
             }
 
+
             if (migration.Version > 1 && !applied.ContainsKey(migration.Version - 1))
             {
                 throw new InvalidOperationException("DESKTOP_MIGRATION_SEQUENCE_INVALID");
@@ -552,6 +684,10 @@ public sealed partial class SqliteDesktopStore
                     connection,
                     transaction,
                     cancellationToken).ConfigureAwait(false);
+            }
+            else if (migration.Version == 28)
+            {
+                await EnsureCachedInputUnitsColumnAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -575,6 +711,33 @@ public sealed partial class SqliteDesktopStore
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureCachedInputUnitsColumnAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "PRAGMA table_info(ai_usage_events);";
+        var hasColumn = false;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (string.Equals(reader.GetString(1), "cached_input_units", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+        if (hasColumn) return;
+        await using var alter = connection.CreateCommand();
+        alter.Transaction = transaction;
+        alter.CommandText = "ALTER TABLE ai_usage_events ADD COLUMN cached_input_units INTEGER NOT NULL DEFAULT 0;";
+        await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task EnsureTemplateCanvasColumnsAsync(

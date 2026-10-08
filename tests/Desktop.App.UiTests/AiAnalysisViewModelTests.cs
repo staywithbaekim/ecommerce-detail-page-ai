@@ -1,4 +1,5 @@
 using Desktop.Application.Ai;
+using Desktop.Application.Templates;
 
 namespace Desktop.App.UiTests;
 
@@ -203,8 +204,37 @@ public sealed class AiAnalysisViewModelTests
         public Task RestartBatchAnalysisAsync() { OnRestart?.Invoke(); Restarts++; return Task.CompletedTask; }
     }
 
-    private sealed class Workflow : IAiBatchAnalysisWorkflow
+    [Fact]
+    public async Task E3FormalReplacementCommandRequiresExplicitInstanceConfirmation()
     {
+        var workflow = new Workflow { InstanceReview = new("batch_1", "style_1", "composition", "asset_1", 5,
+            "sha256:" + new string('a', 64), [new("instance_a", "页面 · 实例1", "asset_1", 0), new("instance_b", "页面 · 实例2", "asset_1", 3)]) };
+        using var page = new AiAnalysisViewModel(workflow, new Host());
+        page.BeginAiReplacementCommand.Execute(new AiRequirementUsageViewModel(new AiRequirementSelectionProjection(
+            "batch_1", "style_1", "page_1", "四格细节", "composition", "成分信息图", "成分信息图",
+            AiRequirementSelectionUiStatus.AiSelected, "AI用图", "asset_1", "current.png", "照片 01")));
+        page.SelectAiReplacementAssetCommand.Execute(new AiStyleAssetViewModel(new AiStyleAssetProjection("batch_1", "style_1", "asset_1", "current.png", 1)));
+        await page.ConfirmAiReplacementAsync();
+        Assert.True(page.IsInstanceSelectionVisible); Assert.Null(page.SelectedInstanceTarget);
+        Assert.Empty(workflow.Calls); Assert.Null(workflow.InstanceCommand);
+        Assert.False(page.ConfirmInstanceSelectionCommand.CanExecute(null));
+        page.SelectedInstanceTarget = page.InstanceSelectionTargets[1];
+        Assert.True(page.ConfirmInstanceSelectionCommand.CanExecute(null));
+        page.ConfirmInstanceSelectionCommand.Execute(null);
+        Assert.Equal("instance_b", workflow.InstanceCommand!.PageInstanceId);
+        Assert.Equal(5, workflow.InstanceCommand.ExpectedRevision);
+        Assert.False(page.IsInstanceSelectionVisible); Assert.Empty(workflow.Calls);
+        Assert.Contains("其他实例未更改", page.AiStatusMessage, StringComparison.Ordinal);
+    }
+
+    private sealed class Workflow : IAiBatchAnalysisWorkflow, ITemplateInstanceSelectionWorkflow
+    {
+        public TemplateInstanceSelectionReview? InstanceReview { get; init; }
+        public TemplateInstanceSelectionCommand? InstanceCommand { get; private set; }
+        public Task<TemplateInstanceSelectionReview?> ReviewInstanceSelectionAsync(string batchId, string styleId, string frameId, string assetId, CancellationToken token)
+            => Task.FromResult(InstanceReview);
+        public Task LockInstanceSelectionAsync(TemplateInstanceSelectionCommand command, CancellationToken token)
+        { InstanceCommand = command; return Task.CompletedTask; }
         private AiUploadConsentRecord? _consent;
         public AiBatchAnalysisProjection Projection { get; set; } = AiAnalysisViewModelTests.Projection();
         public Exception? StartError { get; init; }

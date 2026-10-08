@@ -9,6 +9,8 @@ public enum CalibrationUndoAction
     Redo
 }
 
+public sealed record TemplateFramePreviewBounds(double Left, double Top, double Width, double Height);
+
 public sealed record TemplateFrameProjection(
     string FrameId,
     string PageId,
@@ -32,6 +34,14 @@ public sealed record TemplateFrameProjection(
     public bool IsSelected { get; init; }
 
     public bool HasPersistedBinding { get; init; }
+    public string? PersistedFrameId { get; init; }
+    // Calibrated document-space target; raw smart-object bounds can extend far
+    // beyond its visible product slot. Presentation only, no geometry mutation.
+    public TemplateFramePreviewBounds? PreviewBounds { get; init; }
+
+    // Null preserves older inspection compatibility; false is positive evidence
+    // that this visible-flagged layer is covered in the actual composite.
+    public bool? HasCompositeContribution { get; init; }
 
     public string? BoundAssetId { get; init; }
 

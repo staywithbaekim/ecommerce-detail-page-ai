@@ -25,7 +25,9 @@ function lifecycleFixture(options = {}) {
         Object.assign(hooks, value);
       } }, storage: { localFileSystem: {
         getPluginFolder: async () => ({ getEntry: async () => ({ read: async () => JSON.stringify({}) }) }),
-        getDataFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(JSON.parse(value)) }) })
+        getDataFolder: async () => ({ createFile: async () => ({ write: async value => {
+          await options.write?.(JSON.parse(value)); writes.push(JSON.parse(value));
+        } }) })
       } }, host: {} };
       if (name === "./host") return { inspectHost: async () => ({ build: "test" }), isHostModal: () => photoshop.core.isModal };
       if (name === "./transform-preference") return { recoverTransformPreference: options.recover || (async () => {}), readSnap: async () => false };
@@ -200,6 +202,55 @@ function assertWaiting(f) {
   assert.equal(f.timers.size, 1);
   assert.equal([...f.timers.values()][0].delay, 3000);
 }
+
+test("pairing diagnostics retain operation and client stages without spreading sensitive fields", async () => {
+  let saves = 0;
+  const f = lifecycleFixture({ idle: true, remember: () => { saves++; }, pair: client => {
+    Object.assign(client.diagnostic, { stage: "challenge_proof", transport: "received", http_status: 200,
+      rejection_reason: "challenge_proof", secret: "private-secret", nonce: "private-nonce", token: "private-token",
+      mac: "private-mac", headers: { Authorization: "private-header" }, response: "private-body" });
+    throw Error("BRIDGE_PAIRING_REJECTED");
+  } });
+  await new Promise(resolve => setImmediate(resolve)); await f.runNext();
+  const probe = f.writes.at(-1);
+  assert.equal(probe.stage, "pair"); assert.equal(probe.client_stage, "challenge_proof");
+  assert.equal(probe.rejection_reason, "challenge_proof"); assert.equal(probe.http_status, 200);
+  assert.equal(probe.code, "BRIDGE_PAIRING_REJECTED");
+  assert.equal(JSON.stringify(probe).includes("private"), false);
+  assert.deepEqual(Object.keys(probe).sort(), ["stage", "client_stage", "transport", "http_status",
+    "rejection_reason", "code", "exception_type", "recorded_at"].sort());
+  assert.equal(saves, 0); assert.equal(f.calls.workCreates, 0); assert.equal(f.calls.ticks, 0);
+  assert.equal(f.client.session, null); assert.equal(f.timers.size, 0);
+  assert.ok(f.secrets.every(secret => secret.every(byte => byte === 0)));
+});
+
+test("pairing probe accepts only fixed enums and bounded scalars, never raw exceptions or extra keys", async () => {
+  const f = lifecycleFixture({ idle: true });
+  await new Promise(resolve => setImmediate(resolve));
+  await f.context.writePairingProbe({ stage: "private-stage", client_stage: "private-client", code: "BRIDGE_PRIVATE_SECRET",
+    transport: "private-transport", http_status: 123456, exception_type: "private-name", rejection_reason: "private-reason",
+    protected_storage_verified: "private-value", recorded_at: "private-date", secret: "private-secret" });
+  const probe = f.writes.at(-1);
+  assert.equal(JSON.stringify(probe).includes("private"), false);
+  assert.equal(probe.stage, "unknown"); assert.equal(probe.client_stage, "unknown");
+  assert.equal(probe.http_status, null); assert.equal(probe.code, "BRIDGE_PAIRING_REJECTED");
+  assert.equal(probe.exception_type, "unknown"); assert.equal(probe.rejection_reason, null);
+  assert.equal(probe.protected_storage_verified, undefined);
+  await f.hooks.plugin.destroy();
+});
+
+for (const failPair of [false, true]) test(`diagnostic write failure cannot change pairing or cleanup (${failPair})`, async () => {
+  let saves = 0;
+  const f = lifecycleFixture({ idle: true, remember: () => { saves++; },
+    write: value => { if (value.stage) throw Error("private write failure"); },
+    pair: () => { if (failPair) throw Error("BRIDGE_PAIRING_REJECTED"); } });
+  await new Promise(resolve => setImmediate(resolve)); await f.runNext();
+  assert.equal(f.client.session !== null, !failPair); assert.equal(f.calls.workCreates, failPair ? 0 : 1);
+  assert.equal(saves, 0); assert.ok(f.secrets.every(secret => secret.every(byte => byte === 0)));
+  if (failPair) assert.equal(f.timers.size, 0);
+  await f.hooks.plugin.destroy();
+  assert.equal(f.client.session, null); assert.equal(f.timers.size, 0);
+});
 
 test("startup waits serially for desktop with only saved pairing, zeroed secrets and no absent-listener logs", async () => {
   let ready = false;

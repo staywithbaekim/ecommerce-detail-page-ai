@@ -83,7 +83,7 @@ public sealed class AiAnalysisResultReader : IAiAnalysisResultReader
             }
 
             if (ledger is null
-                || ledger.Status is not ("Validated" or "ManualReview" or "PlanClosed"))
+                || !AiLedgerStatusPolicy.IsTerminal(ledger.Status) || ledger.Status is AiLedgerStatusPolicy.TerminalError or AiLedgerStatusPolicy.AiResultUnknown or AiLedgerStatusPolicy.Cancelled)
             {
                 inputs.Add(new(request, ledger, null, AiAnalysisResultReadFailure.None));
                 continue;

@@ -91,6 +91,7 @@ public sealed class ReferenceLearningAiService(
     IReferenceLearningAiCacheStore cache,
     IReferenceLearningSessionStore sessions,
     IAiUsageRecorder usageRecorder,
+    IAiAnalysisStore ledger,
     TimeProvider? timeProvider = null) : IReferenceLearningAiService
 {
     public const string ModelConfigVersion = "doubao-seed-2.1-pro-260628";
@@ -154,6 +155,9 @@ public sealed class ReferenceLearningAiService(
                 ? ReferenceLearningState.AwaitingReview
                 : command.Document.State;
             var document = command.Document.WithCandidates(candidates, state, combined.Document.BlockReason, clock.GetUtcNow());
+            // Each page owns its overrides. The combined request uses the first
+            // learning id only for correlation, never as the owner of other pages.
+            document = await ApplyPersistedOverridesAsync(document, cancellationToken).ConfigureAwait(false);
             await sessions.SaveAsync(document, cancellationToken).ConfigureAwait(false);
             documents.Add(document);
         }
@@ -215,13 +219,40 @@ public sealed class ReferenceLearningAiService(
             document.ReferenceFolderDigest,
             prompts);
         var cached = await cache.FindAsync(cacheKey, cancellationToken).ConfigureAwait(false);
+        // Keep the established cache key readable; use a separate, provider-bound
+        // request identity for durable billing/unknown ownership. No prompt or
+        // local path is written to the ledger. Page identity survives relearning.
+        var scope = "tpllearn_" + TemplateRuleCodec.Hash(JsonSerializer.Serialize(
+            prompts.Select(frame => frame.PageId).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)))[7..];
+        var fingerprint = TemplateRuleCodec.Hash(JsonSerializer.Serialize(new
+        {
+            version = "reference-learning-request-identity/v1", provider = "volc-ark",
+            model = ModelConfigVersion, configuration = ModelConfigVersion,
+            task = ReferenceLearningAiOperation.GenerateSelectionRequirements,
+            prompt = ReferenceLearningAiProtocol.SemanticPromptVersion,
+            schema = ReferenceLearningAiProtocol.ResultSchemaVersion, input = cacheKey, scope
+        }));
+        var saved = await ledger.FindRequestByFingerprintAsync(fingerprint, cancellationToken).ConfigureAwait(false);
         var cachedResult = cached is null
             ? null
             : NormalizeSemanticResult(prompts, cached.Result);
         if (IsCompatibleCache(cached, ReferenceLearningAiOperation.GenerateSelectionRequirements, document.ReferenceFolderDigest)
             && cachedResult is not null
-            && ValidateSemanticResult(prompts, cachedResult))
+            && ValidateSemanticResult(prompts, cachedResult)
+            && (saved is null || saved.RequestId == cachedResult.RequestId
+                && saved.Status is AiLedgerStatusPolicy.Analysing or AiLedgerStatusPolicy.Validated or AiLedgerStatusPolicy.PlanClosed))
         {
+            // Atomic result write may have completed just before a crash at the
+            // ledger transition. Close that same request, never call again.
+            if (saved?.Status == AiLedgerStatusPolicy.Analysing)
+            {
+                var usage = await ledger.LoadUsageAsync(saved.RequestId, cancellationToken).ConfigureAwait(false);
+                if (cached!.Usage is { } measured && !usage.Any(item => item.InputUnits == measured.InputTokens
+                    && item.OutputUnits == measured.OutputTokens && item.ModelConfigVersion == ModelConfigVersion))
+                    return Failure(document, "TPL_LEARN_AI_EVIDENCE_INCOMPLETE", "用量与结果证据未闭合，请核查原请求；不会重新提交。", false, AiProviderOutcome.AiResultUnknown);
+                await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Analysing, AiLedgerStatusPolicy.Validated,
+                    $"ai-analysis/reference-learning-v2/{cacheKey[7..]}.json", clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+            }
             // A v4 provider may still return a sentence that can be reduced to
             // a stable category. Persist that projection so the same cache
             // entry cannot reintroduce the narrative on the next open.
@@ -239,6 +270,15 @@ public sealed class ReferenceLearningAiService(
                 null);
         }
 
+        if (saved is not null && saved.Status != AiLedgerStatusPolicy.Queued)
+        {
+            var unresolved = saved.Status is AiLedgerStatusPolicy.Uploading or AiLedgerStatusPolicy.Analysing or AiLedgerStatusPolicy.AiResultUnknown;
+            return FailureWithUnavailableMetadata(document, cacheKey,
+                unresolved ? "TPL_LEARN_AI_RESULT_UNKNOWN" : "TPL_LEARN_AI_REQUEST_ALREADY_FINISHED",
+                "原请求已有记录；请核查结果或手工填写规则，不会自动重投。", false,
+                unresolved ? AiProviderOutcome.AiResultUnknown : AiProviderOutcome.TerminalError);
+        }
+
         var consent = await admission.TryAcquireAsync(AiConsentScopes.AnalysisCopy, cancellationToken).ConfigureAwait(false);
         if (consent is null || !consent.IsGranted)
         {
@@ -250,6 +290,7 @@ public sealed class ReferenceLearningAiService(
         {
             return FailureWithUnavailableMetadata(document, cacheKey, prepared.Failure.Code, prepared.Failure.UserAction, prepared.Failure.Retryable, prepared.Failure.Outcome);
         }
+        var releaseCopies = true;
         try
         {
             var request = CreateRequest(
@@ -259,18 +300,52 @@ public sealed class ReferenceLearningAiService(
                 document.ReferenceFolderDigest,
                 prepared.Assets,
                 prompts);
-            var execution = await ai.AnalyzeReferenceLearningAsync(request, cancellationToken).ConfigureAwait(false);
+            var now = clock.GetUtcNow();
+            saved ??= await ledger.RecordRequestAsync(new(request.RequestId, fingerprint, scope,
+                "reference_learning", AiLedgerStatusPolicy.Queued, null, now, now), cancellationToken).ConfigureAwait(false);
+            request = request with { RequestId = saved.RequestId };
+            try
+            {
+                // Existing SQLite writer reserves budget/concurrency atomically
+                // before crossing the provider boundary, including across restarts.
+                await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Queued, AiLedgerStatusPolicy.Uploading, null, clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+                releaseCopies = false;
+            }
+            catch (InvalidOperationException error) when (error.Message is "AI_REQUEST_STATUS_CONFLICT"
+                or "TPL_LEARN_AI_RESULT_UNKNOWN" or "AI_BUDGET_HARD_STOP" or "AI_CONCURRENCY_LIMIT")
+            {
+                return FailureWithUnavailableMetadata(document, cacheKey, error.Message,
+                    "请求尚未解决或达到调用安全上限；未再次调用 AI，请核查原请求或手工填写。", false, AiProviderOutcome.AiResultUnknown);
+            }
+            await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Uploading, AiLedgerStatusPolicy.Analysing, null, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+            ReferenceLearningAiExecutionResult execution;
+            try { execution = await ai.AnalyzeReferenceLearningAsync(request, cancellationToken).ConfigureAwait(false); }
+            catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException or HttpRequestException)
+            {
+                await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Analysing, AiLedgerStatusPolicy.AiResultUnknown, null, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+                return FailureWithUnavailableMetadata(document, cacheKey, "TPL_LEARN_AI_RESULT_UNKNOWN",
+                    "AI 请求结果未确定，保留原请求身份；请核查，不会自动重投。", false, AiProviderOutcome.AiResultUnknown);
+            }
+            // Failed/invalid results may still have incurred cost. Persist measured
+            // usage before inspecting result semantics, even if the UI was cancelled.
+            await RecordUsageAsync(request.RequestId, execution.Usage, CancellationToken.None).ConfigureAwait(false);
             if (!execution.IsSuccess)
             {
+                var status = execution.Outcome == AiProviderOutcome.AiResultUnknown ? AiLedgerStatusPolicy.AiResultUnknown
+                    : execution.Outcome == AiProviderOutcome.Cancelled ? AiLedgerStatusPolicy.Cancelled
+                    : execution.Outcome == AiProviderOutcome.RetryableError ? AiLedgerStatusPolicy.RetryableError : AiLedgerStatusPolicy.TerminalError;
+                await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Analysing, status, null, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+                releaseCopies = status != AiLedgerStatusPolicy.AiResultUnknown;
                 return FailureWithUnavailableMetadata(document, cacheKey, execution.Error?.Code ?? "TPL_LEARN_AI_UNAVAILABLE", execution.Error?.UserAction ?? "AI 语义不可用，请重试或手工填写完整要求。", execution.Error?.Retryable ?? false, execution.Outcome);
             }
             var normalizedResult = NormalizeSemanticResult(request.Frames, execution.Result!);
             if (normalizedResult is null || !ValidateSemanticResult(request, normalizedResult))
             {
+                await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Analysing, AiLedgerStatusPolicy.TerminalError, null, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+                releaseCopies = true;
                 return FailureWithUnavailableMetadata(document, cacheKey, "TPL_LEARN_AI_RESULT_INVALID", "AI 返回的规则不是 2–40 字的可复用图片类别，已安全拒绝；请重试或手工填写。", false, AiProviderOutcome.TerminalError);
             }
 
-            await RecordUsageAsync(request.RequestId, execution.Usage, cancellationToken).ConfigureAwait(false);
             var entry = new ReferenceLearningAiCacheEntry(
                 cacheKey,
                 request.Operation,
@@ -283,7 +358,10 @@ public sealed class ReferenceLearningAiService(
                 normalizedResult,
                 execution.Usage,
                 clock.GetUtcNow());
-            await cache.SaveAsync(entry, cancellationToken).ConfigureAwait(false);
+            await cache.SaveAsync(entry, CancellationToken.None).ConfigureAwait(false);
+            await ledger.UpdateRequestStatusAsync(saved.RequestId, AiLedgerStatusPolicy.Analysing, AiLedgerStatusPolicy.Validated,
+                $"ai-analysis/reference-learning-v2/{cacheKey[7..]}.json", clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+            releaseCopies = true;
             var updated = await ApplyPersistedOverridesAsync(
                 ApplySemantics(document, normalizedResult, cacheKey, request.ModelConfigVersion, request.PromptContractVersion),
                 cancellationToken).ConfigureAwait(false);
@@ -293,7 +371,9 @@ public sealed class ReferenceLearningAiService(
         }
         finally
         {
-            await ReleasePreparedAsync(prepared.Assets, cancellationToken).ConfigureAwait(false);
+            // Unknown or a failed durable write retains owned copies for recovery.
+            // Never infer permission to clean them merely because the UI stopped.
+            if (releaseCopies) await ReleasePreparedAsync(prepared.Assets, CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -606,6 +686,8 @@ public sealed class ReferenceLearningAiService(
     private async Task RecordUsageAsync(string requestId, AiProviderUsage? usage, CancellationToken cancellationToken)
     {
         if (usage is null) return;
+        await ledger.RecordUsageAsync(new("usage_" + requestId, requestId, ModelConfigVersion,
+            usage.InputTokens, usage.OutputTokens, usage.CacheHit, 0, null, null, clock.GetUtcNow()), cancellationToken).ConfigureAwait(false);
         if (usage.InputTokens > AiAnalysisProductionPolicy.MaxInputTokensPerBatch
             || usage.OutputTokens > AiAnalysisProductionPolicy.MaxOutputTokensPerBatch)
             throw new InvalidOperationException("AI_BUDGET_HARD_STOP");

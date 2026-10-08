@@ -66,7 +66,7 @@ public sealed record AiRenderPagePreparation(
     string? RenderPlanJson = null,
     string? PlanDigest = null,
     string? OutputVariantId = null,
-    string? OutputVariantName = null)
+    string? OutputVariantName = null, RenderInstanceIdentity? Instance = null)
 {
     public bool HasPlan => RenderPlanJson is not null && PlanDigest is not null;
 }
@@ -76,7 +76,10 @@ public sealed record AiRenderPlanPreparation(
     AiRenderPreparationStatus Status,
     string ReasonCode,
     IReadOnlyList<AiRenderPagePreparation> Pages,
-    bool HasFormalOutput = false)
+    bool HasFormalOutput = false,
+    bool UsesInstancePipeline = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<RenderBatchInstanceSet>? InstanceSets = null)
 {
     public int ReadyPageCount => Pages.Count(page => page.Status == AiRenderPagePreparationStatus.ReadyToRender);
 }
@@ -106,6 +109,8 @@ public sealed class AiRenderPlanFactory(
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+        if (request.TemplateRevision.RuleWorkspace?.Rules is not null || request.Batch.TemplateSnapshot is BatchRuleTemplateContext)
+            throw new InvalidOperationException("TPL_RULE_INSTANCE_PIPELINE_REQUIRED");
         ValidateSnapshot(request.Batch, request.TemplateRevision);
 
         if (request.Styles.Any(style => style is null)
@@ -885,7 +890,7 @@ public sealed class AiRenderPlanFactory(
         return result;
     }
 
-    private static string OutputNamePart(string value, int maxLength, string fallback)
+    internal static string OutputNamePart(string value, int maxLength, string fallback)
     {
         var cleaned = new StringBuilder();
         foreach (var rune in value.EnumerateRunes())

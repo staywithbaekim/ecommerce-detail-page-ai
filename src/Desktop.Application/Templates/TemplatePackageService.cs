@@ -69,7 +69,8 @@ public sealed class TemplatePackageService(
                 revision.RevisionId,
                 revision.RuleDigest,
                 entries,
-                pageDocuments),
+                pageDocuments,
+                revision.RuleWorkspace),
             sourceFiles,
             destinationPath,
             cancellationToken).ConfigureAwait(false);
@@ -100,6 +101,8 @@ public sealed class TemplatePackageService(
                 entry => entry.LogicalId,
                 _ => NewId("resource"),
                 StringComparer.Ordinal);
+            var frameIdMap = manifest.Pages.SelectMany(page => page.Bindings ?? []).ToDictionary(
+                frame => frame.FrameId, _ => NewId("frame"), StringComparer.Ordinal);
             var revision = await templates.GetRevisionAsync(session.DraftRevisionId, cancellationToken)
                 .ConfigureAwait(false)
                 ?? throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
@@ -155,18 +158,27 @@ public sealed class TemplatePackageService(
                     ToDomain(packagePage.GenerationMode),
                     packagePage.VariantCapacity,
                     packagePage.Enabled,
-                    resourceId, sizeTableCalibration: packagePage.SizeTableCalibration));
+                    resourceId, notes: packagePage.Notes, sizeTableCalibration: packagePage.SizeTableCalibration));
             }
 
             foreach (var packagePage in manifest.Pages)
             {
                 foreach (var binding in packagePage.Bindings ?? [])
                 {
-                    revision = revision.AddFrameBinding(ToDomain(binding, pageIdMap[packagePage.PageId]));
+                    revision = revision.AddFrameBinding(ToDomain(binding, pageIdMap[packagePage.PageId], frameIdMap[binding.FrameId]));
                 }
             }
 
+            if (manifest.RuleWorkspace is { } rules)
+                revision = revision.WithRuleWorkspace(TemplateRuleCodec.Remap(rules, pageIdMap, frameIdMap));
             await templates.SaveDraftRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
+            if (revision.RuleWorkspace is not null)
+            {
+                var editor = workspace as ITemplateRuleEditingService
+                    ?? throw new TemplateRuleViolationException("TPL_RULE_STORE_UNAVAILABLE");
+                var view = await editor.GetRulesAsync(session, cancellationToken).ConfigureAwait(false);
+                return await editor.ConfirmRulesAsync(session, new(view.Version, view.RuleDigest), cancellationToken).ConfigureAwait(false);
+            }
             return await workspace.CommitDraftAsync(session, cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -234,9 +246,9 @@ public sealed class TemplatePackageService(
                 // Output validation evidence is not a portable template rule or part of template-package/v1.
                 Layers = resource.Inspection.Layers.Select(layer => layer with { ContentEvidence = null }).ToArray()
             },
-            bindings.Select(ToPackageBinding).ToArray(), page.SizeTableCalibration);
+            bindings.Select(ToPackageBinding).ToArray(), page.SizeTableCalibration, page.Notes);
 
-    private static TemplatePackageFrameBinding ToPackageBinding(FrameBinding binding) => new(
+    internal static TemplatePackageFrameBinding ToPackageBinding(FrameBinding binding) => new(
         binding.FrameId,
         binding.PageId,
         binding.LayerPath.Segments,
@@ -264,9 +276,9 @@ public sealed class TemplatePackageService(
             new TemplatePackageSupersededLayer(layer.LayerPath.Segments, "smartObject",
                 layer.ExpectedVisible, layer.ExpectedClipping, layer.ExpectedLayerId)).ToArray());
 
-    private static FrameBinding ToDomain(TemplatePackageFrameBinding binding, string pageId) =>
+    internal static FrameBinding ToDomain(TemplatePackageFrameBinding binding, string pageId, string frameId) =>
         FrameBinding.Create(
-            NewId("frame"),
+            frameId,
             pageId,
             LayerPath.Create(binding.LayerPath),
             ExpectedLayerEvidence.Create(

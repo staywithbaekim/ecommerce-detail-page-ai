@@ -8,6 +8,34 @@ namespace Desktop.Application.Tests;
 public sealed class ReferenceLearningCommitServiceTests
 {
     [Fact]
+    public async Task StageDraftKeepsLearningAndRevisionUncommittedForSingleGroupConfirmation()
+    {
+        var templates = new StubTemplateRepository(DraftRevision());
+        var workspace = new StubWorkspace();
+        var sessions = new CapturingSessionStore();
+        var service = new ReferenceLearningCommitService(templates, workspace, sessions);
+        var result = await service.StageDraftAsync([ReadyDocument()], DraftSession());
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Template!.IsCommitted);
+        Assert.False(workspace.CommitCalled);
+        Assert.Null(sessions.Saved);
+        Assert.Equal(TemplateRevisionState.Draft, templates.Revision.State);
+        Assert.Single(templates.Revision.FrameBindings);
+        Assert.Equal(ReferenceLearningState.ReadyToCommit, result.Document!.State);
+    }
+
+    [Fact]
+    public async Task StageDraftRejectsUnreviewedEvidenceWithoutAddingBindings()
+    {
+        var templates = new StubTemplateRepository(DraftRevision());
+        var workspace = new StubWorkspace();
+        var service = new ReferenceLearningCommitService(templates, workspace);
+        var result = await service.StageDraftAsync([ReadyDocument() with { State = ReferenceLearningState.AwaitingReview }], DraftSession());
+        Assert.False(result.IsSuccess);
+        Assert.Empty(templates.Revision.FrameBindings);
+        Assert.False(workspace.CommitCalled);
+    }
+    [Fact]
     public async Task ReadyLearningAddsReferenceOnlyBindingsAndMarksSessionCommitted()
     {
         var revision = DraftRevision();
@@ -276,7 +304,8 @@ public sealed class ReferenceLearningCommitServiceTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<IReadOnlyList<TemplateLibraryItem>> ListAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<TemplateGroupDetails?> GetDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateGroupDetails?> GetDetailsAsync(string groupId, CancellationToken cancellationToken) => Task.FromResult<TemplateGroupDetails?>(
+            new(groupId, "draft", DraftSession().DraftRevisionId, 1, [], false, DateTimeOffset.UnixEpoch));
         public Task<TemplateGroupDetails?> GetCommittedDetailsAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task RenameTemplateGroupAsync(string groupId, string newName, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftSession> BeginCreateAsync(string groupName, CancellationToken cancellationToken) => throw new NotSupportedException();

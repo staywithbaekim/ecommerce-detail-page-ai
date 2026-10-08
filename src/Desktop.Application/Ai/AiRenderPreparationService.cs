@@ -11,26 +11,40 @@ using Desktop.Domain.Templates;
 namespace Desktop.Application.Ai;
 
 /// <summary>Prepares confirmed selections and size resources for the renderer-neutral plan factory.</summary>
-public sealed class AiRenderPreparationService
+public sealed partial class AiRenderPreparationService
 {
     private readonly IAiAnalysisResultReader _resultReader;
     private readonly ITemplateResourceRepository _templateResources;
     private readonly IAiRenderPlanFactory _renderPlans;
     private readonly ISizeTableRepository? _sizeTables;
     private readonly ISizeTableRasterizer? _sizeTableRasterizer;
+    private readonly ITemplateInstanceProductionEvidenceStore? _productionEvidence;
+    private readonly ITemplateInstanceProjectionSnapshotStore? _instanceSnapshots;
+    private readonly ITemplateRepository? _revisions;
+    private readonly Desktop.Application.Rendering.IRenderPlanValidator? _planValidator;
+
+    internal IAiAnalysisResultReader ResultReaderForTesting => _resultReader;
 
     public AiRenderPreparationService(
         IAiAnalysisResultReader resultReader,
         ITemplateResourceRepository templateResources,
         IAiRenderPlanFactory renderPlans,
         ISizeTableRepository? sizeTables = null,
-        ISizeTableRasterizer? sizeTableRasterizer = null)
+        ISizeTableRasterizer? sizeTableRasterizer = null,
+        ITemplateInstanceProductionEvidenceStore? productionEvidence = null,
+        ITemplateInstanceProjectionSnapshotStore? instanceSnapshots = null,
+        ITemplateRepository? revisions = null,
+        Desktop.Application.Rendering.IRenderPlanValidator? planValidator = null)
     {
         _resultReader = resultReader ?? throw new ArgumentNullException(nameof(resultReader));
         _templateResources = templateResources ?? throw new ArgumentNullException(nameof(templateResources));
         _renderPlans = renderPlans ?? throw new ArgumentNullException(nameof(renderPlans));
         _sizeTables = sizeTables;
         _sizeTableRasterizer = sizeTableRasterizer;
+        _productionEvidence = productionEvidence;
+        _instanceSnapshots = instanceSnapshots;
+        _revisions = revisions;
+        _planValidator = planValidator;
     }
 
     public async Task<AiRenderPlanPreparation> PrepareAsync(
@@ -46,6 +60,9 @@ public sealed class AiRenderPreparationService
         {
             throw new InvalidOperationException("AI_RENDER_ANALYSIS_NOT_CLOSED");
         }
+
+        if (snapshot.Batch.TemplateSnapshot is BatchRuleTemplateContext)
+            return await PrepareInstancesAsync(snapshot, cancellationToken).ConfigureAwait(false);
 
         var resources = new List<ImportedTemplateResource>();
         foreach (var resourceId in snapshot.Batch.TemplateSnapshot.Pages
@@ -251,7 +268,8 @@ public sealed class AiRenderPreparationService
         bool hasProviderConflict,
         AiAnalysisSession? session,
         DateTimeOffset createdAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? onlyPageId = null)
     {
         if (candidates.Length == 0)
         {
@@ -266,7 +284,8 @@ public sealed class AiRenderPreparationService
         var prepared = new List<AiPreparedSizeTablePage>();
         string? blockingReason = null;
         foreach (var page in snapshot.TemplateRevision.Pages
-                     .Where(page => page.ContentType == TemplatePageContentType.DynamicSizeTable)
+                     .Where(page => page.ContentType == TemplatePageContentType.DynamicSizeTable
+                         && (onlyPageId is null || page.PageId == onlyPageId))
                      .OrderBy(page => page.Order))
         {
             var selectedSource = session?.LockedSelections.GetValueOrDefault(

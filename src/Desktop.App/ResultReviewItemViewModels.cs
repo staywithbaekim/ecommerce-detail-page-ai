@@ -97,6 +97,7 @@ public sealed class ResultPageCardViewModel
     public string PageId { get; }
     public string PageName { get; }
     public string? OutputVariantId { get; private init; }
+    public string? PageInstanceId { get; private init; }
     public int Attempt { get; private init; } = 1;
     public ImageSource? OutputPreview { get; private init; }
     public bool HasSourcePreview => !HasFormalOutput && !string.IsNullOrWhiteSpace(PreviewPath);
@@ -145,15 +146,30 @@ public sealed class ResultPageCardViewModel
             .Where(requirement => requirement.SelectedAssetId is not null)
             .Select(requirement => requirement.SelectedAssetId!)
             .ToHashSet(StringComparer.Ordinal);
+        if (page.Instance is not null)
+        {
+            selectedIds.Clear();
+            if (page.RenderPlanJson is not null)
+            {
+                using var plan = System.Text.Json.JsonDocument.Parse(page.RenderPlanJson);
+                if (plan.RootElement.TryGetProperty("document", out var document)
+                    && document.TryGetProperty("instance_identity", out var identity)
+                    && identity.GetProperty("page_instance_id").GetString() == page.Instance.PageInstanceId)
+                    foreach (var frame in identity.GetProperty("frames").EnumerateArray())
+                        if (frame.TryGetProperty("asset_id", out var asset)) selectedIds.Add(asset.GetString()!);
+            }
+        }
         var candidates = (source?.Candidates ?? [])
+            .Where(candidate => page.Instance is null || selectedIds.Contains(candidate.AssetId))
             .OrderBy(candidate => candidate.Rank)
             .Select(candidate => new ResultCandidateViewModel(
                 candidate.RankText,
                 candidate.PreviewPath ?? "",
-                selectedIds.Contains(candidate.AssetId) || candidate.IsLocked,
+                selectedIds.Contains(candidate.AssetId) || page.Instance is null && candidate.IsLocked,
                 candidate.EvidenceText))
             .ToArray();
-        var preview = (source?.Requirements ?? [])
+        var preview = page.Instance is not null ? candidates.FirstOrDefault(candidate => candidate.IsCurrent)?.PreviewPath ?? ""
+            : (source?.Requirements ?? [])
             .Select(requirement => requirement.SelectedPreviewPath)
             .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path))
             ?? candidates.FirstOrDefault(candidate => candidate.IsCurrent)?.PreviewPath
@@ -172,7 +188,7 @@ public sealed class ResultPageCardViewModel
             hasFormalOutput,
             page.ReasonCode.Contains("SIZE_TABLE", StringComparison.Ordinal)
                 || page.RenderPlanJson?.Contains("\"dynamic_size_table\"", StringComparison.Ordinal) == true,
-            candidates) { OutputVariantId = page.OutputVariantId, Attempt = rendered?.Attempt ?? 1,
+            candidates) { OutputVariantId = page.OutputVariantId, PageInstanceId = page.Instance?.PageInstanceId, Attempt = rendered?.Attempt ?? 1,
                 OutputPreview = hasFormalOutput ? outputPreview : null, ShowsPreviousOutput = previousOutput };
     }
 
@@ -190,6 +206,14 @@ public sealed class ResultPageCardViewModel
                 (ResultPageFilter.NeedsReview, hasFormalOutput ? "待检查构图" : "普通填充待渲染", "当前使用按图片尺寸计算的填充；尚无主体定位，请检查构图。"),
             AiRenderPagePreparationStatus.BusinessBlocked when page.ReasonCode == "SIZE_TABLE_RENDER_TARGET_REQUIRED" =>
                 (ResultPageFilter.CompletedWithProblems, "待校准尺码区域", "尺码内容已准备好；需先在模板中确认尺码区域和旧表替换范围。"),
+            AiRenderPagePreparationStatus.BusinessBlocked when page.ReasonCode == "TPL_INSTANCE_SELECTION_MISSING" =>
+                (ResultPageFilter.CompletedWithProblems, "实例缺少选图", "此实例的指定颜色或图片框没有可靠选图；请补图或确认选择后创建新批次，其他实例不受影响。"),
+            AiRenderPagePreparationStatus.BusinessBlocked when page.ReasonCode == "TPL_INSTANCE_ASSET_VARIANT_MISMATCH" =>
+                (ResultPageFilter.CompletedWithProblems, "实例颜色不符", "人工选择不属于该实例颜色；请修正该实例选图后创建新批次。"),
+            AiRenderPagePreparationStatus.BusinessBlocked when page.ReasonCode == "SIZE_TABLE_SOURCE_MISSING" =>
+                (ResultPageFilter.CompletedWithProblems, "缺少本款尺码", "请登记本款尺码来源并分析确认后创建新批次；不会借用其他款数据。"),
+            AiRenderPagePreparationStatus.BusinessBlocked when page.ReasonCode == "SIZE_TABLE_SOURCE_CONFLICT" =>
+                (ResultPageFilter.CompletedWithProblems, "尺码来源冲突", "请明确选择本款正确的尺码来源并创建新批次；普通实例计划已保留。"),
             AiRenderPagePreparationStatus.ReadyToRender when hasFormalOutput =>
                 (ResultPageFilter.All, "已完成", "正式输出已登记，可进入单页检查。"),
             AiRenderPagePreparationStatus.ReadyToRender when overall == AiRenderPreparationStatus.WaitingForPhotoshop =>

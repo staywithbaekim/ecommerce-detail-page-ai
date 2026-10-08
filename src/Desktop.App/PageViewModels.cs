@@ -137,18 +137,18 @@ public sealed class BatchInputPageViewModel : PageViewModel
     public bool CanChooseBatchOutputDirectory => Coordinator.CanChooseBatchOutputDirectory;
     public bool IsBatchAutomaticSelection
     {
-        get => State.AutomaticSelection;
-        set => State.AutomaticSelection = value;
+        get => Coordinator.IsBatchAutomaticSelection;
+        set => Coordinator.IsBatchAutomaticSelection = value;
     }
     public bool IsBatchManualSelection
     {
-        get => State.ManualSelection;
-        set => State.ManualSelection = value;
+        get => Coordinator.IsBatchManualSelection;
+        set => Coordinator.IsBatchManualSelection = value;
     }
     public bool BatchIncludeEditablePsd
     {
-        get => State.IncludeEditablePsd;
-        set => State.IncludeEditablePsd = value;
+        get => Coordinator.BatchIncludeEditablePsd;
+        set => Coordinator.BatchIncludeEditablePsd = value;
     }
     public string BatchTemplateHelperText => State.BatchTemplateHelperText;
     public string BatchInputDirectoryDisplay => State.BatchInputDirectoryDisplay;

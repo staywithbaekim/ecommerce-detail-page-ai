@@ -291,6 +291,29 @@ public sealed class ReferenceLearningAiInfrastructureTests
     }
 
     [Fact]
+    public async Task CancelAfterReferenceUploadRetainsUnknownOutcome()
+    {
+        using var cancel = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new Handler(async message =>
+        { await message.Content!.ReadAsByteArrayAsync(); entered.SetResult(); return await release.Task; });
+        var request = Request(ReferenceLearningAiOperation.GenerateSelectionRequirements);
+        using var http = new HttpClient(handler);
+        var adapter = new VolcArkAiAdapter(http, new Credential("test-secret"), new CopySource(), new JsonSchemaContractValidator());
+        var pending = adapter.AnalyzeReferenceLearningAsync(request, cancel.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancel.Cancel();
+        try
+        {
+            var result = await pending.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(AiProviderOutcome.AiResultUnknown, result.Outcome);
+            Assert.False(result.Error!.Retryable);
+        }
+        finally { release.TrySetResult(Response(Result(request, "人物正面站立图"))); }
+    }
+
+    [Fact]
     public async Task HardDeadlineTreatsUnwrittenReferenceRequestAsRetryableSubmissionFailure()
     {
         var release = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);

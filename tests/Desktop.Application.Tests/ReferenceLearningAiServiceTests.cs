@@ -5,6 +5,7 @@ using Desktop.Contracts.Ai;
 using Desktop.Contracts.Validation;
 using Desktop.Domain.Inputs;
 using Desktop.Domain.Templates;
+using NSubstitute;
 
 namespace Desktop.Application.Tests;
 
@@ -231,7 +232,16 @@ public sealed class ReferenceLearningAiServiceTests
             new Copies(),
             cache ?? new MemoryCache(),
             sessions ?? new MemorySessions(),
-            new Usage());
+            new Usage(),
+            Ledger());
+
+    private static IAiAnalysisStore Ledger()
+    {
+        var ledger = Substitute.For<IAiAnalysisStore>();
+        ledger.RecordRequestAsync(Arg.Any<AiRequestLedgerEntry>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.Arg<AiRequestLedgerEntry>());
+        return ledger;
+    }
 
     private static ReferenceLearningDocument Document(
         string learningId = "learn_01",

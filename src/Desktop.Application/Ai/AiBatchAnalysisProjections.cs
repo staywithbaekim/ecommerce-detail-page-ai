@@ -190,7 +190,8 @@ public sealed record AiSizeTableSourceCandidateProjection(
     string? PreviewPath,
     bool IsDetected,
     decimal? Confidence,
-    bool IsSelected)
+    bool IsSelected,
+    bool IsSizeTableCandidate = false)
 {
     public string ConfidenceText => Confidence is null ? "尚未识别" : $"尺码图匹配度 {Confidence:P0}";
 }
@@ -247,7 +248,7 @@ public sealed record AiBatchAnalysisProjection(
     string? ControlReason,
     bool IsBusy = false,
     string TemplateSummary = "当前已校准模板",
-    string TemplateMeta = "模板快照已冻结",
+    string TemplateMeta = "模板已准备好",
     string BatchSummary = "当前输入批次",
     string BatchMeta = "素材清单已登记",
     string OutputSummary = "仅 JPG",

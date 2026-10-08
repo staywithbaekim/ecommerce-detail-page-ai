@@ -2,6 +2,8 @@
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Windows;
+using System.Security.Cryptography;
+using System.Text;
 using Desktop.Application.Diagnostics;
 using Desktop.Infrastructure;
 using Desktop.Infrastructure.Persistence;
@@ -19,7 +21,31 @@ public partial class App : System.Windows.Application
     private SingleInstanceCoordinator? _singleInstance;
     private string? _instanceId;
     private bool _storeReady;
-    private DesktopDataOptions _dataOptions = DesktopDataOptions.ForCurrentUser();
+    // No diagnostic destination exists until every argument has been validated.
+    private DesktopDataOptions? _dataOptions;
+
+    internal static (AppLaunchOptions LaunchOptions, DesktopDataOptions DataOptions) ResolveStartupOptions(
+        IEnumerable<string> arguments, Func<DesktopDataOptions> defaultOptions)
+    {
+        var launchOptions = AppLaunchOptions.Parse(arguments);
+        var options = launchOptions.DataRoot is null
+            ? defaultOptions()
+            : new DesktopDataOptions(launchOptions.DataRoot);
+        return (launchOptions, options);
+    }
+
+    internal static string SingleInstanceIdentity(AppLaunchOptions options)
+    {
+        const string production = "EcommerceDetailPage.DesktopV1";
+        var formalRoot = DesktopDataOptions.ForCurrentUser().RootDirectory;
+        if (options.DataRoot is null || string.Equals(System.IO.Path.TrimEndingDirectorySeparator(options.DataRoot),
+            System.IO.Path.TrimEndingDirectorySeparator(formalRoot), StringComparison.OrdinalIgnoreCase)) return production;
+        // An explicit Debug root must not activate a window owning another database.
+        // Default/Release single-instance behavior stays unchanged.
+        return production + ".Isolated." +
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(options.DataRoot)).ToUpperInvariant())));
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -27,19 +53,13 @@ public partial class App : System.Windows.Application
         var startupPhase = "launch_options";
         try
         {
-#if DEBUG
-            var launchOptions = AppLaunchOptions.Parse(e.Args);
-            var options = string.IsNullOrWhiteSpace(launchOptions.DataRoot)
-                ? DesktopDataOptions.ForCurrentUser()
-                : new DesktopDataOptions(launchOptions.DataRoot);
-#else
-            var launchOptions = AppLaunchOptions.Default;
-            var options = DesktopDataOptions.ForCurrentUser();
-#endif
+            // Release parses too: unsupported isolation arguments fail before any
+            // single-instance handoff, service/store construction or startup record.
+            var (launchOptions, options) = ResolveStartupOptions(e.Args, DesktopDataOptions.ForCurrentUser);
             _dataOptions = options;
 
             startupPhase = "single_instance";
-            _singleInstance = new SingleInstanceCoordinator("EcommerceDetailPage.DesktopV1");
+            _singleInstance = new SingleInstanceCoordinator(SingleInstanceIdentity(launchOptions));
             if (!await _singleInstance.TryAcquireAsync().ConfigureAwait(true))
             {
                 Shutdown(0);
@@ -82,7 +102,9 @@ public partial class App : System.Windows.Application
                 startupPhase,
                 exception);
             MessageBox.Show(
-                diagnosticWritten
+                _dataOptions is null
+                    ? "启动参数无效或当前构建不支持。未打开数据根，也未写入诊断日志。\n调试版隔离参数：--data-root=\"本地绝对目录\"；正式版请不带开发参数启动。"
+                    : diagnosticWritten
                     ? $"应用启动失败（阶段：{startupPhase}）。\n诊断日志：{StartupDiagnostics.DisplayLogPath}"
                     : $"应用启动失败（阶段：{startupPhase}）。\n诊断日志写入失败，请保留此错误阶段。",
                 "电商详情页智能生产系统",

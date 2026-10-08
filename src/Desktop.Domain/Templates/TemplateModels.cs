@@ -329,7 +329,8 @@ public sealed record TemplateRevision
         string? ruleDigest,
         DateTimeOffset createdAt,
         ImmutableArray<TemplatePage> pages,
-        ImmutableArray<FrameBinding> frameBindings)
+        ImmutableArray<FrameBinding> frameBindings,
+        TemplateRuleWorkspace? ruleWorkspace = null)
     {
         RevisionId = revisionId;
         GroupId = groupId;
@@ -340,6 +341,7 @@ public sealed record TemplateRevision
         CreatedAt = createdAt;
         Pages = pages;
         FrameBindings = frameBindings;
+        RuleWorkspace = ruleWorkspace;
     }
 
     public string RevisionId { get; }
@@ -360,13 +362,23 @@ public sealed record TemplateRevision
 
     public ImmutableArray<FrameBinding> FrameBindings { get; }
 
+    public TemplateRuleWorkspace? RuleWorkspace { get; private init; }
+
+    public TemplateRevision WithRuleWorkspace(TemplateRuleWorkspace workspace)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        EnsureDraftEditable();
+        return this with { RuleWorkspace = workspace };
+    }
+
     public static TemplateRevision CreateDraft(
         string revisionId,
         string groupId,
         int revisionNo,
         DateTimeOffset createdAt,
         IEnumerable<TemplatePage>? pages = null,
-        IEnumerable<FrameBinding>? frameBindings = null) => CreateValidated(
+        IEnumerable<FrameBinding>? frameBindings = null,
+        TemplateRuleWorkspace? ruleWorkspace = null) => CreateValidated(
             revisionId,
             groupId,
             revisionNo,
@@ -375,7 +387,7 @@ public sealed record TemplateRevision
             null,
             createdAt,
             pages,
-            frameBindings);
+            frameBindings, ruleWorkspace);
 
     public static TemplateRevision CreateIncrement(
         string revisionId,
@@ -408,7 +420,8 @@ public sealed record TemplateRevision
             null,
             createdAt,
             inheritedPages.Concat(additions),
-            baseRevision.FrameBindings.Concat(newBindings ?? []));
+            baseRevision.FrameBindings.Concat(newBindings ?? []),
+            baseRevision.RuleWorkspace is { } rules ? rules with { Version = 0 } : null);
     }
 
     public static TemplateRevision Restore(
@@ -420,7 +433,8 @@ public sealed record TemplateRevision
         string? ruleDigest,
         DateTimeOffset createdAt,
         IEnumerable<TemplatePage> pages,
-        IEnumerable<FrameBinding> frameBindings) => CreateValidated(
+        IEnumerable<FrameBinding> frameBindings,
+        TemplateRuleWorkspace? ruleWorkspace = null) => CreateValidated(
             revisionId,
             groupId,
             revisionNo,
@@ -429,7 +443,7 @@ public sealed record TemplateRevision
             ruleDigest,
             createdAt,
             pages,
-            frameBindings);
+            frameBindings, ruleWorkspace);
 
     public TemplateRevision AdvanceTo(
         TemplateRevisionState nextState,
@@ -452,7 +466,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             Pages,
-            FrameBindings);
+            FrameBindings, RuleWorkspace);
     }
 
     public TemplateRevision Commit(
@@ -475,7 +489,7 @@ public sealed record TemplateRevision
             TemplateValueRules.Digest(ruleDigest, "TPL_REVISION_RULE_DIGEST_INVALID"),
             CreatedAt,
             Pages,
-            FrameBindings);
+            FrameBindings, RuleWorkspace);
     }
 
     public TemplateRevision AddPage(TemplatePage page)
@@ -497,7 +511,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             Pages.Add(page),
-            FrameBindings);
+            FrameBindings, RuleWorkspace);
     }
 
     public TemplateRevision RemovePage(string pageId)
@@ -539,7 +553,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             remainingPages,
-            remainingBindings);
+            remainingBindings, RuleWorkspace);
     }
 
     public TemplateRevision ConfigurePage(
@@ -587,7 +601,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             Pages.SetItem(index, configured),
-            FrameBindings);
+            FrameBindings, RuleWorkspace);
     }
 
     public TemplateRevision CalibrateSizeTable(string pageId, SizeTableTemplateCalibration calibration)
@@ -596,7 +610,7 @@ public sealed record TemplateRevision
         var page = Pages.SingleOrDefault(item => item.PageId == pageId)
             ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
         return CreateValidated(RevisionId, GroupId, RevisionNo, State, ManifestRef, RuleDigest,
-            CreatedAt, Pages.Replace(page, page.WithSizeTableCalibration(calibration)), FrameBindings);
+            CreatedAt, Pages.Replace(page, page.WithSizeTableCalibration(calibration)), FrameBindings, RuleWorkspace);
     }
 
     public TemplateRevision ReorderPages(IEnumerable<string> orderedPageIds)
@@ -631,7 +645,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             reordered,
-            FrameBindings);
+            FrameBindings, RuleWorkspace);
     }
 
     public TemplateRevision AddFrameBinding(FrameBinding binding)
@@ -653,7 +667,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             Pages,
-            FrameBindings.Add(binding));
+            FrameBindings.Add(binding), RuleWorkspace);
     }
 
     public TemplateRevision UpdateFrameBinding(
@@ -687,7 +701,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             Pages,
-            FrameBindings.SetItem(index, FrameBindings[index].Reconfigure(selectionRequirement, layoutIntent)));
+            FrameBindings.SetItem(index, FrameBindings[index].Reconfigure(selectionRequirement, layoutIntent)), RuleWorkspace);
     }
 
     public TemplateRevision RemoveFrameBinding(string frameId)
@@ -718,7 +732,7 @@ public sealed record TemplateRevision
             RuleDigest,
             CreatedAt,
             Pages,
-            FrameBindings.RemoveAt(index));
+            FrameBindings.RemoveAt(index), RuleWorkspace);
     }
 
     private void EnsureDraftEditable()
@@ -738,7 +752,8 @@ public sealed record TemplateRevision
         string? ruleDigest,
         DateTimeOffset createdAt,
         IEnumerable<TemplatePage>? pages,
-        IEnumerable<FrameBinding>? frameBindings)
+        IEnumerable<FrameBinding>? frameBindings,
+        TemplateRuleWorkspace? ruleWorkspace = null)
     {
         if (revisionNo <= 0)
         {
@@ -789,7 +804,7 @@ public sealed record TemplateRevision
             ruleDigest,
             createdAt,
             frozenPages,
-            frozenBindings);
+            frozenBindings, ruleWorkspace);
     }
 
     private static bool IsFailureState(TemplateRevisionState state) => state is
@@ -993,7 +1008,7 @@ public sealed record BatchTemplatePageSnapshot(
     string TemplateResourceId,
     ImmutableArray<string> FrameIds);
 
-public sealed record BatchTemplateSnapshot
+public sealed record BatchTemplateSnapshot : IBatchTemplateContext
 {
     private BatchTemplateSnapshot(
         string snapshotId,
@@ -1032,6 +1047,10 @@ public sealed record BatchTemplateSnapshot
     {
         ArgumentNullException.ThrowIfNull(revision);
         ArgumentNullException.ThrowIfNull(selectedPageIds);
+        // The legacy snapshot has no output-instance identity. Never discard a new
+        // recipe into GenerationMode while the versioned instance path is unavailable.
+        if (revision.RuleWorkspace?.Rules is not null)
+            throw new TemplateRuleViolationException("TPL_RULE_INSTANCE_PIPELINE_REQUIRED");
         if (revision.State != TemplateRevisionState.Committed || revision.RuleDigest is null)
         {
             throw new TemplateRuleViolationException("TPL_REVISION_NOT_COMMITTED");

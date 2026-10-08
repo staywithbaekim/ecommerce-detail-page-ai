@@ -84,6 +84,9 @@ public sealed class ResultReviewPageState : INotifyPropertyChanged
         RenderBatchStatus.Completed => "本批次页面已生成，可检查正式结果。",
         RenderBatchStatus.CompletedWithIssues => "可生成页面已完成，请检查失败或待处理页面。",
         RenderBatchStatus.Cancelled => "批次已取消；此前成功输出已保留。",
+        RenderBatchStatus.Empty => "规则合法展开为 0 个实例；未启动 Photoshop，没有正式输出。",
+        RenderBatchStatus.UserActionRequired => "所有实例均有业务问题；请查看各实例原因，修正输入后创建新批次。",
+        RenderBatchStatus.Failed => "实例执行失败，没有成功输出；仅明确失败的实例可单独重试。",
         _ => "页面已准备，可开始渲染。"
     } : _renderPreparation?.Status switch
     {
@@ -101,7 +104,7 @@ public sealed class ResultReviewPageState : INotifyPropertyChanged
         : $"{ResultStyleGroups.Count} 款 · {_renderPreparation.Pages.Count} 个页面 · {_renderPreparation.ReadyPageCount} 个计划已闭合";
 
     public string ResultFormalOutputText => RenderJournal?.Pages.Where(page => page.Status == RenderBatchPageStatus.Committed)
-        .Select(page => (page.StyleId, page.PageId, page.OutputVariantId)).Distinct().Count() is > 0 and var count
+        .Select(page => (page.StyleId, page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId)).Distinct().Count() is > 0 and var count
         ? $"已登记 {count} 页正式输出；预览只读取校验通过的 JPG"
         : "尚未生成正式图片；下方图片仅为选图参考，不是套版效果。";
 
@@ -167,9 +170,9 @@ public sealed class ResultReviewPageState : INotifyPropertyChanged
                 var sourcePage = sourceStyle?.Pages.FirstOrDefault(item =>
                     string.Equals(item.PageId, page.PageId, StringComparison.Ordinal));
                 var rendered = RenderJournal?.Pages.Where(item => item.StyleId == page.StyleId && item.PageId == page.PageId
-                    && item.OutputVariantId == page.OutputVariantId).OrderByDescending(item => item.Attempt).FirstOrDefault();
+                    && item.OutputVariantId == page.OutputVariantId && item.Instance == page.Instance).OrderByDescending(item => item.Attempt).FirstOrDefault();
                 var output = RenderJournal?.Pages.Where(item => item.StyleId == page.StyleId && item.PageId == page.PageId
-                    && item.OutputVariantId == page.OutputVariantId && item.Status == RenderBatchPageStatus.Committed)
+                    && item.OutputVariantId == page.OutputVariantId && item.Instance == page.Instance && item.Status == RenderBatchPageStatus.Committed)
                     .MaxBy(item => item.Attempt);
                 var preview = output?.Commit is { } commit && _outputPreviews.TryGetValue(commit.ManifestSha256, out var image) ? image : null;
                 return ResultPageCardViewModel.Create(
@@ -189,7 +192,7 @@ public sealed class ResultReviewPageState : INotifyPropertyChanged
         RebuildResultFilters();
         ApplyResultFilter();
         if (selected is not null) SelectedResultPage = AllResultPages.FirstOrDefault(item => item.StyleId == selected.StyleId
-            && item.PageId == selected.PageId && item.OutputVariantId == selected.OutputVariantId);
+            && item.PageId == selected.PageId && item.OutputVariantId == selected.OutputVariantId && item.PageInstanceId == selected.PageInstanceId);
         OnPropertyChanged(nameof(RenderPreparation));
         OnPropertyChanged(nameof(ResultTitleText));
         OnPropertyChanged(nameof(ResultStatusText));

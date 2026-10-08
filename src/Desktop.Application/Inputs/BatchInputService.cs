@@ -74,7 +74,12 @@ public sealed class BatchInputService(
             throw new InputRuleViolationException("INPUT_DRAFT_CONFIGURATION_FROZEN");
         }
 
-        var snapshot = BatchTemplateSnapshot.Create(
+        var snapshotId = existing?.TemplateSnapshot.SnapshotId
+            ?? InputStableIds.ForTemplateSnapshot(command.BatchId, revision.RevisionId, command.SelectedPageIds);
+        IBatchTemplateContext snapshot = revision.RuleWorkspace?.Rules is not null
+            ? BatchRuleTemplateContext.Create(snapshotId, command.BatchId, revision, command.SelectedPageIds,
+                TemplateRuleCodec.BusinessDigest(revision), existing?.TemplateSnapshot.CreatedAt ?? now)
+            : BatchTemplateSnapshot.Create(
             existing?.TemplateSnapshot.SnapshotId
                 ?? InputStableIds.ForTemplateSnapshot(command.BatchId, revision.RevisionId, command.SelectedPageIds),
             command.BatchId,

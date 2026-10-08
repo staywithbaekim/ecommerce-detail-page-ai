@@ -17,6 +17,11 @@ public interface IAiAnalyzer
 /// </summary>
 public interface IAiServicePort
 {
+    AiTaskProviderIdentity TemplateRulesIdentity => AiTaskProviderIdentity.LegacyTemplateRules;
+
+    Task<Templates.TemplateRuleAiExecution> InterpretTemplateRulesAsync(Templates.TemplateRuleAiRequest request,
+        CancellationToken cancellationToken) => Task.FromResult(new Templates.TemplateRuleAiExecution(
+            AiProviderOutcome.TerminalError, null, null, new ContractError("TPL_RULE_AI_UNSUPPORTED", false, "provider", "当前适配器不支持模板规则解释。")));
     Task<AiAnalysisExecutionResult> AnalyzeAsync(
         AiAnalysisRequestV1 request,
         CancellationToken cancellationToken);
@@ -173,7 +178,21 @@ public sealed record AiProviderUsage(
     int InputTokens,
     int OutputTokens,
     int TotalTokens,
-    bool CacheHit);
+    bool CacheHit,
+    int CachedInputTokens = 0)
+{
+    public int BillableInputTokens => Math.Max(0, InputTokens - CachedInputTokens);
+
+    public AiProviderUsage Normalize()
+    {
+        var input = Math.Max(0, InputTokens);
+        var output = Math.Max(0, OutputTokens);
+        var total = Math.Max(input + output, Math.Max(0, TotalTokens));
+        var cached = Math.Clamp(CachedInputTokens, 0, input);
+        return this with { InputTokens = input, OutputTokens = output, TotalTokens = total, CachedInputTokens = cached, CacheHit = CacheHit || cached > 0 };
+    }
+}
+
 
 public sealed record AiAnalysisExecutionResult(
     AiProviderOutcome Outcome,

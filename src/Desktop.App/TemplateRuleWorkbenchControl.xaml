@@ -1,0 +1,81 @@
+ <UserControl x:Class="Desktop.App.TemplateRuleWorkbenchControl"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:Desktop.App" AllowDrop="True" Drop="Paths_Drop" SizeChanged="Board_SizeChanged"
+ AutomationProperties.AutomationId="TemplateRuleWorkbench" FontFamily="{StaticResource AppFontFamily}" FontSize="14" UseLayoutRounding="True" SnapsToDevicePixels="True" DragOver="Paths_DragOver">
+ <UserControl.Resources>
+  <ResourceDictionary>
+   <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Styles/TemplateWorkbench.xaml"/></ResourceDictionary.MergedDictionaries>
+   <Style TargetType="Button" BasedOn="{StaticResource WorkbenchButtonStyle}"/>
+   <Style TargetType="TextBox" BasedOn="{StaticResource WorkbenchTextBoxStyle}"/>
+  </ResourceDictionary>
+ </UserControl.Resources>
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <WrapPanel x:Name="Toolbar" Margin="0,0,12,12">
+   <StackPanel Orientation="Horizontal" Margin="0,0,20,8">
+    <Button Content="返回模板库" Style="{StaticResource WorkbenchGhostButtonStyle}" Command="{Binding BackToTemplateLibraryCommand}" Margin="0,0,8,0"/>
+    <Border Width="1" Height="20" Background="{StaticResource WorkbenchLineBrush}" Margin="0,0,8,0"/>
+    <TextBox x:Name="GroupName" Text="{Binding TemplateGroupName, UpdateSourceTrigger=PropertyChanged}" Width="310" FontSize="16" FontWeight="SemiBold"
+             Padding="8,6" Background="Transparent" BorderBrush="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="模板组名称" ToolTip="{Binding TemplateGroupName}"/>
+   </StackPanel>
+   <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+    <Button Content="导入模板组" Click="Import_Click" Margin="0,0,6,0"/>
+    <Button Content="学习参考款" Style="{StaticResource WorkbenchGhostButtonStyle}" Click="Learn_Click" Margin="0,0,12,0" ToolTip="复用参考学习和结构校准；仅在明确发送后调用 AI"/>
+    <Button Content="查看总规则" Style="{StaticResource WorkbenchPrimaryButtonStyle}" Click="Overview_Click" Margin="0,0,6,0"/>
+    <Button Content="撤销本轮" Style="{StaticResource WorkbenchGhostButtonStyle}" Click="Undo_Click" IsEnabled="{Binding RuleWorkbench.CanUndo}"/>
+   </StackPanel>
+  </WrapPanel>
+  <StackPanel Grid.Row="1" Margin="0,0,16,14">
+   <TextBlock Text="{Binding TemplateStatusMessage}" Style="{StaticResource WorkbenchCaptionStyle}"/>
+   <ProgressBar Height="2" Margin="0,8,0,0" Foreground="{StaticResource WorkbenchAccentBrush}" IsIndeterminate="True" Visibility="{Binding TemplateBusy, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+   <TextBlock Text="{Binding ReferenceLearningStatusMessage}" Style="{StaticResource WorkbenchCaptionStyle}" Margin="0,6,0,0" Visibility="{Binding ReferenceLearningBusy, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+  </StackPanel>
+  <Grid Grid.Row="2">
+   <Grid x:Name="EditorView">
+    <ScrollViewer x:Name="WorkspaceScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="Content_SizeChanged">
+     <StackPanel>
+      <DockPanel Margin="0,0,16,12">
+       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="上一组" Style="{StaticResource WorkbenchCardButtonStyle}" Click="Previous_Click"/><Button Content="下一组" Style="{StaticResource WorkbenchCardButtonStyle}" Click="Next_Click" Margin="4,0,0,0"/></StackPanel>
+       <TextBlock Text="{Binding RuleWorkbench.SegmentText}" Style="{StaticResource WorkbenchCaptionStyle}" VerticalAlignment="Center"/>
+      </DockPanel>
+      <Border Padding="24" Margin="0,0,16,16" Background="{StaticResource WorkbenchQuietBrush}" BorderBrush="{StaticResource WorkbenchConnectorBrush}" BorderThickness="1" CornerRadius="12" AllowDrop="True" DragOver="Paths_DragOver">
+       <StackPanel><TextBlock Text="拖入 PSD 或文件夹" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="直接把文件或文件夹拖到这里，或点击“添加模板页面”选择。系统只读取结构和合成预览，不修改原文件。" Style="{StaticResource WorkbenchBodyStyle}" Foreground="{StaticResource TextMutedBrush}" Margin="0,8,0,0"/><TextBlock Text="支持：.psd 文件、包含 PSD 的文件夹" Style="{StaticResource WorkbenchCaptionStyle}" Foreground="{StaticResource TextMutedBrush}" Margin="0,8,0,0"/></StackPanel>
+      </Border>
+      <ItemsControl x:Name="Cards" ItemsSource="{Binding RuleWorkbench.VisiblePages}">
+       <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+       <ItemsControl.ItemTemplate><DataTemplate><local:TemplatePageRuleCard Width="{Binding CardWidth, RelativeSource={RelativeSource AncestorType=local:TemplateRuleWorkbenchControl}}"/></DataTemplate></ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <Border x:Name="EndClearance" Height="160"/>
+     </StackPanel>
+    </ScrollViewer>
+    <Border x:Name="Composer" Panel.ZIndex="5" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Margin="12,0,24,14"
+       CornerRadius="16" Background="{StaticResource SurfaceBrush}" BorderThickness="1" Padding="18,14" SizeChanged="Composer_SizeChanged"
+       AutomationProperties.AutomationId="TemplateRuleFloatingComposer">
+     <Border.Style><Style TargetType="Border"><Setter Property="BorderBrush" Value="{StaticResource WorkbenchConnectorBrush}"/><Style.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{StaticResource WorkbenchAccentBrush}"/></Trigger></Style.Triggers></Style></Border.Style>
+     <Border.Effect><DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.07"/></Border.Effect>
+     <StackPanel>
+      <Grid>
+      <TextBox x:Name="Input" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="38" MaxHeight="140" BorderThickness="0" Background="Transparent" Padding="0" VerticalContentAlignment="Top"
+        VerticalScrollBarVisibility="Auto" TextChanged="Input_TextChanged" SelectionChanged="Input_SelectionChanged" PreviewKeyDown="Input_KeyDown" AutomationProperties.Name="描述模板使用方式或选图规则"
+        ToolTip="描述想法；输入 @ 引用，Ctrl+Enter 发送。不会逐字调用 AI。">
+       <TextBox.Template><ControlTemplate TargetType="TextBox"><ScrollViewer x:Name="PART_ContentHost"/></ControlTemplate></TextBox.Template>
+      </TextBox>
+      <TextBlock Text="例如：@1 用假模特正面图，@2 用同色背面图…" Foreground="#81817B" IsHitTestVisible="False" VerticalAlignment="Top">
+       <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding Text.Length, ElementName=Input}" Value="0"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+      </TextBlock>
+      </Grid>
+      <DockPanel Margin="0,10,0,0">
+       <Button DockPanel.Dock="Right" Content="发送" Style="{StaticResource WorkbenchPrimaryButtonStyle}" Click="Send_Click" IsEnabled="{Binding RuleWorkbench.CanInterpret}"/>
+       <Button DockPanel.Dock="Right" Content="@ 引用" Style="{StaticResource WorkbenchGhostButtonStyle}" Click="References_Click" Margin="0,0,8,0"/>
+       <TextBlock x:Name="Notice" Text="{Binding RuleWorkbench.Status}" VerticalAlignment="Center" Margin="0,0,12,0">
+        <TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource WorkbenchCaptionStyle}"><Style.Triggers><Trigger Property="Tag" Value="Error"><Setter Property="Foreground" Value="{StaticResource DangerBrush}"/></Trigger></Style.Triggers></Style></TextBlock.Style>
+       </TextBlock>
+      </DockPanel>
+      <ListBox x:Name="ReferencePicker" Visibility="Collapsed" MaxHeight="180" DisplayMemberPath="DisplayLabel" SelectionChanged="Reference_Selected" AutomationProperties.Name="在正文当前位置引用模板或框"/>
+     </StackPanel>
+    </Border>
+   </Grid>
+   <local:TemplateRuleOverviewControl x:Name="Overview" Visibility="Collapsed"/>
+  </Grid>
+ </Grid>
+</UserControl>

@@ -19,6 +19,14 @@ public sealed class RenderBatchResourcePreparer(IPathPolicy appPaths, ITemplateR
         using var performance = RenderPerformance.Start("resources.prepare", page.PageId);
         using var document = JsonDocument.Parse(page.PlanJson!);
         var plan = document.RootElement;
+        if (RenderPlanInstanceIdentity.Read(plan) != page.Instance
+            || plan.GetProperty("batch_id").GetString() != batch.BatchId
+            || plan.GetProperty("product_id").GetString() != page.StyleId
+            || plan.GetProperty("document").GetProperty("page_id").GetString() != page.PageId
+            || page.Instance is { } instance && (instance.SnapshotId != batch.TemplateSnapshot.SnapshotId
+                || instance.RevisionId != batch.TemplateSnapshot.RevisionId
+                || batch.TemplateSnapshot is not Desktop.Domain.Templates.BatchRuleTemplateContext context
+                || instance.RuleDigest != context.BusinessRuleDigest)) throw Invalid();
         var resources = new List<BridgeResourceSource>();
         var copies = new List<OwnedRenderResourceFile>();
         var templateEvidence = default(Desktop.Application.Psd.PsdInspectionDocument);

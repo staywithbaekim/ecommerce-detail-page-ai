@@ -10,7 +10,8 @@ using Desktop.Domain.Inputs;
 namespace Desktop.Infrastructure.Bridge;
 
 internal sealed record RenderStyleOutputPage(string PageId, string? OutputVariantId, int Attempt,
-    string? PlanDigest, string? JpegName, string? PsdName);
+    string? PlanDigest, string? JpegName, string? PsdName,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] RenderInstanceIdentity? Instance = null);
 internal sealed record RegisteredRenderStyleOutput(RenderStyleOutputTarget Target,
     RenderOutputDirectoryIdentity SourceIdentity, RenderOutputDirectoryIdentity ParentIdentity,
     ImmutableArray<RenderStyleOutputPage> Pages);
@@ -52,7 +53,7 @@ internal static class RenderStyleOutputRegistrationData
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var pages = initial.Pages.Where(page => page.StyleId == target.StyleId).Select(page =>
             {
-                if (page.PlanJson is null) return new RenderStyleOutputPage(page.PageId, page.OutputVariantId, page.Attempt, null, null, null);
+                if (page.PlanJson is null) return new RenderStyleOutputPage(page.PageId, page.OutputVariantId, page.Attempt, null, null, null, page.Instance);
                 using var json = JsonDocument.Parse(page.PlanJson);
                 var plan = json.RootElement;
                 var output = plan.GetProperty("output");
@@ -67,17 +68,17 @@ internal static class RenderStyleOutputRegistrationData
                 if (!names.Add(jpg) || psd is not null && !names.Add(psd)
                     || batch.IncludeEditablePsd != (psd is not null)) throw Invalid();
                 return new RenderStyleOutputPage(page.PageId, page.OutputVariantId, page.Attempt,
-                    plan.GetProperty("plan_digest").GetString(), jpg, psd);
+                    plan.GetProperty("plan_digest").GetString(), jpg, psd, page.Instance);
             }).ToImmutableArray();
-            if (pages.IsEmpty) throw Invalid();
+            if (pages.IsEmpty && initial.Version != 4) throw Invalid();
             styles.Add(new(target, identity.SourceIdentity, identity.ParentIdentity, pages));
         }
-        return new(1, batch.BatchId, batch.ManifestDigest, RenderStyleOutputPlanner.LocalDirectoryPath(batch.OutputRoot), styles.ToImmutable());
+        return new(initial.Version == 4 ? 2 : 1, batch.BatchId, batch.ManifestDigest, RenderStyleOutputPlanner.LocalDirectoryPath(batch.OutputRoot), styles.ToImmutable());
     }
 
     internal static void Validate(RenderStyleOutputRegistration value, BatchDraft batch, RenderBatchJournal initial)
     {
-        if (value.Version != 1 || value.BatchId != batch.BatchId || value.Styles.IsDefault
+        if (value.Version is not (1 or 2) || value.BatchId != batch.BatchId || value.Styles.IsDefault
             || value.Styles.Any(style => style?.Target is null || style.Pages.IsDefault)) throw Invalid();
         if (Encode(value) != Encode(Build(batch, initial, value.Styles))) throw Invalid();
     }

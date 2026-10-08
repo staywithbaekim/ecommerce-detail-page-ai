@@ -56,7 +56,7 @@ public sealed class RenderBatchOutputReader(IBatchRepository batches, IRenderBat
     {
         var journal = await journals.LoadRenderBatchAsync(batchId, cancellationToken).ConfigureAwait(false);
         var current = journal?.Pages.SingleOrDefault(item => item.StyleId == page.StyleId && item.PageId == page.PageId
-            && item.OutputVariantId == page.OutputVariantId && item.Attempt == page.Attempt);
+            && item.Instance == page.Instance && item.OutputVariantId == page.OutputVariantId && item.Attempt == page.Attempt);
         if (current?.Status != RenderBatchPageStatus.Committed || current.Commit is null || current != page)
             throw new InvalidDataException("RENDER_COMMIT_RECOVERY_REQUIRED");
         var batch = await batches.GetAsync(batchId, cancellationToken).ConfigureAwait(false)

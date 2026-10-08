@@ -346,7 +346,7 @@ public static class AiAnalysisCheckpointRules
             ValidateIdentifier(pair.Key, "AI_CHECKPOINT_TERMINAL_ERROR_REQUEST_INVALID");
             if (!IsSafeErrorCode(pair.Value)
                 || !graphs.TryGetValue(pair.Key, out var terminalGraph)
-                || terminalGraph.Request.Status is not ("TerminalError" or "AiResultUnknown"))
+        || !AiLedgerStatusPolicy.IsTerminalFailure(terminalGraph.Request.Status))
             {
                 throw new InvalidOperationException("AI_CHECKPOINT_TERMINAL_ERROR_INVALID");
             }
@@ -399,7 +399,7 @@ public static class AiAnalysisCheckpointRules
                 throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_SOURCE_PATH_INVALID");
             }
 
-            if (graph.Request.Status is not ("Queued" or "RetryableError" or "Uploading" or "Analysing"))
+        if (!AiLedgerStatusPolicy.IsRecoverableAdmissionState(graph.Request.Status))
             {
                 throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_STATUS_INVALID");
             }
@@ -407,7 +407,7 @@ public static class AiAnalysisCheckpointRules
 
         foreach (var graph in command.Graphs)
         {
-            if (graph.Request.Status is "Queued" or "RetryableError"
+        if (AiLedgerStatusPolicy.IsRunnable(graph.Request.Status)
                 && !schedulerState.PendingItems.Any(item => string.Equals(item.Request.RequestId, graph.Request.RequestId, StringComparison.Ordinal)))
             {
                 throw new InvalidOperationException("AI_CHECKPOINT_SCHEDULER_PENDING_OMITTED");

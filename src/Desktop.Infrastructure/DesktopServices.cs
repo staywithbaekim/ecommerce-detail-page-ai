@@ -67,19 +67,23 @@ public static class DesktopServices
         services.AddSingleton<ISizeTableRasterizer, WpfSizeTableRasterizer>();
 
         services.AddSingleton<SqliteDesktopStore>();
+        services.AddSingleton<SqliteAiAnalysisRepository>();
+        services.AddSingleton<SqliteTemplateRepository>();
         services.AddSingleton<ITaskEventStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<ICheckpointStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IRenderBatchStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IRenderPageCommitStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<IAppInstanceStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
-        services.AddSingleton<ITemplateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
-        services.AddSingleton<IBatchSnapshotRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
-        services.AddSingleton<IAiAnalysisStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
-        services.AddSingleton<IAiAnalysisSchedulingStateStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
-        services.AddSingleton<IAiAnalysisCheckpointDatabase>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplateRepository>(provider => provider.GetRequiredService<SqliteTemplateRepository>());
+        services.AddSingleton<ITemplateInstanceProjectionSnapshotStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplateInstanceProductionEvidenceStore>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<IBatchSnapshotRepository>(provider => provider.GetRequiredService<SqliteTemplateRepository>());
+        services.AddSingleton<IAiAnalysisStore>(provider => provider.GetRequiredService<SqliteAiAnalysisRepository>());
+        services.AddSingleton<IAiAnalysisSchedulingStateStore>(provider => provider.GetRequiredService<SqliteAiAnalysisRepository>());
+        services.AddSingleton<IAiAnalysisCheckpointDatabase>(provider => provider.GetRequiredService<SqliteAiAnalysisRepository>());
         services.AddSingleton<IAiAnalysisStateManifestStore, AiAnalysisStateManifestStore>();
         services.AddSingleton<IAiAnalysisCheckpointPort, AiAnalysisCheckpointCoordinator>();
-        services.AddSingleton<ITemplateResourceRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ITemplateResourceRepository>(provider => provider.GetRequiredService<SqliteTemplateRepository>());
         services.AddSingleton<IFileInventory, ReadOnlyFileInventory>();
         services.AddSingleton<IAssetMetadataReader, StreamingAssetMetadataReader>();
         services.AddSingleton<IAssetManifestStore, AssetManifestFileStore>();
@@ -93,10 +97,11 @@ public static class DesktopServices
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<TemplatePageImportService>();
         services.AddSingleton<ITemplateWorkspaceService, TemplateWorkspaceService>();
+        services.AddSingleton<ITemplateRuleInterpreter, TemplateRuleInterpretationService>();
         services.AddSingleton<ICalibrationAssetSourcePort, ReadOnlyCalibrationAssetSourcePort>();
         services.AddSingleton<ITemplateCalibrationService, TemplateCalibrationService>();
-        services.AddSingleton<ICalibrationStateRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
-        services.AddSingleton<ITemplatePreviewRepository>(provider => provider.GetRequiredService<SqliteDesktopStore>());
+        services.AddSingleton<ICalibrationStateRepository>(provider => provider.GetRequiredService<SqliteTemplateRepository>());
+        services.AddSingleton<ITemplatePreviewRepository>(provider => provider.GetRequiredService<SqliteTemplateRepository>());
         services.AddSingleton<ITemplatePackagePort, ZipTemplatePackagePort>();
         services.AddSingleton<ITemplatePackageService, TemplatePackageService>();
         services.AddSingleton<ITemplateOwnedStorage, TemplateOwnedStorage>();
@@ -147,17 +152,30 @@ public static class DesktopServices
         services.AddSingleton<IAiUploadAdmissionPort>(provider =>
             provider.GetRequiredService<SqliteDesktopStore>());
         services.AddSingleton<VolcArkAiOptions>();
-        services.AddSingleton<IAiServicePort>(provider => new VolcArkAiAdapter(
-            new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
+        services.AddSingleton(TemplateRuleProviderConfiguration.Read(options.RootDirectory));
+        services.AddSingleton<VolcArkAiAdapter>(provider => new VolcArkAiAdapter(
+            new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan },
             provider.GetRequiredService<IAiCredentialSource>(),
             provider.GetRequiredService<IAiAnalysisCopySource>(),
             provider.GetRequiredService<IJsonContractValidator>(),
             provider.GetRequiredService<VolcArkAiOptions>(),
             provider.GetService<IRedactedLogger>()));
+        services.AddSingleton<IAiServicePort>(provider =>
+        {
+            var current = provider.GetRequiredService<VolcArkAiAdapter>();
+            if (!provider.GetRequiredService<TemplateRuleProviderConfiguration>().UseOpenAiCandidate) return current;
+            var candidate = new OpenAiTemplateRuleAdapter(
+                new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan },
+                new WindowsCredentialSource(OpenAiTemplateRuleAdapter.CredentialTarget),
+                provider.GetRequiredService<IJsonContractValidator>());
+            return new TemplateRuleConfiguredAiPort(current, candidate);
+        });
         services.AddSingleton<IAiAnalysisSchedulerFactory, AiAnalysisSchedulerFactory>();
         services.AddSingleton<AiBatchAnalysisWorkflow>();
+        services.AddSingleton<Func<IRenderBatchWorkflow>>(provider => () => provider.GetRequiredService<IRenderBatchWorkflow>());
         services.AddSingleton<IAiBatchAnalysisWorkflow>(provider => provider.GetRequiredService<AiBatchAnalysisWorkflow>());
         services.AddSingleton<ISizeTableRepairAdmission>(provider => provider.GetRequiredService<AiBatchAnalysisWorkflow>());
+        services.AddSingleton<Func<ISizeTableRepairAdmission>>(provider => () => provider.GetRequiredService<AiBatchAnalysisWorkflow>());
         return services;
     }
 }

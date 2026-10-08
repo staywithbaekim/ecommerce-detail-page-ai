@@ -13,6 +13,61 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class TemplatePackageIntegrationTests
 {
     [Fact]
+    public async Task V3RulesAliasesAndRuleOnlyFramesRoundtripWithFreshIdsAndManifestClosure()
+    {
+        using var directory = new TestDirectory();
+        var bytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 1, 2, 3, 4 };
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var sourcePath = Path.Combine(directory.Path, "source.psd");
+        await File.WriteAllBytesAsync(sourcePath, bytes);
+        var manifest = new TemplatePackageManifest(TemplatePackageProtocol.Version, "legacy", 1,
+            "revision", "sha256:" + new string('c', 64), [new("resource", "resources/source.psd", bytes.Length, hash)],
+            [new("page_01", 0, "normal", TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct, null, true, "resource", Inspection(hash, bytes.Length),
+                [PackageBinding() with { PageId = "page_01" }])]);
+        var port = new ZipTemplatePackagePort();
+        var package = Path.Combine(directory.Path, "legacy.tplpkg");
+        await port.ExportAsync(manifest, new Dictionary<string, string> { ["resource"] = sourcePath }, package, default);
+        var root = Path.Combine(directory.Path, "isolated");
+        await using var store = new SqliteDesktopStore(new(root)); await store.InitializeAsync();
+        var paths = new LocalAppPathPolicy(root); var files = new AtomicFileStore(paths); var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var workspace = Workspace(store, files, new JsonManifestStore(files), time);
+        var packages = new TemplatePackageService(store, store, port, files, paths, workspace, time);
+        var imported = await packages.ImportAsNewGroupAsync(package, null, default);
+        var session = await workspace.BeginFullEditAsync(imported.GroupId, default);
+        var editor = workspace;
+        var view = await editor.GetRulesAsync(session, default);
+        var frame = view.Frames[0];
+        var draft = (await store.GetRevisionAsync(session.DraftRevisionId, default))!;
+        draft = draft.UpdateFrameBinding(frame.FrameId, SelectionRequirement.Create("正面"));
+        await store.SaveDraftRevisionAsync(draft, default);
+        view = await editor.GetRulesAsync(session, default);
+        var branch = new TemplateRuleBranch("all", new(1), [new("front", frame.PageId, TemplateRuleRepeat.Once,
+            TemplateRuleColorRange.None, [new("primary", TemplateRuleColorSource.Primary)], [new(frame.FrameId, "primary")])]);
+        view = await editor.ApplyRulePatchAsync(session, new("rules", view.Version, new([], [new("all", branch)])), default);
+        var committed = await editor.ConfirmRulesAsync(session, new(view.Version, view.RuleDigest), default);
+        var revision = (await store.GetRevisionAsync(committed.RevisionId, default))!;
+        Assert.Contains("rules_" + revision.RevisionId, System.Text.Encoding.UTF8.GetString((await files.ReadAsync(revision.ManifestRef!, default))!), StringComparison.Ordinal);
+        var v3 = Path.Combine(directory.Path, "v3.tplpkg"); await packages.ExportCurrentAsync(committed.GroupId, v3, default);
+        var validated = (await port.ValidateAsync(v3, default)).Manifest!;
+        Assert.Equal("template-package/v3", validated.Protocol);
+        Assert.NotNull(validated.RuleWorkspace);
+        var copy = await packages.ImportAsNewGroupAsync(v3, "new identity", default);
+        var copied = (await store.GetRevisionAsync(copy.RevisionId, default))!;
+        Assert.NotEqual(revision.Pages[0].PageId, copied.Pages[0].PageId);
+        Assert.NotEqual(frame.FrameId, copied.FrameBindings[0].FrameId);
+        Assert.Empty(TemplateRuleEvaluator.Validate(copied.RuleWorkspace!.Rules!, copied));
+        Assert.Equal(view.Aliases.Select(alias => alias.Number), copied.RuleWorkspace.Aliases.Select(alias => alias.Number));
+        Assert.Equal(copied.Pages[0].PageId, copied.RuleWorkspace.Rules!.Branches[0].Recipes[0].PageId);
+        Assert.Equal(copied.FrameBindings[0].FrameId, copied.RuleWorkspace.Rules.Branches[0].Recipes[0].FrameBindings[0].FrameId);
+        Assert.Empty(copied.FrameBindings[0].SelectionRequirement.Criteria);
+        await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(validated with { Protocol = TemplatePackageProtocol.Version2 },
+            new Dictionary<string, string>(), Path.Combine(directory.Path, "downgrade.tplpkg"), default));
+        await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(validated with { RuleDigest = "sha256:" + new string('0', 64) },
+            new Dictionary<string, string>(), Path.Combine(directory.Path, "tampered.tplpkg"), default));
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(sourcePath));
+    }
+    [Fact]
     public async Task FrozenV1ImportsOneBasedPathsAndReexportsExplicitV2WithoutChangingBindings()
     {
         using var directory = new TestDirectory();
@@ -255,7 +310,7 @@ public sealed class TemplatePackageIntegrationTests
         {
             var packageJson = await reader.ReadToEndAsync();
             Assert.DoesNotContain("contentEvidence", packageJson, StringComparison.Ordinal);
-            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV2, packageJson).IsValid);
+            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV3, packageJson).IsValid);
         }
 
         await using var target = new SqliteDesktopStore(targetOptions);

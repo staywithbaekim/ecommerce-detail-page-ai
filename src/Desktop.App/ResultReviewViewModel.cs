@@ -154,7 +154,7 @@ public sealed partial class ResultReviewViewModel : INotifyPropertyChanged, IDis
         }
 
         SelectedResultPage = ResultState.ResultStyleGroups.SelectMany(group => group.Pages)
-            .FirstOrDefault(item => item.StyleId == page.StyleId && item.PageId == page.PageId && item.OutputVariantId == page.OutputVariantId)
+            .FirstOrDefault(item => item.StyleId == page.StyleId && item.PageId == page.PageId && item.OutputVariantId == page.OutputVariantId && item.PageInstanceId == page.PageInstanceId)
             ?? page;
         _host.ShowDetails();
     }

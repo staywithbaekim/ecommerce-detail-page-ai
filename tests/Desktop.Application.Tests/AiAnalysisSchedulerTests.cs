@@ -76,6 +76,24 @@ public sealed class AiAnalysisSchedulerTests
     }
 
     [Fact]
+    public void ProviderUsageKeepsCachedInputSeparateFromTotalInput()
+    {
+        var usage = new AiProviderUsage(1_000, 120, 1_120, false, CachedInputTokens: 700).Normalize();
+
+        Assert.True(usage.CacheHit);
+        Assert.Equal(1_000, usage.InputTokens);
+        Assert.Equal(700, usage.CachedInputTokens);
+        Assert.Equal(300, usage.BillableInputTokens);
+        Assert.Equal(1_120, usage.TotalTokens);
+
+        var clamped = new AiProviderUsage(-1, -2, 0, false, 500).Normalize();
+        Assert.Equal(0, clamped.InputTokens);
+        Assert.Equal(0, clamped.OutputTokens);
+        Assert.Equal(0, clamped.CachedInputTokens);
+        Assert.Equal(0, clamped.BillableInputTokens);
+    }
+
+    [Fact]
     public void ProductionQueueAndBudgetOverridesCanOnlyTightenFrozenV1Limits()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>

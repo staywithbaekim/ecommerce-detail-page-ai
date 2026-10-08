@@ -48,7 +48,7 @@ public sealed class SettingsPageState : INotifyPropertyChanged
     public string AiCredentialStatusDetailText => _credentialStatus.State switch
     {
         AiCredentialState.Configured => "Key 已保存到当前 Windows 用户的安全凭据存储；应用不会显示或记录完整 Key。",
-        AiCredentialState.NotConfigured => "首次扫描并分析前，请先在这里保存火山方舟 API Key。保存动作不会自动调用 AI。",
+        AiCredentialState.NotConfigured => "首次扫描并分析前，请先在这里保存 AI API Key。保存动作不会自动调用 AI。",
         _ when _credentialStatus.ErrorCode == "AI_CREDENTIAL_NOT_CHECKED" => "正在检查当前 Windows 用户的凭据存储。",
         _ => "无法安全读取当前 Windows 用户的凭据存储；不会发起 AI 请求。"
     };

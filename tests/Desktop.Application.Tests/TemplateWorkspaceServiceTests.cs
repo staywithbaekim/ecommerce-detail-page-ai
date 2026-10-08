@@ -128,6 +128,26 @@ public sealed class TemplateWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task RemovingDraftPageDoesNotDeleteOwnedCopyBeforeUndoIsNoLongerPossible()
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var sourceFiles = new RecordingSourceFiles();
+        var service = CreateService(templates, resources, sourceFiles: sourceFiles);
+        var session = await service.BeginCreateAsync("可撤销删除模板", CancellationToken.None);
+        var resource = Resource("resource_undo", session, 790, 1252);
+        resources.Add(resource);
+        var revision = (await templates.GetRevisionAsync(session.DraftRevisionId, CancellationToken.None))!
+            .AddPage(Page("page_undo", session.DraftRevisionId, 0, resource.ResourceId));
+        await templates.SaveDraftRevisionAsync(revision, CancellationToken.None);
+
+        await service.RemovePageAsync(session, "page_undo", CancellationToken.None);
+
+        Assert.Empty(sourceFiles.DeletedPaths);
+        Assert.NotNull(await resources.GetByResourceIdAsync(resource.ResourceId, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task RemovingOriginalIncrementPageIsBlocked()
     {
         var templates = new MemoryTemplateRepository();
@@ -377,6 +397,9 @@ public sealed class TemplateWorkspaceServiceTests
         Assert.True(session.IsFullTemplateEdit);
         Assert.Equal(session.BasePageIds, session.EditablePageIds);
         Assert.All(draft.Pages, page => Assert.True(page.IsAffected));
+        var reopenedDetails = await service.GetDetailsAsync(group.GroupId, CancellationToken.None);
+        Assert.False(reopenedDetails!.IsCommitted);
+        Assert.Equal(session.DraftRevisionId, reopenedDetails.RevisionId);
 
         await service.ConfigurePageAsync(
             session,
@@ -570,20 +593,23 @@ public sealed class TemplateWorkspaceServiceTests
         MemoryTemplateRepository templates,
         MemoryResourceRepository resources,
         IManifestStore? manifests = null,
-        ITemplateOwnedStorage? ownedStorage = null)
+        ITemplateOwnedStorage? ownedStorage = null,
+        ITemplateSourceFilePort? sourceFiles = null)
     {
         var time = new FixedTimeProvider(new DateTimeOffset(2026, 8, 28, 1, 0, 0, TimeSpan.Zero));
+        var filePort = sourceFiles ?? new UnusedSourceFiles();
         return new TemplateWorkspaceService(
             templates,
             resources,
             new TemplatePageImportService(
-                new UnusedSourceFiles(),
+                filePort,
                 new UnusedInspectionPort(),
                 resources,
                 time),
             time,
             manifests,
-            ownedStorage);
+            ownedStorage,
+            sourceFiles: filePort);
     }
 
     private static TemplatePage Page(
@@ -930,6 +956,29 @@ public sealed class TemplateWorkspaceServiceTests
         public Task<bool> DeleteOwnedCopyAsync(
             string internalRelativePath,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingSourceFiles : ITemplateSourceFilePort
+    {
+        public List<string> DeletedPaths { get; } = [];
+
+        public Task<SourceFingerprintResult> FingerprintAsync(
+            string sourcePsdPath,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<OwnedTemplateCopyResult> CopyVerifiedAsync(
+            string sourcePsdPath,
+            TemplateSourceFingerprint expectedSource,
+            string destinationRelativePath,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<bool> DeleteOwnedCopyAsync(
+            string internalRelativePath,
+            CancellationToken cancellationToken)
+        {
+            DeletedPaths.Add(internalRelativePath);
+            return Task.FromResult(true);
+        }
     }
 
     private sealed class UnusedInspectionPort : IPsdInspectionPort

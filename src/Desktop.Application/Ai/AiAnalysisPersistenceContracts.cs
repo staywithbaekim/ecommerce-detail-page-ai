@@ -32,7 +32,11 @@ public sealed record AiUsageEventRecord(
     int RetryCount,
     decimal? ProviderCostAmount,
     string? ProviderCostCurrency,
-    DateTimeOffset RecordedAt);
+    DateTimeOffset RecordedAt,
+    int CachedInputUnits = 0)
+{
+    public int BillableInputUnits => Math.Max(0, InputUnits - CachedInputUnits);
+}
 
 public interface IAiAnalysisStore
 {

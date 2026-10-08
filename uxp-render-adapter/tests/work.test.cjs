@@ -109,6 +109,37 @@ function fixture(executing = false) {
   return { loop, client, state, claim, content, session };
 }
 
+for (const mode of ["valid", "missing_capability", "old_executor", "wrong_source", "wrong_asset", "duplicate_slot", "variant_collision", "wrong_digest", "unknown_field"]) {
+  test(`frozen instance ${mode} is checked before ACK and resource creation`, async () => {
+    const f = fixture(true), plan = f.claim.plan.body.payload.render_plan;
+    plan.required_capabilities.push("template/page-instance-identity-v1");
+    plan.document.instance_identity = {
+      page_instance_id: "instance_" + "a".repeat(64), snapshot_id: "snapshot_test",
+      rule_digest: "sha256:" + "b".repeat(64), input_facts_digest: "sha256:" + "c".repeat(64),
+      projection_digest: "sha256:" + "d".repeat(64), source_page_id: plan.document.page_id,
+      branch_id: "branch", recipe_id: "recipe", repetition_index: 0, stable_order: 0,
+      slots: [{ slot_id: "slot", variant_id: "red" }], frames: plan.targets.map(target => ({
+        frame_id: target.frame_id, slot_id: "slot", variant_id: "red", asset_id: target.asset_resource_id }))
+    };
+    const identity = plan.document.instance_identity;
+    if (mode === "missing_capability") plan.required_capabilities.pop();
+    if (mode === "old_executor") f.client.session.capabilities = plan.required_capabilities.filter(item => item !== "template/page-instance-identity-v1");
+    if (mode === "wrong_source") identity.source_page_id = "page_other";
+    if (mode === "wrong_asset") identity.frames[0].asset_id = "asset_other";
+    if (mode === "duplicate_slot") identity.slots.push({ ...identity.slots[0] });
+    if (mode === "variant_collision") plan.document.output_variant_id = identity.page_instance_id;
+    if (mode === "wrong_digest") identity.projection_digest = "sha256:bad";
+    if (mode === "unknown_field") identity.loop = "all_colors";
+    plan.plan_digest = computePlanDigest(JSON.stringify(plan));
+    f.claim.plan_digest = plan.plan_digest; f.claim.plan.body.payload.plan_digest = plan.plan_digest;
+    if (mode === "valid") {
+      await f.loop.tick(); assert.equal(f.state.authorized, true); assert.equal(f.state.executions, 1); await f.loop.stop();
+    } else {
+      await assert.rejects(f.loop.tick()); assert.equal(f.state.authorized, false); assert.equal(f.state.creates, 0);
+    }
+  });
+}
+
 function insertionFixture() {
   const f = fixture(true), plan = f.claim.plan.body.payload.render_plan;
   const reference = { layer_path: [2], layer_path_order: "psd_bottom_to_top", layer_id: 2, kind: "group",

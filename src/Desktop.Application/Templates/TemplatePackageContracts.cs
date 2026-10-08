@@ -5,7 +5,8 @@ using Desktop.Application.Psd;
 public static class TemplatePackageProtocol
 {
     public const string Version = "template-package/v1";
-    public const string CurrentVersion = "template-package/v2";
+    public const string Version2 = "template-package/v2";
+    public const string CurrentVersion = "template-package/v3";
 }
 
 public sealed record TemplatePackageEntry(
@@ -21,7 +22,9 @@ public sealed record TemplatePackageManifest(
     string RevisionId,
     string RuleDigest,
     IReadOnlyList<TemplatePackageEntry> Entries,
-    IReadOnlyList<TemplatePackagePage>? Pages = null);
+    IReadOnlyList<TemplatePackagePage>? Pages = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Desktop.Domain.Templates.TemplateRuleWorkspace? RuleWorkspace = null);
 
 public sealed record TemplatePackagePage(
     string PageId,
@@ -35,7 +38,9 @@ public sealed record TemplatePackagePage(
     PsdInspectionDocument? Inspection,
     IReadOnlyList<TemplatePackageFrameBinding>? Bindings = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Desktop.Domain.Templates.SizeTableTemplateCalibration? SizeTableCalibration = null);
+    Desktop.Domain.Templates.SizeTableTemplateCalibration? SizeTableCalibration = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? Notes = null);
 
 public sealed record TemplatePackageFrameBinding(
     string FrameId,

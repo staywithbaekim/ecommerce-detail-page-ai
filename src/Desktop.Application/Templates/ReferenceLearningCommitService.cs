@@ -16,6 +16,10 @@ public sealed class ReferenceLearningCommitService(
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
+    public Task<ReferenceLearningCommitResult> StageDraftAsync(
+        IReadOnlyList<ReferenceLearningDocument> documents, TemplateDraftSession draftSession,
+        CancellationToken cancellationToken = default) => ApplyAsync(documents, draftSession, false, cancellationToken);
+
     public async Task<ReferenceLearningCommitResult> CommitAsync(
         ReferenceLearningDocument document,
         TemplateDraftSession draftSession,
@@ -24,10 +28,14 @@ public sealed class ReferenceLearningCommitService(
         draftSession,
         cancellationToken).ConfigureAwait(false);
 
-    public async Task<ReferenceLearningCommitResult> CommitAsync(
+    public Task<ReferenceLearningCommitResult> CommitAsync(
         IReadOnlyList<ReferenceLearningDocument> documents,
         TemplateDraftSession draftSession,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => ApplyAsync(documents, draftSession, true, cancellationToken);
+
+    private async Task<ReferenceLearningCommitResult> ApplyAsync(
+        IReadOnlyList<ReferenceLearningDocument> documents, TemplateDraftSession draftSession, bool commit,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(draftSession);
@@ -84,6 +92,7 @@ public sealed class ReferenceLearningCommitService(
 
         if (revision.State == TemplateRevisionState.Committed)
         {
+            if (!commit) return Failure("TPL_REVISION_IMMUTABLE", "不能向已提交修订写入学习结果。", "请先开始新的草稿。");
             if (bindings.Any(binding => revision.FrameBindings.All(existing =>
                 !string.Equals(existing.FrameId, binding.FrameId, StringComparison.Ordinal)
                 || !Equivalent(existing, binding))))
@@ -116,6 +125,8 @@ public sealed class ReferenceLearningCommitService(
         var updated = revision;
         foreach (var binding in bindings)
         {
+            if (!draftSession.CanEditPage(binding.PageId))
+                return Failure("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY", "学习结果涉及只读页面。", "请在可编辑草稿中学习。");
             var existing = updated.FrameBindings.SingleOrDefault(item =>
                 string.Equals(item.FrameId, binding.FrameId, StringComparison.Ordinal));
             if (existing is null)
@@ -144,6 +155,13 @@ public sealed class ReferenceLearningCommitService(
             {
                 return Failure(ErrorCode(error), "模板草稿保存失败，旧修订未改变。", "检查本地存储后重试。", true);
             }
+        }
+
+        if (!commit)
+        {
+            var draft = await workspace.GetDetailsAsync(draftSession.GroupId, cancellationToken).ConfigureAwait(false);
+            return draft is null ? Failure("TPL_REVISION_NOT_FOUND", "无法读取学习草稿。", "重新打开模板组。")
+                : ReferenceLearningCommitResult.Success(documents[0], draft with { IsCommitted = false });
         }
 
         try

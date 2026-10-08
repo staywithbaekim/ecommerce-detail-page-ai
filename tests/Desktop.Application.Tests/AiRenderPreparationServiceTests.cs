@@ -14,6 +14,7 @@ namespace Desktop.Application.Tests;
 
 public sealed class AiRenderPreparationServiceTests
 {
+
     [Theory]
     [InlineData(AiBatchUiStatus.RecoveryRequired)]
     [InlineData(AiBatchUiStatus.Failed)]

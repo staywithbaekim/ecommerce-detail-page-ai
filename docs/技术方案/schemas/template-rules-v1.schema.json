@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/ecommerce-detail/contracts/template-rules/v1",
+  "title": "Template rule workspace v1",
+  "$ref": "#/$defs/ruleWorkspace",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pageId",
+        "frameId",
+        "number"
+      ],
+      "properties": {
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "frameId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "colorSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slotId",
+        "source"
+      ],
+      "properties": {
+        "slotId": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "enum": [
+            "Primary",
+            "SingleSecondary",
+            "Allocated"
+          ]
+        }
+      }
+    },
+    "frameColor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frameId",
+        "slotId"
+      ],
+      "properties": {
+        "frameId": {
+          "$ref": "#/$defs/id"
+        },
+        "slotId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum",
+        "maximum",
+        "parity"
+      ],
+      "properties": {
+        "minimum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maximum": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "parity": {
+          "enum": [
+            "Any",
+            "Odd",
+            "Even"
+          ]
+        }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipeId",
+        "pageId",
+        "repeat",
+        "colorRange",
+        "colorSlots",
+        "frameBindings",
+        "expectedInstanceCount"
+      ],
+      "properties": {
+        "recipeId": {
+          "$ref": "#/$defs/id"
+        },
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "repeat": {
+          "enum": [
+            "Once",
+            "ColorChunks"
+          ]
+        },
+        "colorRange": {
+          "enum": [
+            "None",
+            "All",
+            "Secondary"
+          ]
+        },
+        "colorSlots": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/colorSlot"
+          }
+        },
+        "frameBindings": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/frameColor"
+          }
+        },
+        "expectedInstanceCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branchId",
+        "condition",
+        "recipes",
+        "requireCompleteColorCoverage"
+      ],
+      "properties": {
+        "branchId": {
+          "$ref": "#/$defs/id"
+        },
+        "condition": {
+          "$ref": "#/$defs/condition"
+        },
+        "recipes": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/recipe"
+          }
+        },
+        "requireCompleteColorCoverage": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ruleSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "branches"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "branches": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/branch"
+          }
+        }
+      }
+    },
+    "ruleWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "rules",
+        "aliases"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rules": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ruleSet"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aliases": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/alias"
+          }
+        }
+      }
+    }
+  }
+}

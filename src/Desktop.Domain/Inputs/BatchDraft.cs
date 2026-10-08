@@ -11,7 +11,7 @@ public sealed record BatchDraft
         BatchInputType? inputType,
         string inputRoot,
         string outputRoot,
-        BatchTemplateSnapshot templateSnapshot,
+        IBatchTemplateContext templateSnapshot,
         BatchSelectionMode selectionMode,
         bool includeEditablePsd,
         ImmutableArray<StyleDraft> styles,
@@ -53,7 +53,7 @@ public sealed record BatchDraft
 
     public BatchOutputSelection? OutputSelection { get; }
 
-    public BatchTemplateSnapshot TemplateSnapshot { get; }
+    public IBatchTemplateContext TemplateSnapshot { get; }
 
     public BatchSelectionMode SelectionMode { get; }
 
@@ -77,7 +77,7 @@ public sealed record BatchDraft
         string batchId,
         string inputRoot,
         string outputRoot,
-        BatchTemplateSnapshot templateSnapshot,
+        IBatchTemplateContext templateSnapshot,
         BatchSelectionMode selectionMode,
         bool includeEditablePsd,
         DateTimeOffset createdAt,
@@ -115,7 +115,7 @@ public sealed record BatchDraft
         BatchInputType? inputType,
         string inputRoot,
         string outputRoot,
-        BatchTemplateSnapshot templateSnapshot,
+        IBatchTemplateContext templateSnapshot,
         BatchSelectionMode selectionMode,
         bool includeEditablePsd,
         IEnumerable<StyleDraft> styles,
@@ -177,7 +177,7 @@ public sealed record BatchDraft
     public BatchDraft Reconfigure(
         string inputRoot,
         string outputRoot,
-        BatchTemplateSnapshot templateSnapshot,
+        IBatchTemplateContext templateSnapshot,
         BatchSelectionMode selectionMode,
         bool includeEditablePsd,
         DateTimeOffset updatedAt,

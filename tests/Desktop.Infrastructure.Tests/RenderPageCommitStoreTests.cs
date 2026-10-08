@@ -172,6 +172,10 @@ public sealed class RenderPageCommitStoreTests
             SELECT task_id,style_id,page_id,stage,attempt,plan_digest,bridge_execution_id,output_commit_state,updated_at FROM render_page_checkpoints;
             DROP TABLE render_output_publication_files; DROP TABLE render_output_publications; DROP TABLE render_output_stages; DROP TABLE render_output_registrations;
             DROP TABLE input_output_selections; DROP TABLE render_page_repairs; DROP TABLE render_batch_attempt_origins; DROP TABLE render_batch_journals; DROP TABLE render_page_checkpoints;
+            DROP TABLE template_rule_references; DROP TABLE template_rule_commands; DROP TABLE template_rule_workspaces;
+            DROP TABLE template_instance_production_facts; DROP TABLE template_instance_manual_selections;
+            ALTER TABLE batch_template_snapshots DROP COLUMN context_version;
+            ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest;
             DELETE FROM schema_migrations WHERE version>=15;
             """);
         await using var upgraded = new SqliteDesktopStore(options);

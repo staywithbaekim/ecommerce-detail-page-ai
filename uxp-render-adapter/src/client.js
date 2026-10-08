@@ -17,6 +17,10 @@ class AdapterClient {
   async pair(secret) {
     this.clear();
     this.diagnostic = { stage: "challenge_create", transport: "idle", http_status: null };
+    const reject = reason => {
+      this.diagnostic.rejection_reason = reason;
+      throw new Error("BRIDGE_PAIRING_REJECTED");
+    };
     const requestId = "request_" + auth.encode(this.randomBytes(32));
     const clientNonce = auth.encode(this.randomBytes(32));
     const request = { transport_version: "ps-adapter/v1", kind: "challenge_request", body: {
@@ -26,18 +30,22 @@ class AdapterClient {
     this.diagnostic.stage = "challenge_request";
     const challengeReply = await this.raw("http://127.0.0.1:17842/adapter/v1/challenges", JSON.stringify(request));
     this.diagnostic.stage = "challenge_validate";
-    const envelope = parseStrict(challengeReply.text);
-    if (challengeReply.status !== 200 || !validators.adapter(envelope) || envelope.kind !== "challenge_response")
-      throw new Error("BRIDGE_PAIRING_REJECTED");
+    let envelope;
+    try { envelope = parseStrict(challengeReply.text); }
+    catch (error) { this.diagnostic.rejection_reason = "challenge_json"; throw error; }
+    if (challengeReply.status !== 200) reject("challenge_status");
+    if (!validators.adapter(envelope) || envelope.kind !== "challenge_response") reject("challenge_contract");
     const c = envelope.body;
     this.diagnostic.stage = "challenge_proof";
     const now = Math.floor(Date.now() / 1000);
     if (c.request_id !== requestId || c.client_nonce !== clientNonce || c.plugin_instance_id !== this.instance
       || c.plugin_id !== request.body.plugin_id || c.plugin_version !== pluginManifest.version || c.photoshop_build !== this.host.build
-      || c.uxp_runtime_version !== this.host.runtime || c.expires_at_unix_seconds <= now || c.issued_at_unix_seconds > now + 5
-      || c.expires_at_unix_seconds - c.issued_at_unix_seconds > 30 || !c.capabilities.includes("adapter/pull-v1")
-      || c.capabilities.some(value => !this.capabilities.includes(value)) || !auth.fixedEquals(auth.challengeProof(secret, c), c.server_proof))
-      throw new Error("BRIDGE_PAIRING_REJECTED");
+      || c.uxp_runtime_version !== this.host.runtime) reject("challenge_binding");
+    if (c.expires_at_unix_seconds <= now || c.issued_at_unix_seconds > now + 5
+      || c.expires_at_unix_seconds - c.issued_at_unix_seconds > 30) reject("challenge_time");
+    if (!c.capabilities.includes("adapter/pull-v1") || c.capabilities.some(value => !this.capabilities.includes(value)))
+      reject("challenge_capabilities");
+    if (!auth.fixedEquals(auth.challengeProof(secret, c), c.server_proof)) reject("challenge_proof");
     this.diagnostic.stage = "handshake_create";
     const handshake = { protocol_version: "ps-bridge/v1", envelope_kind: "handshake_request", body: {
       request_id: requestId, correlation_id: "corr_" + auth.encode(this.randomBytes(32)), sent_at: new Date().toISOString(),
@@ -51,12 +59,16 @@ class AdapterClient {
       const paired = await this.raw("http://127.0.0.1:17842/handshake", json,
         { "X-Adapter-Handshake-Proof": auth.handshakeContextProof(secret, c, json) });
       this.diagnostic.stage = "handshake_validate";
-      if (!auth.fixedEquals(auth.handshakeResponseProof(key, requestId, paired.text), paired.mac)) throw new Error("BRIDGE_PAIRING_REJECTED");
-      const response = parseStrict(paired.text);
-      if (paired.status !== 200 || !validators.bridge(response) || response.envelope_kind !== "handshake_response"
-        || !response.body.ok || response.body.session_id !== c.session_id || response.body.request_id !== requestId
-        || response.body.correlation_id !== handshake.body.correlation_id
-        || response.body.capabilities.join("\n") !== c.capabilities.join("\n")) throw new Error("BRIDGE_PAIRING_REJECTED");
+      if (!auth.fixedEquals(auth.handshakeResponseProof(key, requestId, paired.text), paired.mac)) reject("handshake_mac");
+      let response;
+      try { response = parseStrict(paired.text); }
+      catch (error) { this.diagnostic.rejection_reason = "handshake_json"; throw error; }
+      if (paired.status !== 200) reject("handshake_status");
+      if (!validators.bridge(response) || response.envelope_kind !== "handshake_response") reject("handshake_contract");
+      if (!response.body.ok) reject("handshake_rejected");
+      if (response.body.session_id !== c.session_id || response.body.request_id !== requestId
+        || response.body.correlation_id !== handshake.body.correlation_id) reject("handshake_binding");
+      if (response.body.capabilities.join("\n") !== c.capabilities.join("\n")) reject("handshake_capabilities");
       this.key = key; this.session = response.body; this.sequence = 0;
       this.diagnostic.stage = "paired";
     } catch (error) { key.fill(0); throw error; }

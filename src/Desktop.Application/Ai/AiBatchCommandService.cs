@@ -205,7 +205,8 @@ public sealed class AiBatchCommandService : IDisposable
             var ledger = await _store.FindRequestByFingerprintAsync(AiAnalysisCacheKeyFactory.Create(request), cancellationToken).ConfigureAwait(false);
             if (ledger is null || ledger.BatchId != _batch.BatchId || ledger.StyleId != request.StyleId
                 || ledger.RequestId != request.RequestId
-                || ledger.Status is not ("Validated" or "ManualReview" or "PlanClosed" or "TerminalError" or "Cancelled"))
+                || !AiLedgerStatusPolicy.IsTerminal(ledger.Status)
+                || AiLedgerStatusPolicy.IsUnknown(ledger.Status))
                 throw new InvalidOperationException("SIZE_REPAIR_AI_NOT_SETTLED");
         }
         if (!_background.IsAdmissionSettled || !_scheduler.IsIdleForRepair || _scheduler.RecoveredInFlightRequestIds.Count != 0)

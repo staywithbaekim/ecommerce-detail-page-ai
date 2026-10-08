@@ -861,4 +861,33 @@ public sealed class TemplateRepositoryTests
             RuleDigest,
             new RevisionTransitionEvidence(CommitArtifactsConsistent: true));
     }
+    [Fact]
+    public async Task TemplateRevisionReadPathPreservesCommittedGraphAfterRestart()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var group = TemplateGroup.Create("group_query_contract", "query contract", now);
+        var draft = TemplateRevision.CreateDraft("revision_query_contract", group.GroupId, 1, now,
+            [Page("page_query_contract", "revision_query_contract", 0)],
+            [Binding("frame_query_contract", "page_query_contract")]);
+        var committed = Commit(draft);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveGroupAsync(group, default);
+            await store.SaveDraftRevisionAsync(draft, default);
+            await store.CommitRevisionAsync(committed, null, default);
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var loadedGroup = await reopened.GetGroupAsync(group.GroupId, default);
+        var loadedRevision = await reopened.GetRevisionAsync(committed.RevisionId, default);
+        var latest = await reopened.GetLatestRevisionForGroupAsync(group.GroupId, default);
+        Assert.Equal(committed.RevisionId, loadedGroup!.CurrentRevisionId);
+        Assert.Equal(committed.RevisionId, loadedRevision!.RevisionId);
+        Assert.Equal(committed.RevisionId, latest!.RevisionId);
+        Assert.Equal(committed.Pages.Select(page => page.PageId), loadedRevision.Pages.Select(page => page.PageId));
+        Assert.Equal(committed.FrameBindings.Select(binding => binding.FrameId), loadedRevision.FrameBindings.Select(binding => binding.FrameId));
+    }
 }

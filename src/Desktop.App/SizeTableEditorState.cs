@@ -34,9 +34,9 @@ public sealed class SizeTableEditorState : INotifyPropertyChanged
 
     public string SourceSummary => _sourceDocument is null
         ? "未加载来源"
-        : $"来源 {ShortId(_sourceDocument.SourceAssetId)} · hash {ShortDigest(_sourceDocument.SourceContentDigest)}";
+        : "来源已登记 · 仅供对照";
 
-    public string RevisionText => _sourceDocument is null ? "" : $"结构 revision {_sourceDocument.Revision}";
+    public string RevisionText => _sourceDocument is null ? "" : "当前内容已保存到本批次";
 
     public SizeTableEditorRow? SelectedRow
     {

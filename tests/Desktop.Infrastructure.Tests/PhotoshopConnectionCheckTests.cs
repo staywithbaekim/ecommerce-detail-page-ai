@@ -11,6 +11,40 @@ namespace Desktop.Infrastructure.Tests;
 public sealed partial class BridgeLoopbackHostTests
 {
     [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public async Task InstanceConnectionCheckRequiresAuthenticatedCapabilityAndReadyWithoutCreatingWork(bool capable, bool ready)
+    {
+        using var fixture = new BridgeResourceLeaseTests.Fixture();
+        var original = RandomNumberGenerator.GetBytes(32);
+        var store = new PairingMemoryStore { Value = original.ToArray() };
+        var clock = new ConnectionCheckClock();
+        await using var factory = new BridgeSessionOwnerFactory(store, new LocalAppPathPolicy(fixture.Root), clock);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var check = factory.CheckInstanceIdentityAsync(stop.Token);
+        await WaitForConnectionCheckListener(stop.Token);
+        var busy = await factory.CheckAsync(stop.Token);
+        Assert.Equal(PhotoshopConnectionCheckStatus.Busy, busy.Status);
+        Assert.False(busy.InstanceIdentityRequired);
+        await AuthenticateDevice(original.ToArray(), () => Assert.False(check.IsCompleted), stop.Token,
+            instanceIdentity: capable, expectCapabilityRejection: !capable,
+            hostState: ready ? "ready" : "busy", modalState: ready ? "idle" : "running");
+        if (!capable) clock.Advance(BridgeSessionOwnerFactory.ConnectionCheckWaitLimit + TimeSpan.FromSeconds(1));
+        var result = await check;
+        Assert.True(result.InstanceIdentityRequired);
+        Assert.Equal(!capable ? PhotoshopConnectionCheckStatus.TimedOut : ready
+            ? PhotoshopConnectionCheckStatus.Ready : PhotoshopConnectionCheckStatus.HostNotReady, result.Status);
+        Assert.Equal(capable ? 3 : 0, result.AuthenticatedHeartbeats);
+        Assert.Equal(capable ? BridgeSessionOwnerFactory.SupportedPhotoshopBuild : null, result.MatchedPhotoshopBuild);
+        Assert.Same(result, factory.Latest);
+        Assert.Equal(original, store.Value);
+        AssertCheckLeftNoWork(store, fixture.Root);
+        await using var next = CreateOwner(new byte[32]);
+        await next.StartAsync(default);
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(31)]
     public async Task ConnectionCheckWithoutValidPairingDoesNotListenOrCreateTaskFiles(int length)
@@ -45,6 +79,7 @@ public sealed partial class BridgeLoopbackHostTests
             hostState: ready ? "ready" : "busy", modalState: ready ? "idle" : "running");
         var result = await check;
         Assert.Equal(ready ? PhotoshopConnectionCheckStatus.Ready : PhotoshopConnectionCheckStatus.HostNotReady, result.Status);
+        Assert.False(result.InstanceIdentityRequired);
         Assert.Equal(3, result.AuthenticatedHeartbeats);
         Assert.Equal(BridgeSessionOwnerFactory.SupportedPhotoshopBuild, result.MatchedPhotoshopBuild);
         Assert.Same(result, factory.Latest);

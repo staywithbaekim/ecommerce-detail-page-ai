@@ -1,0 +1,473 @@
+<div id="tpl02-workbench" lang="zh-CN" aria-label="模板规则工作台 A 阶段原型">
+  <div class="prototype-bar">
+    <span><strong>A / 布局原型</strong> · 坐标示例，尚未接入真实 PSD 解析</span>
+    <label>演示场景 <select id="tpl-scene" aria-label="演示场景"><option value="R4">副色正反面 · 工作台全貌</option><option value="R1">R1 · 同页主色与副色</option><option value="R2">R2 · 奇偶数组合</option><option value="R3">R3 · 按颜色数选模板</option><option value="R5">R5 · 动态尺码页</option></select></label>
+    <span id="tpl-metrics" class="subtle"></span>
+    <div id="tpl-examples" class="examples"></div>
+  </div>
+  <div class="product-shell">
+    <nav class="app-nav" aria-label="应用导航（展示）">
+      <div class="brand"><i data-lucide="panels-top-left" aria-hidden="true"></i><span>电商详情页<small>智能生产系统</small></span></div>
+      <div class="nav-item"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span>任务中心</span></div>
+      <div class="nav-item"><i data-lucide="folder-input" aria-hidden="true"></i><span>新建批次</span></div>
+      <div class="nav-item current"><i data-lucide="layers" aria-hidden="true"></i><span>模板库</span></div>
+      <div class="nav-spacer"></div>
+      <div class="nav-item"><i data-lucide="settings-2" aria-hidden="true"></i><span>设置</span></div>
+      <div class="nav-foot">模板建模<br><span class="subtle">不影响已有生产批次</span></div>
+    </nav>
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="heading"><span class="subtle breadcrumb">模板库 / 编辑模板组</span><h1>日常服饰 · 详情页模板 <span class="draft-badge">草稿</span></h1><span id="tpl-draft" class="subtle">演示草稿 · v1</span></div>
+        <div class="header-actions"><button data-action="import"><i data-lucide="folder-plus" aria-hidden="true"></i>导入模板组</button><button data-action="ai"><i data-lucide="sparkles" aria-hidden="true"></i>AI 读取规则</button><button class="primary" data-action="overview">查看总览并保存</button></div>
+      </header>
+      <div class="workspace-toolbar"><div><strong id="tpl-page-count"></strong><span class="subtle">　每个 PSD 独立编辑</span></div><div class="toolbar-actions"><button class="quiet" id="tpl-undo" data-action="undo" disabled><i data-lucide="undo-2" aria-hidden="true"></i>撤销</button><button class="quiet" data-action="save-draft">保存草稿</button><button id="tpl-panel-toggle" data-action="panel" aria-expanded="true">收起总规则</button></div><div class="composer-status"><span id="tpl-message" role="status" aria-live="polite">@2 为长页示例：点侧栏“框4”可定位到文档底部。</span><span class="subtle">无真实 API 请求</span></div></div>
+      <div class="workbody">
+        <div class="board-scroll" aria-label="PSD 卡片网格"><div id="tpl-cards" class="page-grid"></div><button class="add-template" data-action="import"><i data-lucide="plus" aria-hidden="true"></i>添加 PSD，或将文件 / 文件夹拖到这里</button></div>
+        <aside id="tpl-global" class="group-panel" aria-label="模板组总规则"><div class="panel-heading"><h2>模板组总规则</h2><span class="subtle">跨模板关系</span></div><div id="tpl-global-content"></div></aside>
+      </div>
+      <section class="composer" aria-label="统一自然语言输入">
+        <div class="composer-box"><div id="tpl-refchips" class="ref-chips" aria-label="已绑定引用"></div><div id="tpl-suggestions" class="suggestions" hidden></div><textarea id="tpl-input" rows="2" aria-label="用自然语言描述规则" placeholder="描述模板和框的规则，输入 @ 引用；也可以拖入 PSD…"></textarea><div class="composer-bottom"><button class="quiet attach-button" data-action="import" aria-label="加入 PSD 或文件夹">＋</button><button class="quiet" data-action="mention">@ 引用</button><span class="subtle">Ctrl+Enter 发送</span><button class="primary send-button" data-action="send" aria-label="发送规则">↑</button></div></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="tpl-dialog" aria-labelledby="tpl-dialog-title"><div class="dialog-header"><div><span class="subtle" id="tpl-dialog-kicker"></span><h2 id="tpl-dialog-title"></h2></div><button class="quiet" data-action="close" aria-label="关闭对话框"><i data-lucide="x" aria-hidden="true"></i></button></div><div id="tpl-dialog-content" class="dialog-content"></div><div id="tpl-dialog-actions" class="dialog-actions"></div></dialog>
+</div>
+<style>
+#tpl02-workbench{--tp-bg:light-dark(#f7f7f8,#19191b);--tp-surface:light-dark(#fff,#232326);--tp-soft:light-dark(#f1f1f2,#2d2d31);--tp-line:light-dark(#e5e5e7,#3c3c42);--tp-text:light-dark(#171717,#eeeef0);--tp-muted:light-dark(#52525b,#b5b5bf);--tp-primary:light-dark(#171717,#eeeef0);--tp-on-primary:light-dark(#fff,#171717);--tp-focus:light-dark(#1d4ed8,#92b5ff);--tp-info:light-dark(#eef4ff,#222e45);--tp-danger:light-dark(#b42318,#ffb4aa);--tp-warning:light-dark(#fff7e5,#342d20);--tp-success:light-dark(#237a45,#8bdfa8);--tp-card-min:440px;--tp-panel-width:320px;color:var(--tp-text);font:13px/1.55 'Microsoft YaHei UI','Segoe UI',sans-serif;width:100%;container-type:inline-size;position:relative}
+#tpl02-workbench *{box-sizing:border-box}#tpl02-workbench [hidden]{display:none!important}#tpl02-workbench h1,#tpl02-workbench h2,#tpl02-workbench h3,#tpl02-workbench p{margin:0}#tpl02-workbench h1{font-size:20px;font-weight:600;line-height:1.55}#tpl02-workbench h2{font-size:16px;font-weight:600}#tpl02-workbench h3{font-size:13px;font-weight:600}#tpl02-workbench small{display:block;font-size:12px}#tpl02-workbench .subtle{color:var(--tp-muted);font-size:12px}#tpl02-workbench button,#tpl02-workbench textarea,#tpl02-workbench input,#tpl02-workbench select{font:inherit;color:var(--tp-text)}#tpl02-workbench button{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 11px;border:1px solid var(--tp-line);border-radius:6px;background:var(--tp-surface);cursor:pointer;min-height:34px;white-space:normal}#tpl02-workbench button:hover{background:var(--tp-soft)}#tpl02-workbench button:disabled{opacity:.5;cursor:default}#tpl02-workbench button.primary{background:var(--tp-primary);border-color:var(--tp-primary);color:var(--tp-on-primary)}#tpl02-workbench button.quiet{border-color:transparent;background:transparent}#tpl02-workbench button.quiet:hover{background:var(--tp-soft)}#tpl02-workbench button:focus-visible,#tpl02-workbench textarea:focus-visible,#tpl02-workbench input:focus-visible,#tpl02-workbench select:focus-visible{outline:2px solid var(--tp-focus);outline-offset:2px}#tpl02-workbench textarea,#tpl02-workbench input,#tpl02-workbench select{background:var(--tp-surface);border:1px solid var(--tp-line);border-radius:5px;padding:7px 9px;min-width:0;max-width:100%}#tpl02-workbench textarea{resize:vertical;width:100%;line-height:1.55}#tpl02-workbench svg{flex-shrink:0;width:16px;height:16px}#tpl02-workbench .prototype-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px;padding:10px 0;background:transparent}#tpl02-workbench .prototype-bar label{display:flex;align-items:center;gap:8px}#tpl02-workbench .prototype-bar strong{font-weight:600}#tpl02-workbench .product-shell{display:grid;grid-template-columns:208px minmax(0,1fr);background:var(--tp-bg);border:1px solid var(--tp-line);border-radius:8px;overflow:hidden;height:920px}#tpl02-workbench .app-nav{background:var(--tp-surface);border-right:1px solid var(--tp-line);display:flex;flex-direction:column;padding:24px 12px 12px;gap:8px}#tpl02-workbench .brand{display:flex;align-items:center;gap:10px;font-weight:600;padding:0 8px 30px}#tpl02-workbench .brand svg{width:24px;height:24px}#tpl02-workbench .brand small{font-weight:400;color:var(--tp-muted);margin-top:3px}#tpl02-workbench .nav-item{display:flex;align-items:center;gap:12px;border-radius:6px;padding:11px 14px;color:var(--tp-muted)}#tpl02-workbench .nav-item.current{background:var(--tp-soft);font-weight:600;color:var(--tp-text)}#tpl02-workbench .nav-spacer{flex:1}#tpl02-workbench .nav-foot{padding:14px 12px;border-top:1px solid var(--tp-line);font-size:12px}#tpl02-workbench .workspace{display:grid;grid-template-rows:auto auto minmax(200px,1fr) auto;min-height:0;min-width:0}#tpl02-workbench .workspace-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;padding:20px 24px 16px;background:var(--tp-surface);border-bottom:1px solid var(--tp-line)}#tpl02-workbench .heading{min-width:0}#tpl02-workbench .heading h1{margin:3px 0 4px}#tpl02-workbench .draft-badge{vertical-align:middle;display:inline-block;padding:1px 7px;background:var(--tp-soft);border-radius:4px;font-size:11px;font-weight:400;color:var(--tp-muted)}#tpl02-workbench .header-actions,#tpl02-workbench .toolbar-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}#tpl02-workbench .workspace-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px}#tpl02-workbench .workbody{display:grid;grid-template-columns:minmax(0,1fr) var(--tp-panel-width);gap:16px;padding:0 16px 16px;min-height:0;position:relative}#tpl02-workbench .board-scroll{overflow:auto;min-width:0;scrollbar-gutter:stable;padding:2px 4px 2px 2px}#tpl02-workbench .page-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,var(--tp-card-min)),1fr));gap:14px;align-content:start}#tpl02-workbench .page-card{background:var(--tp-surface);border:1px solid var(--tp-line);border-radius:6px;min-width:0;overflow:hidden;display:flex;flex-direction:column;height:358px}#tpl02-workbench .page-card.focused{border-color:var(--tp-focus);box-shadow:0 0 0 1px var(--tp-focus)}#tpl02-workbench .card-header{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--tp-line);padding:9px 10px;min-height:49px}#tpl02-workbench .alias{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:25px;height:25px;border:1px solid var(--tp-line);border-radius:50%;font-size:12px;font-weight:600}#tpl02-workbench .file-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}#tpl02-workbench .card-header .quiet{padding:4px;min-height:26px}#tpl02-workbench .card-body{display:grid;grid-template-columns:174px minmax(0,1fr);flex:1;min-height:0}#tpl02-workbench .preview-column{padding:12px;background:var(--tp-bg);border-right:1px solid var(--tp-line);display:flex;flex-direction:column;align-items:center;gap:8px;min-height:0}#tpl02-workbench .psd-sheet{width:144px;aspect-ratio:3/5;max-height:240px;background:var(--tp-surface);border:1px solid var(--tp-line);padding:10px;display:flex;flex-direction:column;gap:7px;position:relative}#tpl02-workbench .sheet-heading{font-size:10px;letter-spacing:1.8px;text-align:center;color:var(--tp-muted)}#tpl02-workbench .sheet-divider{height:2px;background:var(--tp-line);width:24px;margin:0 auto 2px}#tpl02-workbench .sheet-frames{display:grid;gap:5px;flex:1;min-height:0}#tpl02-workbench .sheet-frames.two{grid-template-columns:1fr 1fr}#tpl02-workbench .sheet-frames.four{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}#tpl02-workbench .sheet-frames.vertical{grid-template-rows:1fr 1fr}#tpl02-workbench .frame-hit{padding:2px;min-height:0;flex-direction:column;border:1px dashed var(--tp-line);background:var(--tp-soft);font-size:11px;border-radius:2px;color:var(--tp-muted);position:relative}#tpl02-workbench .frame-hit.selected{background:var(--tp-info);border:2px solid var(--tp-focus);color:var(--tp-focus)}#tpl02-workbench .frame-hit.stopped{opacity:.6;border-style:dotted}#tpl02-workbench .frame-number{position:absolute;top:3px;left:4px;font-weight:600}#tpl02-workbench .sheet-footer{font-size:9px;text-align:center;color:var(--tp-muted);letter-spacing:1px}#tpl02-workbench .preview-column>.quiet{padding:3px 8px;min-height:26px;font-size:12px}#tpl02-workbench .local-rules{overflow:auto;min-width:0;padding:12px;overscroll-behavior:auto}#tpl02-workbench .local-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:10px}#tpl02-workbench .local-head .subtle{font-size:11px}#tpl02-workbench .rule-row{padding:0 0 10px;margin-bottom:10px;border-bottom:1px solid var(--tp-line);min-width:0}#tpl02-workbench .rule-row.selected{border-left:2px solid var(--tp-focus);padding-left:8px}#tpl02-workbench .rule-label{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:6px}#tpl02-workbench .rule-label button{font-size:12px;padding:1px 4px;min-height:24px}#tpl02-workbench .rule-label .rule-name{font-weight:600}#tpl02-workbench .rule-row textarea{font-size:12px;min-height:64px;resize:vertical}#tpl02-workbench .rule-evidence{font-size:11px;color:var(--tp-muted);margin-top:5px}#tpl02-workbench .card-footer{border-top:1px solid var(--tp-line);padding:7px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--tp-muted)}#tpl02-workbench .add-template{display:flex;width:100%;margin-top:14px;background:transparent;border-style:dashed;padding:15px;min-height:50px;color:var(--tp-muted)}#tpl02-workbench .group-panel{overflow:auto;background:var(--tp-surface);border:1px solid var(--tp-line);border-radius:6px;min-width:0;padding:18px;scrollbar-gutter:stable}#tpl02-workbench .panel-heading{margin-bottom:20px}#tpl02-workbench .group-section{margin:0 0 20px}#tpl02-workbench .group-section h3{margin-bottom:10px}#tpl02-workbench .group-section p{color:var(--tp-muted);font-size:12px}#tpl02-workbench .relation{border-left:2px solid var(--tp-line);padding:0 0 0 12px;margin:0 0 14px}#tpl02-workbench .relation label{display:block}#tpl02-workbench .relation textarea{min-height:56px;margin:6px 0 0;font-size:12px}#tpl02-workbench .reference{padding:2px 6px;min-height:25px;color:var(--tp-focus);background:var(--tp-info);border-color:transparent;font-size:12px}#tpl02-workbench .reference.invalid{color:var(--tp-danger);background:var(--tp-warning)}#tpl02-workbench .diagnostic{background:var(--tp-warning);border-radius:5px;padding:10px;margin:9px 0;color:var(--tp-danger);font-size:12px}#tpl02-workbench .good{color:var(--tp-success);font-size:12px}#tpl02-workbench .count-demo{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px}#tpl02-workbench .count-demo select{padding:3px 7px}#tpl02-workbench .simulation{background:var(--tp-bg);padding:12px;border-radius:4px;margin-top:10px;font-size:12px;white-space:pre-line}#tpl02-workbench .composer{background:var(--tp-surface);border-top:1px solid var(--tp-line);padding:12px 20px 16px;min-width:0}#tpl02-workbench .composer-status{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;margin-bottom:9px;font-size:12px}#tpl02-workbench .examples{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}#tpl02-workbench .examples button{font-size:11px;padding:3px 7px;min-height:27px;color:var(--tp-muted)}#tpl02-workbench .composer-box{position:relative;border:1px solid var(--tp-line);border-radius:7px;padding:8px 10px}#tpl02-workbench .composer-box>textarea{border:0;padding:5px 3px;resize:none;min-height:55px}#tpl02-workbench .composer-bottom{display:flex;align-items:center;gap:8px;flex-wrap:wrap}#tpl02-workbench .composer-bottom>.primary{margin-left:auto;min-width:72px}#tpl02-workbench .composer-bottom .quiet{padding-left:3px;font-size:12px}#tpl02-workbench .ref-chips{display:flex;flex-wrap:wrap;gap:5px}#tpl02-workbench .ref-unit{display:flex;align-items:center;border-radius:5px;background:var(--tp-info)}#tpl02-workbench .ref-unit>button{font-size:11px;min-height:25px;padding:1px 5px}#tpl02-workbench .suggestions{position:absolute;bottom:100%;left:0;max-height:245px;width:min(400px,100%);overflow:auto;z-index:5;background:var(--tp-surface);border:1px solid var(--tp-line);box-shadow:0 8px 28px #0002;border-radius:6px;padding:8px}#tpl02-workbench .suggestions button{width:100%;justify-content:flex-start;border:0;text-align:left;margin:2px 0}#tpl02-workbench .mini-preview{display:inline-block;width:24px;height:32px;background:var(--tp-soft);border:1px solid var(--tp-line);flex-shrink:0}#tpl02-workbench .collapsed .workbody{grid-template-columns:minmax(0,1fr)}#tpl02-workbench .collapsed .group-panel{display:none}#tpl02-workbench dialog{color:var(--tp-text);background:var(--tp-surface);border:1px solid var(--tp-line);border-radius:9px;padding:0;width:min(760px,calc(100% - 32px));max-height:85vh;overflow:auto;box-shadow:0 18px 60px #0003}#tpl02-workbench dialog::backdrop{background:#0005}#tpl02-workbench .dialog-header{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:20px 24px;border-bottom:1px solid var(--tp-line);position:sticky;top:0;background:var(--tp-surface);z-index:2}#tpl02-workbench .dialog-content{padding:20px 24px}#tpl02-workbench .dialog-content p{margin-bottom:12px}#tpl02-workbench .dialog-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;padding:16px 24px;border-top:1px solid var(--tp-line);background:var(--tp-surface);position:sticky;bottom:0}#tpl02-workbench .overview-node{border:1px solid var(--tp-line);border-radius:6px;padding:14px;margin:12px 0}#tpl02-workbench .overview-node ul{padding-left:20px;margin:8px 0 0}#tpl02-workbench .overview-node li{margin:6px 0;font-size:12px;overflow-wrap:anywhere}#tpl02-workbench .overview-arrow{text-align:center;color:var(--tp-muted)}#tpl02-workbench .import-drop{padding:24px;border:1px dashed var(--tp-line);border-radius:6px;text-align:center;background:var(--tp-bg);margin-bottom:16px}#tpl02-workbench .import-fields{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}#tpl02-workbench .import-fields input{flex:1;min-width:180px}#tpl02-workbench .import-list{list-style:none;margin:14px 0;padding:0}#tpl02-workbench .import-list li{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--tp-line);font-size:12px;overflow-wrap:anywhere}#tpl02-workbench .import-controls{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}#tpl02-workbench .check-label{display:flex;align-items:center;gap:8px;margin:10px 0;font-size:12px}#tpl02-workbench .zoom-layout{display:grid;grid-template-columns:minmax(180px,300px) minmax(150px,1fr);gap:24px}#tpl02-workbench .zoom-layout .psd-sheet{width:100%;max-height:none;padding:20px;gap:12px}#tpl02-workbench .zoom-layout .frame-hit{font-size:14px}#tpl02-workbench .zoom-layout .sheet-heading{font-size:14px}#tpl02-workbench .zoom-list button{display:block;width:100%;text-align:left;margin-bottom:10px}#tpl02-workbench .drop-active{outline:2px dashed var(--tp-focus);outline-offset:-5px}
+#tpl02-workbench .page-card{height:540px}
+#tpl02-workbench .page-grid{grid-template-columns:repeat(var(--tp-columns,1),minmax(0,560px))}
+#tpl02-workbench .card-body{grid-template-columns:minmax(0,1fr) var(--tp-local-width,200px)}
+#tpl02-workbench .preview-column{justify-content:center}
+#tpl02-workbench .preview-column .psd-sheet{width:240px;max-width:100%;max-height:none;flex-shrink:0}
+#tpl02-workbench .local-head{flex-wrap:wrap;gap:3px;margin-bottom:14px}
+#tpl02-workbench .rule-row textarea{min-height:78px}
+#tpl02-workbench .text-error{color:var(--tp-danger)}
+@container (max-width:1700px){#tpl02-workbench .product-shell{grid-template-columns:64px minmax(0,1fr)}#tpl02-workbench .app-nav{padding:24px 8px 12px}#tpl02-workbench .brand{padding:0 10px 30px}#tpl02-workbench .brand>span,#tpl02-workbench .nav-item>span,#tpl02-workbench .nav-foot{display:none}#tpl02-workbench .nav-item{padding:12px 14px}}
+@container (max-width:1080px){#tpl02-workbench .workspace-header{padding:16px}#tpl02-workbench .workspace-header h1{font-size:18px}#tpl02-workbench .composer{padding:12px}#tpl02-workbench .group-panel{position:absolute;z-index:4;right:16px;top:0;bottom:16px;width:min(320px,calc(100% - 32px));box-shadow:0 8px 25px #0003}#tpl02-workbench .workbody{grid-template-columns:minmax(0,1fr)}}
+@container (max-width:700px){#tpl02-workbench .product-shell{grid-template-columns:minmax(0,1fr);height:auto}#tpl02-workbench .app-nav{display:none}#tpl02-workbench .workspace{display:block}#tpl02-workbench .board-scroll{max-height:730px}#tpl02-workbench .workbody{padding:0 10px 12px}#tpl02-workbench .workspace-header{padding:14px}#tpl02-workbench .header-actions{gap:5px}#tpl02-workbench .header-actions button{font-size:12px;padding:7px 8px}#tpl02-workbench .workspace-toolbar{padding:10px}#tpl02-workbench .page-card{height:auto;min-height:340px}#tpl02-workbench .card-body{grid-template-columns:minmax(108px,35%) minmax(0,1fr);height:290px;flex:none}#tpl02-workbench .preview-column{padding:8px}#tpl02-workbench .psd-sheet{max-width:100%;width:144px}#tpl02-workbench .local-rules{padding:8px}#tpl02-workbench .local-head{display:block}#tpl02-workbench .rule-label{flex-wrap:wrap}#tpl02-workbench .card-footer{flex-wrap:wrap}#tpl02-workbench .composer-bottom>.subtle{display:none}#tpl02-workbench .dialog-content,#tpl02-workbench .dialog-header,#tpl02-workbench .dialog-actions{padding:14px}#tpl02-workbench .zoom-layout{grid-template-columns:1fr}#tpl02-workbench .zoom-layout .psd-sheet{max-width:230px;margin:auto}#tpl02-workbench .prototype-bar label{flex-wrap:wrap}#tpl02-workbench .prototype-bar select{max-width:100%}#tpl02-workbench .composer-status>.subtle{display:none}}
+@container (max-width:700px){#tpl02-workbench .card-body{height:420px}}
+/* A3: the composer overlays content; only the end of scrollable content has clearance. */
+#tpl02-workbench .workspace{position:relative;grid-template-rows:auto auto minmax(200px,1fr)}
+#tpl02-workbench .workspace-toolbar .composer-status{flex-basis:100%;margin:0;min-width:0}
+#tpl02-workbench .prototype-bar .examples{margin:0}
+#tpl02-workbench .workbody{padding-bottom:0}
+#tpl02-workbench .board-scroll{padding-bottom:var(--tp-composer-clearance,158px);scroll-padding-bottom:var(--tp-composer-clearance,158px)}
+#tpl02-workbench .group-panel{padding-bottom:var(--tp-composer-clearance,158px)}
+#tpl02-workbench .composer{position:absolute;z-index:10;bottom:16px;left:50%;transform:translateX(-50%);width:min(820px,calc(100% - 40px));padding:12px 14px 10px;border:1px solid var(--tp-line);border-radius:24px;background:var(--tp-surface);box-shadow:0 8px 32px light-dark(#1717171c,#0008);max-height:45%;overflow:visible}
+#tpl02-workbench .composer-box{border:0;border-radius:0;padding:0}
+#tpl02-workbench .composer-box>textarea{min-height:48px;max-height:144px;padding:4px 5px;background:transparent;overflow:auto}
+#tpl02-workbench .composer-bottom{gap:5px;margin-top:6px}
+#tpl02-workbench .composer-bottom .attach-button{font-size:22px;width:32px;min-height:32px;padding:0;border-radius:50%}
+#tpl02-workbench .composer-bottom>.send-button{min-width:32px;width:32px;height:32px;min-height:32px;border-radius:50%;padding:0;font-size:20px}
+#tpl02-workbench .ref-chips{max-height:62px;overflow:auto}
+#tpl02-workbench .suggestions{bottom:calc(100% + 16px);border-radius:12px}
+#tpl02-workbench .page-card{height:auto;align-self:start}
+#tpl02-workbench .card-header{flex-wrap:wrap;gap:7px}
+#tpl02-workbench .file-title{flex-basis:120px}
+#tpl02-workbench .preview-actions{display:flex;align-items:center;gap:2px}
+#tpl02-workbench .preview-actions button{font-size:11px;min-height:25px;padding:3px 6px}
+#tpl02-workbench .preview-actions button[aria-pressed="true"]{color:var(--tp-focus);background:var(--tp-info);border-color:var(--tp-focus)}
+#tpl02-workbench .card-body{height:var(--tp-preview-height,480px);flex:none}
+#tpl02-workbench .preview-column{padding:0;border:0;border-right:1px solid var(--tp-line);display:block;position:relative;min-width:0;overflow:hidden}
+#tpl02-workbench .preview-viewport{position:absolute;inset:0;overflow:auto;overscroll-behavior:auto;scrollbar-width:thin;scrollbar-gutter:stable;min-width:0;background:var(--tp-bg)}
+#tpl02-workbench .preview-viewport:focus-visible{outline:2px solid var(--tp-focus);outline-offset:-2px}
+#tpl02-workbench .psd-sheet,#tpl02-workbench .preview-column .psd-sheet,#tpl02-workbench .zoom-layout .psd-sheet{display:block;position:relative;flex:none;aspect-ratio:auto;width:100%;max-width:none;max-height:none;margin:0 auto;padding:0;border:0;overflow:hidden;background:var(--tp-surface)}
+#tpl02-workbench .document-underlay{position:absolute;inset:0;pointer-events:none;background:linear-gradient(155deg,var(--tp-surface),var(--tp-bg))}
+#tpl02-workbench .document-origin{position:absolute;top:14px;left:12px;right:12px;text-align:center;color:var(--tp-muted);font-size:11px;pointer-events:none}
+#tpl02-workbench .fixed-demo-content{position:absolute;left:0;width:100%;height:1px;background:var(--tp-line);pointer-events:none}
+#tpl02-workbench .fixed-demo-content span{position:absolute;top:5px;left:12px;color:var(--tp-muted);font-size:11px}
+#tpl02-workbench .frame-hit{position:absolute;min-height:0;min-width:0;padding:0;border:1px solid var(--tp-focus);border-radius:0;background:transparent;color:var(--tp-focus);display:block;text-align:left;overflow:visible}
+#tpl02-workbench .frame-hit:hover{background:color-mix(in srgb,var(--tp-focus) 5%,transparent)}
+#tpl02-workbench .frame-hit.selected{border:2px solid var(--tp-focus);background:color-mix(in srgb,var(--tp-focus) 9%,transparent);z-index:2}
+#tpl02-workbench .frame-number{top:0;left:0;padding:1px 5px;background:var(--tp-info);color:var(--tp-focus);font-size:11px;white-space:nowrap;font-weight:500}
+#tpl02-workbench .preview-empty{display:grid;place-content:center;height:100%;padding:16px;text-align:center;color:var(--tp-muted);font-size:12px}
+#tpl02-workbench .card-footer{flex-wrap:wrap;font-size:11px;min-height:31px}
+#tpl02-workbench .card-footer .long-label{color:var(--tp-focus)}
+#tpl02-workbench .zoom-layout{grid-template-columns:minmax(200px,1fr) minmax(160px,210px);gap:18px}
+#tpl02-workbench .zoom-document{position:relative;height:470px;min-width:0}
+#tpl02-workbench .zoom-list{max-height:470px;overflow:auto}
+#tpl02-workbench .zoom-actions{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+@container (max-width:1080px){#tpl02-workbench .group-panel{z-index:12;bottom:0}#tpl02-workbench .composer{width:calc(100% - 28px);bottom:12px}}
+@container (max-width:700px){#tpl02-workbench .product-shell{height:1060px}#tpl02-workbench .workspace{display:grid;grid-template-rows:auto auto minmax(200px,1fr)}#tpl02-workbench .board-scroll{max-height:none}#tpl02-workbench .card-body{height:var(--tp-preview-height,420px)}#tpl02-workbench .preview-column{padding:0}#tpl02-workbench .composer{width:calc(100% - 20px);padding:11px 12px 9px;border-radius:22px;bottom:10px}#tpl02-workbench .file-title{flex-basis:85px}#tpl02-workbench .preview-actions button{padding:2px 4px}#tpl02-workbench .zoom-layout{grid-template-columns:1fr}#tpl02-workbench .zoom-document{height:400px}#tpl02-workbench .zoom-list{max-height:210px}#tpl02-workbench .document-origin{font-size:11px;left:5px;right:5px}}
+</style>
+<script>
+(() => {
+  'use strict';
+  const root = document.getElementById('tpl02-workbench');
+  const $ = selector => root.querySelector(selector);
+  const $$ = selector => [...root.querySelectorAll(selector)];
+  const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
+  const icons = () => { if (globalThis.lucide) globalThis.lucide.createIcons({attrs:{width:16,height:16}}); };
+  // Explicit coordinate fixtures only. These are NOT PSD inspection results.
+  // Production already projects CanvasWidth/Height + FrameId + layer evidence + bounds.
+  const geometryFixtures = {
+    normal:{width:600,height:900,boxes:[[42,126,516,690]],dividers:[.085,.93]},
+    two:{width:900,height:900,boxes:[[36,164,348,636],[452,108,400,702]],dividers:[.07,.93]},
+    four:{width:600,height:1000,boxes:[[28,105,364,236],[338,275,230,320],[45,548,304,264],[260,758,310,190]],dividers:[.065,.95]},
+    long:{width:600,height:3200,boxes:[[36,130,522,660],[110,1020,430,660],[32,1950,486,560],[84,2820,472,288]],dividers:[.27,.56,.83]},
+    vertical:{width:600,height:1300,boxes:[[40,120,518,468],[90,720,460,505]],dividers:[.06,.49,.97]},
+    size:{width:600,height:780,boxes:[[34,112,532,446]],dividers:[.08,.82]}
+  };
+  const makePage = (alias, name, requirements, condition, layout = '', type = 'photo') => {
+    const g=geometryFixtures[type==='size'?'size':layout||'normal'];
+    const targets=g.boxes.map((bounds,i)=>({layerId:`demo-layer-${alias}-${i+1}`,bounds,registered:i<requirements.length,supported:true,decorative:false}));
+    targets.push({layerId:`demo-fixed-logo-${alias}`,bounds:[12,12,90,30],registered:false,supported:true,decorative:true});
+    targets.push({layerId:`demo-unproven-smart-object-${alias}`,bounds:[150,24,160,36],registered:false,supported:false,decorative:false});
+    return {id:`demo-page-${alias}`,alias,name,type,condition,layout,removed:false,selected:null,
+      preview:{width:g.width,height:g.height,targets,dividers:g.dividers,source:'coordinate-fixture-not-psd'},
+      frames:requirements.map((text,i)=>({id:`demo-frame-${alias}-${i+1}`,layerId:targets[i]?.layerId,label:type==='size'?'尺码表区域':`框${i+1}`,text,enabled:true})),structure:true};
+  };
+  const mainPage = () => makePage(1,'01-主色展示.psd',['主色正面全身图，完整展示服装轮廓'],'每款一次 · 主色展示');
+  const detailsPage = () => makePage(2,'02-长版细节.psd',['主色领口近景，保留领部结构','主色袖口近景，保留袖口纹理','主色面料细节，呈现真实质感','主色下摆近景，不裁断边缘'],'每款一次 · 以上四框使用同一主色','long');
+  const secondaryPage = () => makePage(5,'05-副色正反面.psd',['当前副色正面，全身完整','同一个副色反面，全身完整'],'每个副色一次 · 两框同色','vertical');
+  const sizePage = () => makePage(6,'06-尺码说明.psd',['根据本款尺码图换数据，沿用模板样式；缺失数据不猜测'],'每款一次 · 正式出图时核对尺码来源','','size');
+  const scenes = {
+    R4:()=>[mainPage(),detailsPage(),secondaryPage(),sizePage()],
+    R1:()=>[makePage(1,'01-主副色同页.psd',['主色正面全身图','副色正面全身图'],'每款一次 · 右框副色待指定','two')],
+    R2:()=>[makePage(1,'01-单色展示.psd',['主色正面全身图'],'奇数时先使用一次'),makePage(2,'02-双色展示.psd',['分配到本页的第一个颜色正面','分配到本页的第二个颜色正面'],'剩余颜色两两一组 · 偶数时主色排第一','two')],
+    R3:()=>[1,2,3,4].map(n=>makePage(n,`0${n}-颜色展示.psd`,Array.from({length:n},(_,i)=>`分配到本页的第${i+1}个颜色正面`),`恰有 ${n} 个颜色时使用一次`,n===2?'two':n>=3?'four':'')),
+    R5:()=>[sizePage()]
+  };
+  const presets = {
+    R4:[['副色逐一生成','@5 每个副色生成一次，上面该副色正面，下面同一个副色反面。'],['只改一个框','@1 的框1改为主色正面半身图。']],
+    R1:[['明确右框颜色','@1 右框使用我在生产时指定的一个副色。']],
+    R2:[['奇偶组合','奇数先用 @1 放主色，剩下两两用 @2；偶数全用 @2，主色排第一个。']],
+    R3:[['按颜色数路由','一个色用 @1，两个色用 @2，三个色用 @3，四个色用 @4。']],
+    R5:[['更新尺码数据','@6 根据本款尺码图换尺码数据。']]
+  };
+  let state = {scene:'R4',pages:scenes.R4(),nextAlias:7,version:1,refs:[],input:'',colorCount:5,explicitSecondary:false,manualRecipe:false,committed:false};
+  let undo = [], activeDialog = '', overviewVersion = 0, overviewDigest = '', importItems = [], includeSubfolders = false, composing = false, focusBeforeDialog = null;
+  let panelPreference = null;
+  const localScroll = new Map();
+  const previewScroll = new Map();
+  const previewModes = new Map();
+  const zoomModes = new Map();
+  const viewSession = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const livePages = () => state.pages.filter(p=>!p.removed);
+  const pageById = id => state.pages.find(p=>p.id===id);
+  const byAlias = alias => state.pages.find(p=>p.alias===alias && !p.removed);
+  const digest = () => JSON.stringify({pages:state.pages.map(({selected,externalName,...rules})=>rules),scene:state.scene,explicitSecondary:state.explicitSecondary,manualRecipe:state.manualRecipe});
+  function remember() {
+    const safe = clone(state); safe.input='';
+    // Only synthetic demo state is eligible for optional host persistence.
+    safe.pages=safe.pages.filter(p=>!p.externalName); safe.refs=safe.refs.filter(r=>safe.pages.some(p=>p.id===r.pageId));
+    const snapshot={modelContent:{scene:state.scene,cardMinimum:design.cardMin,groupPanelWidth:design.panelWidth,localRuleWidth:design.localWidth},privateContent:{demo:safe,origin:viewSession}};
+    if (JSON.stringify(snapshot).length<15000 && window.openai?.setWidgetState) window.openai.setWidgetState(snapshot).catch(()=>{});
+  }
+  function checkpoint(){undo.push(clone(state));if(undo.length>25)undo.shift();}
+  function changed(message){state.version++;state.committed=false;updateHeader();renderPanel();renderRefs();if(message)announce(message);remember();}
+  function announce(message){$('#tpl-message').textContent=message;}
+  function updateHeader(){
+    $('#tpl-page-count').textContent=`${livePages().length} 个 PSD`;
+    $('#tpl-draft').textContent=`演示草稿 · v${state.version} · ${state.committed?'已模拟整体确认（未写入模板库）':'仅本原型状态，未写入模板库'}`;
+    $('#tpl-undo').disabled=!undo.length;
+  }
+  function issues(){
+    const list=[];
+    if(!livePages().length)list.push({text:'尚未加入任何 PSD。'});
+    for(const p of state.pages){
+      if(p.removed && p.condition)list.push({pageId:p.id,text:`@${p.alias} 已移除，但组合规则仍引用它。请撤销移除或清除此引用。`,deleted:true});
+      if(!p.removed&&!p.structure)list.push({pageId:p.id,text:`@${p.alias} 尚无真实结构证据（导入占位），不能发布可用模板。`});
+      if(!p.removed){
+        if(!p.condition.trim())list.push({pageId:p.id,text:`@${p.alias} 使用条件尚未填写。`});
+        for(const f of p.frames)if(f.enabled&&!f.text.trim())list.push({pageId:p.id,frameId:f.id,text:`@${p.alias} 的${f.label}选图规则为空。`});
+        if(state.scene==='R4'&&p.alias===5&&p.frames.some(f=>!f.enabled))list.push({pageId:p.id,text:'@5 的同色正反面关系仍引用已停止替换的框。'});
+      }
+    }
+    if(state.scene==='R1'&&!state.explicitSecondary)list.push({pageId:byAlias(1)?.id,text:'存在多个副色时，右框选哪个？只需补充这一点，不默认取第一个副色。'});
+    return list;
+  }
+  function reference(p, label, frameId=''){return `<button class="reference${p.removed?' invalid':''}" data-action="locate" data-page="${esc(p.id)}" data-frame="${esc(frameId)}">${esc(label||`@${p.alias}`)}${p.removed?' · 已失效':''}</button>`;}
+  function replaceableTargets(p){
+    if(!p.structure||!p.preview)return [];
+    return p.frames.filter(f=>f.enabled).flatMap(f=>{
+      const target=p.preview.targets.find(t=>t.layerId===f.layerId&&t.registered&&t.supported&&!t.decorative);
+      if(!target)return [];
+      const [left,top,width,height]=target.bounds;
+      if(![left,top,width,height].every(Number.isFinite)||left<0||top<0||width<=0||height<=0||left+width>p.preview.width||top+height>p.preview.height)return [];
+      return [{frame:f,left,top,width,height}];
+    });
+  }
+  function sheet(p){
+    if(!p.structure||!p.preview)return '<div class="preview-empty">尚未读取 PSD 预览与结构<br>不会凭空创建图片框</div>';
+    const {width,height}=p.preview;
+    return `<div class="psd-sheet" data-document="${p.id}" aria-label="${esc(p.name)} 文档坐标演示；尚未加载真实 PSD 预览"><div class="document-underlay"><span class="document-origin">文档坐标示例 · 非真实 PSD 预览</span>${p.preview.dividers.map(y=>`<div class="fixed-demo-content" style="top:${y*100}%"><span>固定内容示意 · 不可替换</span></div>`).join('')}</div>${replaceableTargets(p).map(({frame:f,left,top,width:w,height:h})=>`<button class="frame-hit${p.selected===f.id?' selected':''}" style="left:${left/width*100}%;top:${top/height*100}%;width:${w/width*100}%;height:${h/height*100}%" data-action="frame" data-page="${p.id}" data-frame="${f.id}" aria-label="选择 @${p.alias} 的${f.label}" aria-pressed="${p.selected===f.id}"><span class="frame-number">${esc(f.label)}</span></button>`).join('')}</div>`;
+  }
+  function card(p){
+    const mode=previewModes.get(p.id)||'width';
+    const isLong=p.preview&&p.preview.height/p.preview.width>2.5;
+    return `<article class="page-card" data-page-card="${p.id}" aria-label="@${p.alias} ${esc(p.name)}">
+      <header class="card-header"><span class="alias">${p.alias}</span><span class="file-title">${esc(p.name)}</span>
+        <div class="preview-actions" aria-label="@${p.alias} 预览方式"><button data-action="view" data-page="${p.id}" data-mode="width" aria-pressed="${mode==='width'}">适宽</button><button data-action="view" data-page="${p.id}" data-mode="whole" aria-pressed="${mode==='whole'}">整页</button><button class="quiet" data-action="zoom" data-page="${p.id}">放大</button></div>
+        <button class="quiet" data-action="remove" data-page="${p.id}" aria-label="移除 @${p.alias}">${icon('x')}</button></header>
+      <div class="card-body"><div class="preview-column"><div class="preview-viewport" data-preview-page="${p.id}" role="region" aria-label="@${p.alias} PSD 预览，长页可上下滚动">${sheet(p)}</div></div>
+        <section class="local-rules" aria-label="@${p.alias} 独立规则侧栏"><div class="local-head"><h3>${p.type==='size'?'尺码规则':'框选图规则'}</h3><span class="subtle">${replaceableTargets(p).length} 个替换目标</span></div>
+          ${p.frames.map(f=>`<div class="rule-row${p.selected===f.id?' selected':''}" data-rule-row="${f.id}"><div class="rule-label"><button class="quiet rule-name" data-action="frame" data-page="${p.id}" data-frame="${f.id}">${esc(f.label)}</button><button class="quiet" data-action="toggle-frame" data-page="${p.id}" data-frame="${f.id}" aria-label="${f.enabled?'停止':'恢复'}替换 @${p.alias} 的${f.label}">${f.enabled?'停止替换':'恢复替换'}</button></div>${f.enabled?`<textarea rows="2" data-edit-frame="${f.id}" data-page="${p.id}" aria-label="@${p.alias} ${f.label}规则">${esc(f.text)}</textarea><div class="rule-evidence">${p.type==='size'?'建模板不需要本款尺码图':'演示绑定 · 非真实 PSD 解析'}</div>`:'<p class="subtle">保留模板内容，不删除 PSD 图层。</p>'}</div>`).join('')}
+          <details><summary class="subtle">高级 / 结构与目标</summary><p class="subtle">仅显示已登记的可替换目标。固定背景、Logo 和未证实的智能对象不会加入。</p><button class="quiet" data-action="targets" data-page="${p.id}">查看受支持目标</button></details>
+        </section></div>
+      <footer class="card-footer"><span>${p.structure?`坐标演示 · ${p.preview.width} × ${p.preview.height}`:'占位卡片 · 未读取真实结构'}</span><span class="${isLong?'long-label':''}">${isLong?'长页 · 向下滚动，或点规则定位':'原比例 · 固定内容不参与替换'}</span></footer>
+    </article>`;
+  }
+  function renderCards(){
+    $$('.page-card').forEach(el=>localScroll.set(el.dataset.pageCard,el.querySelector('.local-rules').scrollTop));
+    $$('.page-card .preview-viewport').forEach(el=>previewScroll.set(el.dataset.previewPage,{top:el.scrollTop,scale:Number(el.dataset.scale)||1}));
+    $('#tpl-cards').innerHTML=livePages().map(card).join('');
+    $$('.page-card').forEach(el=>{el.querySelector('.local-rules').scrollTop=localScroll.get(el.dataset.pageCard)||0;});
+    icons();updateMetrics(true);
+  }
+  function layoutPreviews(restoreScroll=false){
+    $$('.preview-viewport').forEach(viewport=>{
+      const p=pageById(viewport.dataset.previewPage);
+      const documentEl=viewport.querySelector('.psd-sheet');
+      if(!p?.preview||!documentEl)return;
+      const cardEl=viewport.closest('.page-card'),isZoom=!!viewport.closest('.zoom-document');
+      const old={top:viewport.scrollTop,scale:Number(viewport.dataset.scale)||1};
+      if(cardEl){
+        const naturalHeight=viewport.clientWidth*p.preview.height/p.preview.width;
+        const height=p.preview.height/p.preview.width>2.5?480:Math.min(600,Math.ceil(naturalHeight));
+        cardEl.style.setProperty('--tp-preview-height',height+'px');
+      }
+      const mode=(isZoom?zoomModes:previewModes).get(p.id)||'width';
+      const scale=mode==='whole'?Math.min(viewport.clientWidth/p.preview.width,viewport.clientHeight/p.preview.height):viewport.clientWidth/p.preview.width;
+      documentEl.style.width=p.preview.width*scale+'px';documentEl.style.height=p.preview.height*scale+'px';viewport.dataset.scale=String(scale);
+      const saved=restoreScroll&&!isZoom?previewScroll.get(p.id):old;
+      viewport.scrollTop=mode==='whole'?0:saved?saved.top*scale/saved.scale:0;
+      if(cardEl)cardEl.querySelectorAll('[data-action="view"]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.mode===mode)));
+    });
+  }
+  function simulation(){
+    const n=state.colorCount;
+    if(state.manualRecipe)return '使用条件已手工改动；原型不解释任意条件，也不继续套用预置演算。';
+    if(n===0)return '0 色：等待颜色分组，不编造输出。';
+    if(state.scene==='R2')return `${n} 色 → ${n%2?'@1 × 1'+(n>1?' ＋ ':''):''}${n>=2?'@2 × '+Math.floor(n/2):''}\n主色第一；其余按冻结顺序两两分配。`;
+    if(state.scene==='R3')return n<=4?`${n} 色 → @${n} × 1`:`${n} 色：尚未定义对应配方，需补充规则。`;
+    if(state.scene==='R4')return `${n} 色 = 1 主色 ＋ ${n-1} 副色\n@5 × ${n-1}，每页正反面来自同一个副色。`;
+    if(state.scene==='R1')return state.explicitSecondary?'@1 × 1；主色 ＋ 生产时人工指定的一个副色。':'右框副色未明确，不进行实际选图。';
+    return '@6 每款一次。模板可先保存，生产时再核对本款尺码来源。';
+  }
+  function renderPanel(){
+    const problems=issues();
+    $('#tpl-global-content').innerHTML=`<section class="group-section"><h3>使用条件与次数</h3>${state.pages.filter(p=>p.condition&&!p.removed).map(p=>`<div class="relation">${reference(p)} <span class="subtle">${esc(p.name.replace('.psd',''))}</span><label><textarea rows="2" data-edit-condition="${p.id}" aria-label="@${p.alias} 使用条件">${esc(p.condition)}</textarea></label></div>`).join('')}</section><section class="group-section"><h3>输出顺序</h3><p>${livePages().map(p=>`@${p.alias}`).join(' → ')||'尚无页面'}</p><p style="margin-top:6px">调整顺序不会改变模板编号或引用。</p><button class="quiet" data-action="reorder">将最后一页移到最前</button></section><section class="group-section"><h3>规则演算 <span class="subtle">预设演示，非生产计划</span></h3><label class="count-demo">模拟颜色数 <select id="tpl-colors" aria-label="模拟颜色数">${[0,1,2,3,4,5,6].map(n=>`<option${n===state.colorCount?' selected':''}>${n}</option>`).join('')}</select></label><div class="simulation">${esc(simulation())}</div></section><section class="group-section"><h3>待解决问题 <span class="subtle">${problems.length}</span></h3>${problems.length?problems.map(d=>`<div class="diagnostic" role="alert">${esc(d.text)}${d.pageId?`<div style="margin-top:7px">${reference(pageById(d.pageId),'定位',d.frameId||'')}${d.deleted?` <button class="quiet" data-action="clear-reference" data-page="${d.pageId}">清除失效引用</button>`:''}</div>`:''}</div>`).join(''):'<p class="good">没有演示范围内的未解决问题</p>'}<p style="margin-top:8px">有问题仍可保存草稿；不可发布可用模板。</p></section><p class="subtle">框规则在各自卡片中编辑，此处只管理模板之间的关系。</p>`;
+    icons();
+  }
+  function renderRefs(){
+    $('#tpl-refchips').innerHTML=state.refs.map((r,i)=>{const p=pageById(r.pageId);if(!p)return '';const f=p.frames.find(f=>f.id===r.frameId);return `<span class="ref-unit">${reference(p,`@${p.alias}${f?' 的'+f.label:''}`,r.frameId)}<button class="quiet" data-action="unref" data-index="${i}" aria-label="移除引用标签">×</button></span>`;}).join('');
+  }
+  function render(){
+    $('#tpl-scene').value=state.scene;
+    renderCards();renderPanel();renderRefs();updateHeader();
+    $('#tpl-input').value=state.input;
+    sizeComposer();
+    $('#tpl-examples').innerHTML='<span class="subtle">试试预设：</span>'+presets[state.scene].map(([label],i)=>`<button data-action="example" data-index="${i}">${esc(label)}</button>`).join('');
+    icons();
+  }
+  function scrollWithin(pane,element){
+    if(!pane||!element)return;
+    const r=element.getBoundingClientRect(),v=pane.getBoundingClientRect();
+    if(r.height>pane.clientHeight||r.top<v.top)pane.scrollTop+=r.top-v.top-4;
+    else if(r.bottom>v.bottom)pane.scrollTop+=r.bottom-v.bottom+4;
+  }
+  function liftAboveComposer(element){
+    const board=$('.board-scroll');if(!element||!board.contains(element))return;
+    const r=element.getBoundingClientRect(),v=board.getBoundingClientRect(),floating=$('.composer').getBoundingClientRect();
+    const bottom=Math.min(v.bottom,floating.top-12);
+    if(r.top<v.top+3)board.scrollTop+=r.top-v.top-3;
+    else if(r.bottom>bottom)board.scrollTop+=r.height>bottom-v.top?r.top-v.top-3:r.bottom-bottom;
+  }
+  function selectFrame(pageId,frameId){
+    const p=pageById(pageId);if(!p||p.removed)return;
+    p.selected=frameId;
+    $$(`[data-page="${pageId}"][data-action="frame"]`).forEach(el=>{const selected=el.dataset.frame===frameId;el.classList.toggle('selected',selected);el.setAttribute('aria-pressed',String(selected));});
+    const cardEl=$(`[data-page-card="${pageId}"]`);
+    cardEl?.querySelectorAll('.rule-row').forEach(el=>el.classList.toggle('selected',el.dataset.ruleRow===frameId));
+    const row=cardEl?.querySelector(`[data-rule-row="${frameId}"]`);
+    if(row)scrollWithin(row.closest('.local-rules'),row);
+    $$(`.preview-viewport[data-preview-page="${pageId}"]`).forEach(viewport=>scrollWithin(viewport,viewport.querySelector(`[data-frame="${frameId}"]`)));
+    if(!activeDialog)liftAboveComposer(row?.querySelector('.rule-name'));
+  }
+  function locate(pageId,frameId){
+    const p=pageById(pageId);if(!p||p.removed){announce('此引用已失效，不会改指其他模板。可撤销移除或清除关系。');return;}
+    if(activeDialog)closeDialog();
+    $$('.page-card').forEach(el=>el.classList.toggle('focused',el.dataset.pageCard===pageId));
+    const cardEl=$(`[data-page-card="${pageId}"]`);
+    if(frameId)selectFrame(pageId,frameId);else liftAboveComposer(cardEl?.querySelector('.card-header'));
+    announce(`已定位 @${p.alias}${frameId?' 的'+p.frames.find(f=>f.id===frameId)?.label:''}。`);
+  }
+  function openDialog(kind,title,kicker,content,actions){
+    if(!$('#tpl-dialog').open)focusBeforeDialog=document.activeElement;
+    activeDialog=kind;$('#tpl-dialog-title').textContent=title;$('#tpl-dialog-kicker').textContent=kicker;$('#tpl-dialog-content').innerHTML=content;$('#tpl-dialog-actions').innerHTML=actions;icons();
+    if(!$('#tpl-dialog').open)$('#tpl-dialog').showModal();
+  }
+  function closeDialog(){activeDialog='';$('#tpl-dialog').close();focusBeforeDialog?.focus();}
+  function showZoom(p){
+    const mode=previewModes.get(p.id)||'width';zoomModes.set(p.id,mode);
+    const actions=`<div class="zoom-actions"><button data-action="view" data-scope="zoom" data-page="${p.id}" data-mode="width" aria-pressed="${mode==='width'}">适宽</button><button data-action="view" data-scope="zoom" data-page="${p.id}" data-mode="whole" aria-pressed="${mode==='whole'}">整页</button></div>`;
+    openDialog('zoom',`@${p.alias} ${p.name}`,'原位框线 / 坐标示例 · 未加载真实 PSD',`${actions}<div class="zoom-layout"><div class="zoom-document"><div class="preview-viewport" data-preview-page="${p.id}" role="region" aria-label="放大的 @${p.alias} 文档预览">${sheet(p)}</div></div><div class="zoom-list"><h3>可替换目标</h3><p class="subtle">按已登记目标列出，不把页面切成格子。重叠目标可在这里选中。</p>${replaceableTargets(p).map(({frame:f})=>`<button data-action="frame" data-page="${p.id}" data-frame="${f.id}">${esc(f.label)} · ${esc(f.text)}</button>`).join('')||'<p>尚无有效结构证据，不能创建新目标。</p>'}</div></div>`,'<button class="primary" data-action="close">返回工作台</button>');
+    layoutPreviews();
+  }
+  function overview(){
+    overviewVersion=state.version;overviewDigest=digest();const problems=issues();
+    const content=`<p class="subtle">当前草稿 v${state.version} · 总览由同一份规则生成。无需逐框勾选。</p>${problems.length?`<div class="diagnostic" role="alert">仍有 ${problems.length} 个问题，暂不能确认发布；返回后仍可保存草稿。</div>`:''}<div class="overview-node"><h3>使用条件 → 模板与次数</h3><p style="margin:8px 0 0">${esc(simulation())}</p></div><div class="overview-arrow">↓</div>${livePages().map(p=>`<div class="overview-node">${reference(p)} <strong>${esc(p.name)}</strong><p class="subtle" style="margin:7px 0">${esc(p.condition)}</p><ul>${p.frames.map(f=>`<li>${esc(f.label)}：${f.enabled?esc(f.text):'停止替换，保留模板内容'}</li>`).join('')}</ul></div>`).join('')}<div class="overview-arrow">↓</div><div class="overview-node"><h3>生产阶段再匹配本款素材</h3><p class="subtle" style="margin:8px 0 0">参考图不进入正式选图；尺寸不猜值。没有本款尺码图不阻止模板建模。</p></div><div id="tpl-overview-stale" class="diagnostic" hidden role="alert"></div>`;
+    openDialog('overview','确认模板组总览','最后一次总体确认 · 模拟提交',content,'<button data-action="close">返回修改</button><button class="primary" data-action="confirm"'+(problems.length?' disabled':'')+'>确认并保存模板组</button>');
+  }
+  function showImport(){
+    openDialog('import','导入模板组','同一个导入容器 · 不读取真实 PSD 内容',`<div class="import-drop">${icon('folder-plus')}<h3>将一个、多个 PSD 或文件夹拖到这里</h3><p class="subtle" style="margin:8px 0 0">原型仅展示清单与布局，不扫描或上传文件。</p><div class="import-fields"><input id="tpl-path" aria-label="演示文件或文件夹路径" placeholder="输入演示路径，如 D:\\模板\\新页面.psd"><button data-action="add-path">加入清单</button></div></div><div class="import-controls"><button data-action="sample-files">演示：加入多个 PSD</button><button data-action="sample-folder">演示：加入文件夹</button><button data-action="sample-error">演示：不可读文件</button></div><label class="check-label"><input type="checkbox" id="tpl-recursive"${includeSubfolders?' checked':''}>包含发现的子目录（默认不包含）</label><div id="tpl-import-summary" class="subtle"></div><ul id="tpl-import-list" class="import-list"></ul><p class="subtle">真实 WPF 将复用原生文件与文件夹选择能力，不声称一个系统选择器可以混选二者。</p>`, '<button data-action="close">取消</button><button class="primary" data-action="import-confirm">加入当前草稿（模拟）</button>');renderImportList();
+  }
+  function renderImportList(){
+    if(activeDialog!=='import')return;
+    const eligible=importItems.filter(i=>!i.error&&!i.duplicate&&(!i.nested||includeSubfolders));
+    $('#tpl-import-summary').textContent=`${eligible.length} 项待导入 · ${importItems.filter(i=>i.nested&&!includeSubfolders).length} 项位于子目录（未选中）`;
+    $('#tpl-import-list').innerHTML=importItems.map((i,index)=>`<li><span>${esc(i.name)}${i.nested?'<small>子目录</small>':''}</span><span class="${i.error?'text-error':'subtle'}">${i.error?'无法读取（模拟）':i.duplicate?'已存在，不重复导入':i.nested&&!includeSubfolders?'默认跳过':'待导入占位'}${i.error?` <button data-action="retry-import" data-index="${index}">重试（模拟）</button>`:''}</span><button class="quiet" data-action="remove-import" data-index="${index}" aria-label="移除清单项 ${esc(i.name)}">×</button></li>`).join('');
+    $('[data-action="import-confirm"]').disabled=!eligible.length;
+  }
+  function queueItem(name,extra={}){
+    const duplicate=livePages().some(p=>p.name===name)||importItems.some(i=>i.name===name&&!i.error);
+    importItems.push({name,duplicate,...extra});renderImportList();
+  }
+  function importConfirm(){
+    const selected=importItems.filter(i=>!i.error&&!i.duplicate&&(!i.nested||includeSubfolders));
+    if(!selected.length)return;
+    checkpoint();for(const item of selected){const alias=state.nextAlias++;const p=makePage(alias,item.name,[],'待补充使用条件');p.structure=false;p.externalName=!!item.externalName;state.pages.push(p);}
+    // Failed and unselected rows remain available in the same container.
+    importItems=importItems.filter(i=>!selected.includes(i));changed(`已加入 ${selected.length} 个演示占位；失败项仍保留，源文件未读取。`);renderCards();closeDialog();
+  }
+  function showSuggestions(){
+    $('#tpl-suggestions').hidden=false;
+    const query=($('#tpl-input').value.match(/@([^@\s]*)$/)||[])[1]||'';
+    $('#tpl-suggestions').innerHTML=livePages().filter(p=>!query||String(p.alias).startsWith(query)||p.name.includes(query)).map(p=>`<button data-action="ref" data-page="${p.id}"><span class="mini-preview" aria-hidden="true"></span><span>@${p.alias}　${esc(p.name)}</span></button>${p.frames.map(f=>`<button data-action="ref" data-page="${p.id}" data-frame="${f.id}"><span class="mini-preview" aria-hidden="true"></span><span>@${p.alias} 的${esc(f.label)}</span></button>`).join('')}`).join('')||'<span class="subtle">无匹配模板</span>';
+  }
+  function addRef(pageId,frameId=''){
+    if(!state.refs.some(r=>r.pageId===pageId&&r.frameId===frameId))state.refs.push({pageId,frameId});
+    const p=pageById(pageId),f=p.frames.find(f=>f.id===frameId), label=`@${p.alias}${f?' 的'+f.label:''}`;
+    state.input=$('#tpl-input').value.replace(/@[^@\s]*$/,'')+label+' ';$('#tpl-input').value=state.input;sizeComposer();renderRefs();$('#tpl-suggestions').hidden=true;$('#tpl-input').focus();
+  }
+  function send(){
+    if(composing)return;
+    const input=$('#tpl-input').value.trim();
+    if(!input){announce('请先描述要修改的规则。');return;}
+    if(state.refs.some(r=>pageById(r.pageId)?.removed)){announce('消息包含已失效引用，未修改规则。请移除旧标签或撤销页面移除。');return;}
+    const known=presets[state.scene].some(([,text])=>text===input);
+    if(!known){announce('此原型只演示上方预设指令；未调用模型，也未修改任何规则。仍可直接手工编辑。');return;}
+    const aliases=[...input.matchAll(/@(\d+)/g)].map(m=>Number(m[1]));
+    if(aliases.some(a=>!byAlias(a))){announce('指令所引用的模板已失效，未应用修改。');return;}
+    checkpoint();
+    if(state.scene==='R4'&&input===presets.R4[1][1])byAlias(1).frames[0].text='主色正面半身图';
+    else if(state.scene==='R4'){const p=byAlias(5);p.condition='每个副色一次 · 两框同色';p.frames[0].text='当前副色正面，全身完整';p.frames[1].text='同一个副色反面，全身完整';}
+    else if(state.scene==='R1'){state.explicitSecondary=true;byAlias(1).frames[1].text='生产时人工指定的一个副色正面图';byAlias(1).condition='每款一次 · 右框使用生产时指定的副色';}
+    else if(state.scene==='R5')byAlias(6).frames[0].text='根据本款尺码图换尺码数据，沿用模板样式；缺失数据不猜测';
+    else {const samples=scenes[state.scene]();for(const sample of samples){const p=byAlias(sample.alias);p.condition=sample.condition;}state.manualRecipe=false;}
+    state.input='';state.refs=[];$('#tpl-input').value='';$('#tpl-suggestions').hidden=true;
+    changed(`模拟已更新 ${[...new Set(aliases)].map(a=>'@'+a).join('、')} 的相关规则，可撤销；没有真实 AI 请求。`);renderCards();renderRefs();sizeComposer();
+  }
+  const design={cardMin:440,panelWidth:320,localWidth:200};
+  function updateMetrics(restoreScroll=false){requestAnimationFrame(()=>{
+    const grid=$('#tpl-cards');if(!grid)return;
+    const columns=Math.max(1,Math.min(3,livePages().length||1,Math.floor((grid.clientWidth+14)/(design.cardMin+14))));
+    grid.style.setProperty('--tp-columns',columns);
+    $('#tpl-metrics').textContent=`客户区 ${Math.round(root.clientWidth)} px · 网格 ${columns} 列`;
+    layoutPreviews(restoreScroll);
+  });}
+  function responsive(){const narrow=root.clientWidth<=1080, collapsed=panelPreference===null?narrow:panelPreference;$('.product-shell').classList.toggle('collapsed',collapsed);$('#tpl-panel-toggle').textContent=collapsed?'展开总规则':'收起总规则';$('#tpl-panel-toggle').setAttribute('aria-expanded',String(!collapsed));updateMetrics();}
+  function restore(snapshot){
+    if(snapshot?.privateContent?.origin===viewSession)return;
+    const demo=snapshot?.privateContent?.demo;
+    if(!demo||!scenes[demo.scene]||!Array.isArray(demo.pages)||demo.pages.length>30)return;
+    state=clone(demo);
+    // Keep prior prototype edits while upgrading only the demo presentation metadata.
+    const defaults=scenes[state.scene]();
+    for(const p of state.pages){
+      if(!p.preview){const template=defaults.find(x=>x.id===p.id);if(template){p.preview=template.preview;p.frames.forEach((f,i)=>{f.layerId=template.frames[i]?.layerId;});}else p.structure=false;}
+    }
+    undo=[];render();responsive();
+  }
+  root.addEventListener('click',event=>{
+    const button=event.target.closest('button[data-action]');if(!button||button.disabled)return;
+    const a=button.dataset.action,p=pageById(button.dataset.page),frameId=button.dataset.frame,index=Number(button.dataset.index);
+    if(a==='frame'){selectFrame(p.id,frameId);return;}
+    if(a==='view'){
+      const modes=button.dataset.scope==='zoom'?zoomModes:previewModes;modes.set(p.id,button.dataset.mode);
+      layoutPreviews();
+      if(button.dataset.scope==='zoom')$$('#tpl-dialog [data-action="view"]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.mode===button.dataset.mode)));
+      return;
+    }
+    if(a==='locate'){locate(p.id,frameId);return;}
+    if(a==='close'){closeDialog();return;}
+    if(a==='panel'){panelPreference=!$('.product-shell').classList.contains('collapsed');responsive();return;}
+    if(a==='overview'){overview();return;}
+    if(a==='import'){showImport();return;}
+    if(a==='undo'){if(!undo.length)return;const nextVersion=state.version+1,unusedAlias=state.nextAlias;state=undo.pop();state.version=nextVersion;state.nextAlias=Math.max(unusedAlias,state.nextAlias);state.committed=false;render();announce('已撤销上一轮修改；模板编号与引用恢复。');remember();return;}
+    if(a==='save-draft'){announce(`演示草稿 v${state.version} 已保留在当前原型状态；未写入数据库，不代表重启恢复。`);remember();return;}
+    if(a==='remove'){
+      openDialog('remove',`移除 @${p.alias} ${p.name}`,'只移除当前草稿页面',`<p>不会删除电脑里的 PSD、历史模板资源或正式输出。</p><div class="diagnostic">受影响的关系：${esc(p.condition||'无组合规则')}。消息中的旧引用将显示失效，不会改指另一页。</div>`,`<button data-action="close">取消</button><button class="primary" data-action="remove-confirm" data-page="${p.id}">移除，可撤销</button>`);return;
+    }
+    if(a==='remove-confirm'){checkpoint();p.removed=true;changed(`已移除 @${p.alias}；其他编号未变化，可撤销。`);renderCards();closeDialog();return;}
+    if(a==='clear-reference'){checkpoint();p.condition='';changed('已清除组合规则中的失效引用；旧消息标签仍保留失效身份。');return;}
+    if(a==='toggle-frame'){checkpoint();const f=p.frames.find(f=>f.id===frameId);f.enabled=!f.enabled;changed(`${f.enabled?'已恢复':'已停止'} @${p.alias} 的${f.label}替换；源图层未修改。`);renderCards();return;}
+    if(a==='reorder'){if(livePages().length<2)return;checkpoint();const last=livePages().at(-1);state.pages=state.pages.filter(p=>p!==last);state.pages.unshift(last);changed('已改变展示/输出顺序；稳定编号和引用目标不变。');renderCards();return;}
+    if(a==='zoom'||a==='targets'){showZoom(p);return;}
+    if(a==='mention'){showSuggestions();$('#tpl-input').focus();return;}
+    if(a==='ref'){addRef(p.id,frameId||'');return;}
+    if(a==='unref'){state.refs.splice(index,1);renderRefs();return;}
+    if(a==='example'){state.input=presets[state.scene][index][1];$('#tpl-input').value=state.input;state.refs=[...new Set([...state.input.matchAll(/@(\d+)/g)].map(m=>Number(m[1])))].map(alias=>({pageId:state.pages.find(p=>p.alias===alias)?.id,frameId:''})).filter(r=>r.pageId);renderRefs();$('#tpl-input').focus();return;}
+    if(a==='send'){send();return;}
+    if(a==='confirm'){
+      if(state.version!==overviewVersion||digest()!==overviewDigest){const el=$('#tpl-overview-stale');el.hidden=false;el.textContent='草稿已经变化，不能提交旧总览。请返回修改并重新打开总览。';button.disabled=true;return;}
+      if(issues().length)return;state.committed=true;updateHeader();closeDialog();announce(`已模拟一次性确认 v${state.version}；未发布正式模板、未出图。`);remember();return;
+    }
+    if(a==='ai'){
+      openDialog('ai','AI 读取规则','A 阶段：无真实 API 请求',`<p>正式功能会沿用上传授权与计费边界。普通结构扫描在本地进行，导入不触发 AI。</p><p class="subtle">这里仅体验返回状态；无 API 时仍可手工编辑与保存草稿。</p><div class="import-controls"><button data-action="ai-success">演示：读取完成</button><button data-action="ai-fail">演示：无 API / 请求失败</button><button data-action="ai-unknown">演示：结果未知</button></div>`, '<button data-action="close">取消</button>');return;
+    }
+    if(a.startsWith('ai-')){closeDialog();announce(a==='ai-success'?'模拟读取完成：当前演示规则默认采用，无需逐框确认；没有真实语义理解。':a==='ai-unknown'?'模拟结果未知：不自动重发，草稿保留。':'模拟请求失败 / 无 API：原草稿保留，可继续手工编辑和保存。');return;}
+    if(a==='sample-files'){queueItem('07-新增展示.psd');queueItem('08-补充细节.psd');return;}
+    if(a==='sample-folder'){queueItem('09-文件夹内模板.psd');queueItem('子目录/10-子目录模板.psd',{nested:true});return;}
+    if(a==='sample-error'){queueItem('无法读取的模板.psd',{error:true});return;}
+    if(a==='add-path'){const raw=$('#tpl-path').value.trim();if(!raw)return;if(/\.psd$/i.test(raw)){queueItem(raw.split(/[\\/]/).at(-1),{externalName:true});}else{queueItem(raw.split(/[\\/]/).filter(Boolean).at(-1)+'/演示模板.psd',{externalName:true});queueItem('子目录/演示模板.psd',{nested:true});}$('#tpl-path').value='';return;}
+    if(a==='retry-import'){importItems[index].error=false;importItems[index].duplicate=livePages().some(p=>p.name===importItems[index].name);renderImportList();return;}
+    if(a==='remove-import'){importItems.splice(index,1);renderImportList();return;}
+    if(a==='import-confirm'){importConfirm();return;}
+  });
+  root.addEventListener('focusin',event=>{const el=event.target;if(el.matches('[data-edit-frame]')){selectFrame(el.dataset.page,el.dataset.editFrame);el.dataset.before=el.value;}if(el.matches('[data-edit-condition]'))el.dataset.before=el.value;if(!activeDialog)liftAboveComposer(el);});
+  function updateComposerClearance(){
+    const board=$('.board-scroll'),atEnd=board.scrollHeight-board.scrollTop-board.clientHeight<2;
+    root.style.setProperty('--tp-composer-clearance',Math.ceil($('.composer').getBoundingClientRect().height+42)+'px');
+    if(atEnd)board.scrollTop=board.scrollHeight;
+  }
+  function sizeComposer(){const input=$('#tpl-input');input.style.height='auto';input.style.height=Math.min(144,Math.max(48,input.scrollHeight))+'px';updateComposerClearance();}
+  root.addEventListener('input',event=>{
+    const el=event.target;
+    if(el.id==='tpl-input'){state.input=el.value;sizeComposer();if(/@[^@\s]*$/.test(el.value))showSuggestions();else $('#tpl-suggestions').hidden=true;return;}
+    if(el.dataset.editFrame){const p=pageById(el.dataset.page),f=p.frames.find(f=>f.id===el.dataset.editFrame);if(el.dataset.editing!=='yes'){checkpoint();el.dataset.editing='yes';}f.text=el.value;changed();return;}
+    if(el.dataset.editCondition){const p=pageById(el.dataset.editCondition);if(el.dataset.editing!=='yes'){checkpoint();el.dataset.editing='yes';}p.condition=el.value;state.manualRecipe=true;state.version++;state.committed=false;updateHeader();remember();}
+  });
+  root.addEventListener('focusout',event=>{const el=event.target;if(el.dataset.editing){delete el.dataset.editing;if(el.dataset.editCondition)setTimeout(()=>renderPanel(),0);}});
+  root.addEventListener('change',event=>{
+    const el=event.target;
+    if(el.id==='tpl-scene'){checkpoint();const scene=el.value;state={scene,pages:scenes[scene](),nextAlias:7,version:state.version+1,refs:[],input:'',colorCount:5,explicitSecondary:false,manualRecipe:false,committed:false};render();announce('已切换独立演示场景；未混用其他示例配方。');remember();}
+    if(el.id==='tpl-colors'){state.colorCount=Number(el.value);renderPanel();remember();}
+    if(el.id==='tpl-recursive'){includeSubfolders=el.checked;renderImportList();}
+  });
+  $('#tpl-input').addEventListener('compositionstart',()=>{composing=true;});
+  $('#tpl-input').addEventListener('compositionend',()=>{composing=false;});
+  root.addEventListener('keydown',event=>{
+    if(event.key==='Escape'){$('#tpl-suggestions').hidden=true;}
+    if(event.target.id==='tpl-input'&&event.key==='Enter'&&event.ctrlKey&&!event.isComposing&&!composing&&event.keyCode!==229){event.preventDefault();send();}
+  });
+  $('#tpl-dialog').addEventListener('cancel',()=>{activeDialog='';});
+  root.addEventListener('dragover',event=>{if([...event.dataTransfer.types].includes('Files')){event.preventDefault();$('.product-shell').classList.add('drop-active');}});
+  root.addEventListener('dragleave',event=>{if(!root.contains(event.relatedTarget))$('.product-shell').classList.remove('drop-active');});
+  root.addEventListener('drop',event=>{
+    event.preventDefault();$('.product-shell').classList.remove('drop-active');showImport();
+    const entries=[...event.dataTransfer.items].filter(i=>i.kind==='file');
+    if(!entries.length){announce('未收到文件条目；可以在统一导入容器中加入演示清单。');return;}
+    for(const item of entries){const entry=item.webkitGetAsEntry?.();const file=item.getAsFile();if(entry?.isDirectory){queueItem(entry.name+'/演示模板.psd',{externalName:true});queueItem(entry.name+'/子目录/演示模板.psd',{nested:true,externalName:true});}else if(file)queueItem(file.name,{error:!/\.psd$/i.test(file.name),externalName:true});}
+  });
+  render();restore(window.openai?.widgetState);responsive();
+  new ResizeObserver(responsive).observe(root);
+  new ResizeObserver(updateComposerClearance).observe($('.composer'));
+  window.addEventListener('openai:set_globals',event=>{if(event.detail?.globals?.widgetState)restore(event.detail.globals.widgetState);});
+  if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:()=>{root.style.setProperty('--tp-card-min',design.cardMin+'px');root.style.setProperty('--tp-panel-width',design.panelWidth+'px');root.style.setProperty('--tp-local-width',design.localWidth+'px');updateMetrics();remember();}});tweak.addSlider(design,'cardMin',{label:'卡片最小宽度',min:440,max:500,step:10,unit:'px'});tweak.addSlider(design,'localWidth',{label:'每 PSD 规则栏宽度',min:180,max:240,step:10,unit:'px'});tweak.addSlider(design,'panelWidth',{label:'总规则栏宽度',min:280,max:360,step:20,unit:'px'});}
+})();
+</script>

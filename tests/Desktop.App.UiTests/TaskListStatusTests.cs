@@ -37,9 +37,7 @@ public sealed class TaskListStatusTests
         Assert.Equal(text, row.StatusText);
         Assert.Equal(state, row.StatusState);
         Assert.Equal($"已登记 {outputs} 页 · 历史问题 {issues} 项", row.StatusDetail);
-        Assert.Contains("不代表已重新核验输出文件", row.StatusDescription, StringComparison.Ordinal);
-        if (status is "Rendering" or "Scanning")
-            Assert.Contains("不代表进程仍在运行", row.StatusDescription, StringComparison.Ordinal);
+        Assert.Contains("打开详情", row.StatusDescription, StringComparison.Ordinal);
         Assert.Equal("batch_a", row.BatchId);
         Assert.Equal("查看/恢复", row.ActionText);
     }
@@ -56,11 +54,24 @@ public sealed class TaskListStatusTests
         Assert.Equal("暂无生成任务记录", empty.StatusDetail);
 
         var failed = TaskRowViewModel.FromSummary(input with { TaskStateUnavailable = true }, "模板");
-        Assert.Equal("任务状态读取失败", failed.StatusText);
+        Assert.Equal("状态待核对", failed.StatusText);
         Assert.Equal("Recoverable", failed.StatusState);
         var wrongBatch = TaskRowViewModel.FromSummary(input with
         { Task = new("other_batch", "Completed", 9, 7, 0, false) }, "模板");
         Assert.Equal(failed, wrongBatch);
+    }
+
+    [Fact]
+    public void InternalTemplateNameIsReplacedByUserFacingLabelWhileBatchIdRemainsForRecovery()
+    {
+        var row = TaskRowViewModel.FromSummary(
+            Summary(),
+            "TPL02-F-20261001-规则实机");
+
+        Assert.Equal("已校准模板", row.TemplateName);
+        Assert.Equal("batch_a", row.BatchId);
+        Assert.DoesNotContain("TPL02", row.TemplateName, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("规则实机", row.TemplateName, StringComparison.Ordinal);
     }
 
     [Fact]

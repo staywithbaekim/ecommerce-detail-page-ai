@@ -28,13 +28,11 @@ public sealed class PhotoshopEnvironmentViewModelTests
         await view.DetectAsync(true);
         Assert.Equal(@"G:\Adobe Photoshop 2025\Photoshop.exe", probe.Path);
         Assert.Contains("只有明确点击", view.Status, StringComparison.Ordinal);
-        Assert.Contains("26.8 (20250624.r.8 5e0d05d)", view.SelectedItem!.VersionDetail, StringComparison.Ordinal);
+        Assert.Contains("版本：26.8.1.8", view.SelectedItem!.VersionDetail, StringComparison.Ordinal);
         Assert.Contains("26.8.1.8", view.SelectedItem.VersionDetail, StringComparison.Ordinal);
-        Assert.Contains("不代表可生产", view.SelectedItem.VersionScope, StringComparison.Ordinal);
-        Assert.Contains("仅代表该时刻", view.ObservationText, StringComparison.Ordinal);
-        Assert.Contains("仍需安装与能力验收", view.OperatingSystemText, StringComparison.Ordinal);
-        Assert.Contains("运行进程", view.SelectedItem.SourceText, StringComparison.Ordinal);
-        Assert.Contains("手动选择文件", view.SelectedItem.SourceText, StringComparison.Ordinal);
+        Assert.Contains("支持版本候选", view.SelectedItem.VersionScope, StringComparison.Ordinal);
+        Assert.Contains("上次检查", view.ObservationText, StringComparison.Ordinal);
+        Assert.Contains("符合首发支持范围", view.OperatingSystemText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -48,7 +46,7 @@ public sealed class PhotoshopEnvironmentViewModelTests
         Assert.Contains("2 个", view.Status, StringComparison.Ordinal);
         Assert.Contains("扫描上限", view.Status, StringComparison.Ordinal);
         Assert.Contains("不在当前首发支持", view.OperatingSystemText, StringComparison.Ordinal);
-        Assert.Contains("不是普通连接失败", new PhotoshopEnvironmentItem(Snapshot().Installations[0] with { NumericFileVersion = "26.9.0.1" }).VersionScope, StringComparison.Ordinal);
+        Assert.Contains("不在当前首发支持版本范围", new PhotoshopEnvironmentItem(Snapshot().Installations[0] with { NumericFileVersion = "26.9.0.1" }).VersionScope, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -137,18 +135,18 @@ public sealed class PhotoshopEnvironmentViewModelTests
         Assert.Equal(second.ExecutablePath, selection.SelectedPath);
         Assert.Equal(1, probe.Calls);
         Assert.Equal(PhotoshopHostSelectionStatus.Valid, view.SavedHostSelection!.Status);
-        Assert.Contains(second.ExecutablePath, view.SavedHostPathText, StringComparison.Ordinal);
+        Assert.Contains("已保存 Photoshop 程序", view.SavedHostPathText, StringComparison.Ordinal);
         Assert.Contains(second.NumericFileVersion, view.SavedHostVersionText, StringComparison.Ordinal);
         Assert.Contains("不代表已连接", view.HostSelectionStatus, StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData(PhotoshopHostSelectionStatus.NotSelected, "尚未选择正式宿主")]
-    [InlineData(PhotoshopHostSelectionStatus.Valid, "程序文件与记录匹配")]
-    [InlineData(PhotoshopHostSelectionStatus.Missing, "程序文件已缺失")]
-    [InlineData(PhotoshopHostSelectionStatus.Changed, "已更新或被替换")]
-    [InlineData(PhotoshopHostSelectionStatus.InvalidRecord, "记录损坏")]
-    [InlineData(PhotoshopHostSelectionStatus.Unavailable, "暂时不可安全读取")]
+    [InlineData(PhotoshopHostSelectionStatus.Valid, "正式宿主已保存")]
+    [InlineData(PhotoshopHostSelectionStatus.Missing, "已找不到")]
+    [InlineData(PhotoshopHostSelectionStatus.Changed, "已发生变化")]
+    [InlineData(PhotoshopHostSelectionStatus.InvalidRecord, "记录无效")]
+    [InlineData(PhotoshopHostSelectionStatus.Unavailable, "暂时无法读取")]
     public async Task ReadShowsDistinctPersistedSelectionStatesWithoutDiscoveryOrSaving(
         PhotoshopHostSelectionStatus status,
         string expected)
@@ -192,7 +190,7 @@ public sealed class PhotoshopEnvironmentViewModelTests
 
         await view.RefreshHostSelectionAsync();
 
-        Assert.Contains(@"G:\Adobe Photoshop 2025\Photoshop.exe", view.SavedHostPathText, StringComparison.Ordinal);
+        Assert.Contains("已保存 Photoshop 程序", view.SavedHostPathText, StringComparison.Ordinal);
         Assert.Contains("26.8.1.8", view.SavedHostVersionText, StringComparison.Ordinal);
         Assert.Contains(selectedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture), view.SavedHostSelectedAtText, StringComparison.Ordinal);
         Assert.Contains("正在使用", view.SavedHostUsageText, StringComparison.Ordinal);

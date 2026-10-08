@@ -85,7 +85,10 @@ public interface ISizeTableEditingWorkflow
 
 public sealed class SizeTableEditingWorkflow(
     ISizeTableRepository repository,
-    TimeProvider timeProvider) : ISizeTableEditingWorkflow
+    TimeProvider timeProvider,
+    Desktop.Application.Templates.ITemplateInstanceProductionEvidenceStore? productionEvidence = null,
+    Desktop.Application.Inputs.IBatchRepository? batches = null,
+    Func<Desktop.Application.Rendering.ISizeTableRepairAdmission>? factAdmission = null) : ISizeTableEditingWorkflow
 {
     public async Task<SizeTableEditorLoadResult> LoadAsync(
         string batchId,
@@ -121,6 +124,20 @@ public sealed class SizeTableEditingWorkflow(
     {
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(command.Draft);
+        // An already frozen instance set is an unconditional edit refusal.
+        // Returning it does not require mutable AI admission (a final background
+        // checkpoint can still be settling). Recheck under the gate below so a
+        // concurrent freeze cannot admit a write after this read.
+        if (productionEvidence is not null && await productionEvidence.ReadProductionEvidenceAsync(command.BatchId,
+            command.StyleId, cancellationToken).ConfigureAwait(false) is not null)
+            return new(SizeTableEditorSaveStatus.RevisionConflict, null, "TPL_INSTANCE_PRODUCTION_FACTS_FROZEN");
+        // Serialize formal new-rule edits with projection/freeze, without changing legacy edit admission.
+        using var admission = factAdmission is not null && batches is not null
+            && (await batches.GetAsync(command.BatchId, cancellationToken).ConfigureAwait(false))?.TemplateSnapshot is Desktop.Domain.Templates.BatchRuleTemplateContext
+            ? await factAdmission().AcquireAsync(command.BatchId, cancellationToken).ConfigureAwait(false) : null;
+        if (productionEvidence is not null && await productionEvidence.ReadProductionEvidenceAsync(command.BatchId,
+            command.StyleId, cancellationToken).ConfigureAwait(false) is not null)
+            return new(SizeTableEditorSaveStatus.RevisionConflict, null, "TPL_INSTANCE_PRODUCTION_FACTS_FROZEN");
         var loaded = await repository.LoadAsync(
             command.BatchId,
             command.StyleId,

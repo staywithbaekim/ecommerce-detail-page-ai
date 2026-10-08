@@ -22,8 +22,19 @@ public sealed class AiStyleAnalysisViewModel
             new AiPageAnalysisViewModel(page)));
         AllRequirements = new ObservableCollection<AiRequirementUsageViewModel>(
             Pages.SelectMany(page => page.Requirements));
+        AllUsageCards = new ObservableCollection<AiRequirementUsageViewModel>(
+            Pages.SelectMany(page => page.SizeTableUsage is { } sizeTableUsage
+                ? new[] { sizeTableUsage }.Concat(page.Requirements)
+                : page.Requirements));
         Assets = new ObservableCollection<AiStyleAssetViewModel>((projection.Assets ?? [])
             .Select(asset => new AiStyleAssetViewModel(asset)));
+        var selectedSizeTableAssetId = SizeTableSource?.SelectedAssetId;
+        foreach (var asset in Assets)
+        {
+            asset.SetSizeTableSourceSelected(
+                selectedSizeTableAssetId is not null
+                && string.Equals(asset.AssetId, selectedSizeTableAssetId, StringComparison.Ordinal));
+        }
         var useCounts = Pages
             .SelectMany(page => page.Requirements)
             .Where(requirement => !string.IsNullOrWhiteSpace(requirement.SelectedAssetId))
@@ -68,6 +79,7 @@ public sealed class AiStyleAnalysisViewModel
     public string MetaText => $"{AssetCount} 张素材 · 已处理 {ProcessedPageCount}/{Pages.Count} 页";
     public ObservableCollection<AiPageAnalysisViewModel> Pages { get; }
     public ObservableCollection<AiRequirementUsageViewModel> AllRequirements { get; }
+    public ObservableCollection<AiRequirementUsageViewModel> AllUsageCards { get; }
     public ObservableCollection<AiStyleAssetViewModel> Assets { get; }
     public AiSizeTableSourceViewModel? SizeTableSource => Pages
         .Select(page => page.SizeTableSource)
@@ -161,6 +173,9 @@ public sealed class AiPageAnalysisViewModel
         _sizeTableSource = projection.SizeTableSource is null
             ? null
             : new AiSizeTableSourceViewModel(projection.SizeTableSource);
+        SizeTableUsage = _sizeTableSource is null
+            ? null
+            : AiRequirementUsageViewModel.CreateSizeTableSource(PageName, _sizeTableSource);
     }
 
     public string BatchId => _projection.BatchId;
@@ -177,6 +192,7 @@ public sealed class AiPageAnalysisViewModel
     public IReadOnlyList<string> WarningTexts => _projection.WarningTexts;
     public bool IsSizeTablePage => _projection.SizeTableSource is not null;
     public AiSizeTableSourceViewModel? SizeTableSource => _sizeTableSource;
+    public AiRequirementUsageViewModel? SizeTableUsage { get; }
     public ObservableCollection<AiCandidateViewModel> Candidates { get; }
     public ObservableCollection<AiRequirementUsageViewModel> Requirements { get; }
 }
@@ -197,6 +213,8 @@ public sealed class AiSizeTableSourceViewModel
     public string? SelectedAssetId => _projection.SelectedAssetId;
     public string SelectedPreviewPath => _projection.SelectedPreviewPath ?? "";
     public bool HasSelection => _projection.HasSelection;
+    public string SelectedDisplayName => Candidates.FirstOrDefault(candidate => candidate.IsSelected)?.DisplayName ?? "尚未选择";
+    public string SelectedSelectionText => HasSelection ? "当前尺码表来源" : "请选择照片";
     public ObservableCollection<AiSizeTableSourceCandidateViewModel> Candidates { get; }
 }
 
@@ -219,6 +237,7 @@ public sealed class AiSizeTableSourceCandidateViewModel
     public bool IsSelected => _projection.IsSelected;
     public decimal? Confidence => _projection.Confidence;
     public string ConfidenceText => _projection.ConfidenceText;
+    public bool IsSizeTableCandidate => _projection.IsSizeTableCandidate;
     public string SelectionText => IsSelected ? "当前尺码图" : IsDetected ? "AI 候选" : "选择此图";
     public string ActionText => IsSelected ? "替换" : "替换";
     public string SelectionLabel => IsSelected ? "尺码图" : "尺码图";
@@ -250,12 +269,38 @@ public sealed class AiSizeTableSourceCandidateViewModel
 public sealed class AiRequirementUsageViewModel : INotifyPropertyChanged
 {
     private readonly AiRequirementSelectionProjection _projection;
+    private readonly AiSizeTableSourceViewModel? _sizeTableSource;
     private bool _isReplacementTarget;
 
     public AiRequirementUsageViewModel(AiRequirementSelectionProjection projection)
     {
         _projection = projection;
     }
+
+    private AiRequirementUsageViewModel(string pageName, AiSizeTableSourceViewModel sizeTableSource)
+    {
+        _projection = new AiRequirementSelectionProjection(
+            sizeTableSource.Candidates.FirstOrDefault()?.BatchId ?? string.Empty,
+            sizeTableSource.Candidates.FirstOrDefault()?.StyleId ?? string.Empty,
+            $"size_table_source_{sizeTableSource.SelectedAssetId ?? "pending"}",
+            pageName,
+            $"size_table_source_{sizeTableSource.SelectedAssetId ?? "pending"}",
+            "尺码表来源",
+            "清晰可读的市场尺码表图片",
+            sizeTableSource.HasSelection
+                ? AiRequirementSelectionUiStatus.AiSelected
+                : AiRequirementSelectionUiStatus.Missing,
+            sizeTableSource.HasSelection ? "尺码表来源 · 已选用" : "尺码表来源 · 待选择",
+            sizeTableSource.SelectedAssetId,
+            sizeTableSource.SelectedPreviewPath,
+            sizeTableSource.SelectedDisplayName);
+        _sizeTableSource = sizeTableSource;
+    }
+
+    internal static AiRequirementUsageViewModel CreateSizeTableSource(
+        string pageName,
+        AiSizeTableSourceViewModel sizeTableSource) =>
+        new(pageName, sizeTableSource);
 
     public string BatchId => _projection.BatchId;
     public string StyleId => _projection.StyleId;
@@ -266,19 +311,26 @@ public sealed class AiRequirementUsageViewModel : INotifyPropertyChanged
         _projection.FrameDisplayName,
         _projection.SelectionRequirement);
     public string SelectionRequirement => _projection.SelectionRequirement;
-    public string SelectionLabel => AiSelectionLabelFormatter.Format(SelectionRequirement);
+    public string SelectionLabel => _sizeTableSource is not null
+        ? "尺码表来源"
+        : AiSelectionLabelFormatter.Format(SelectionRequirement);
     public string PageContextText => $"PSD 页面：{PageName}";
     public string CurrentAssetDisplayName => _projection.SelectedAssetDisplayName ?? "未选图";
     public string TechnicalFrameContext => $"{PageName} · {FrameDisplayName}";
-    public string StatusText => _projection.StatusText;
-    public string StatusState => _projection.StatusState;
+    public string StatusText => _sizeTableSource is not null
+        ? _sizeTableSource.HasSelection ? "尺码表来源 · 已选用" : "尺码表来源 · 待选择"
+        : _projection.StatusText;
+    public string StatusState => _sizeTableSource is not null
+        ? _sizeTableSource.HasSelection ? "AiSelected" : "Missing"
+        : _projection.StatusState;
     public string? SelectedAssetId => _projection.SelectedAssetId;
-    public string PreviewPath => _projection.SelectedPreviewPath ?? "";
-    public bool HasSelection => _projection.HasSelection;
+    public string PreviewPath => _sizeTableSource?.SelectedPreviewPath ?? _projection.SelectedPreviewPath ?? "";
+    public bool HasSelection => _sizeTableSource?.HasSelection ?? _projection.HasSelection;
     public bool IsManualLocked => _projection.IsManualLocked;
     public string PreviewAutomationName => HasSelection
         ? $"查看{PageName}的{SelectionLabel}当前用图"
         : $"{PageName}的{SelectionLabel}尚未选图";
+    public bool IsSizeTableSource => _sizeTableSource is not null;
     public bool IsReplacementTarget
     {
         get => _isReplacementTarget;
@@ -296,6 +348,12 @@ public sealed class AiRequirementUsageViewModel : INotifyPropertyChanged
 
     public AiCandidateViewModel? CreatePreviewCandidate()
     {
+        if (_sizeTableSource is not null)
+        {
+            return _sizeTableSource.Candidates.FirstOrDefault(candidate => candidate.IsSelected)
+                ?.CreatePreviewCandidate();
+        }
+
         if (!HasSelection || SelectedAssetId is null)
         {
             return null;
@@ -325,6 +383,7 @@ public sealed class AiStyleAssetViewModel : INotifyPropertyChanged
     private readonly AiStyleAssetProjection _projection;
     private bool _isSelected;
     private int _usageCount;
+    private bool _isSelectedAsSizeTableSource;
 
     public AiStyleAssetViewModel(AiStyleAssetProjection projection)
     {
@@ -345,7 +404,21 @@ public sealed class AiStyleAssetViewModel : INotifyPropertyChanged
         1 => "1 个图片框正在使用",
         _ => $"{_usageCount} 个图片框正在使用"
     };
-    public string SelectionStateText => IsSelected ? "已选择" : IsCurrentlyUsed ? "当前使用" : "可选照片";
+    public string SelectionStateText => IsSelectedAsSizeTableSource
+        ? "尺码表来源"
+        : IsSelected ? "已选择" : IsCurrentlyUsed ? "当前使用" : "可选照片";
+    public bool IsSelectedAsSizeTableSource
+    {
+        get => _isSelectedAsSizeTableSource;
+        internal set
+        {
+            if (_isSelectedAsSizeTableSource == value) return;
+            _isSelectedAsSizeTableSource = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelectedAsSizeTableSource)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectionStateText)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutomationName)));
+        }
+    }
     public string AutomationName => $"{DisplayName}，{SelectionStateText}";
     public bool IsSelected
     {
@@ -372,6 +445,8 @@ public sealed class AiStyleAssetViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectionStateText)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutomationName)));
     }
+
+    internal void SetSizeTableSourceSelected(bool selected) => IsSelectedAsSizeTableSource = selected;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 }

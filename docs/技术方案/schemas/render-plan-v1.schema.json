@@ -240,8 +240,28 @@
         "template_resource_id": { "$ref": "#/$defs/id" },
         "page_id": { "$ref": "#/$defs/id" },
         "output_variant_id": { "$ref": "#/$defs/id" },
+        "instance_identity": { "$ref": "#/$defs/instanceIdentity" },
         "content_type": { "enum": ["ordinary_set", "dynamic_size_table"] },
         "canvas": { "$ref": "#/$defs/canvas" }
+      }
+    },
+    "instanceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_instance_id", "snapshot_id", "rule_digest", "input_facts_digest", "projection_digest", "source_page_id", "branch_id", "recipe_id", "repetition_index", "stable_order", "slots", "frames"],
+      "properties": {
+        "page_instance_id": { "type": "string", "pattern": "^instance_[0-9a-fA-F]{64}$" },
+        "snapshot_id": { "$ref": "#/$defs/id" },
+        "rule_digest": { "$ref": "#/$defs/digest" },
+        "input_facts_digest": { "$ref": "#/$defs/digest" },
+        "projection_digest": { "$ref": "#/$defs/digest" },
+        "source_page_id": { "$ref": "#/$defs/id" },
+        "branch_id": { "$ref": "#/$defs/id" },
+        "recipe_id": { "$ref": "#/$defs/id" },
+        "repetition_index": { "type": "integer", "minimum": 0 },
+        "stable_order": { "type": "integer", "minimum": 0 },
+        "slots": { "type": "array", "maxItems": 10000, "items": { "type": "object", "additionalProperties": false, "required": ["slot_id", "variant_id"], "properties": { "slot_id": { "$ref": "#/$defs/id" }, "variant_id": { "$ref": "#/$defs/id" } } } },
+        "frames": { "type": "array", "maxItems": 10000, "items": { "type": "object", "additionalProperties": false, "required": ["frame_id", "slot_id", "variant_id", "asset_id"], "properties": { "frame_id": { "$ref": "#/$defs/id" }, "slot_id": { "$ref": "#/$defs/id" }, "variant_id": { "$ref": "#/$defs/id" }, "asset_id": { "$ref": "#/$defs/id" } } } }
       }
     },
     "layerPath": {

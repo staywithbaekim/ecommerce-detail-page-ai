@@ -29,7 +29,7 @@ public sealed class AiBatchProjectionService
         if (captureTerminalErrors is not null)
         {
             var terminalRequests = styleInputs.Values.SelectMany(inputs => inputs)
-                .Where(input => input.Ledger?.Status is "TerminalError" or "AiResultUnknown")
+                .Where(input => AiLedgerStatusPolicy.IsTerminalFailure(input.Ledger?.Status))
                 .Select(input => input.Request.RequestId).ToHashSet(StringComparer.Ordinal);
             context = context with { TerminalErrors = captureTerminalErrors()
                 .Where(pair => terminalRequests.Contains(pair.Key)).ToImmutableDictionary(StringComparer.Ordinal) };
@@ -56,7 +56,7 @@ public sealed class AiBatchProjectionService
         var controlState = context.ControlState;
         var status = context.SchedulerRestoreError is not null
             ? AiBatchUiStatus.RecoveryRequired
-            : DetermineBatchStatus(
+            : AiBatchStatusPolicy.Determine(
                 styles,
                 controlState,
                 context.Batch.SelectionMode == BatchSelectionMode.Manual,
@@ -183,40 +183,8 @@ public sealed class AiBatchProjectionService
         // A cancelled page is terminal for that page only. It must not make a
         // sibling ready page look like it is still waiting, otherwise a single
         // user cancellation would block the same style and the whole batch.
-        var activePages = pages.Where(page => page.Status != AiPageUiStatus.Cancelled).ToArray();
-        var status = pages.Count == 0
-            ? AiStyleUiStatus.SystemError
-            : activePages.Length == 0
-                ? AiStyleUiStatus.Cancelled
-                : activePages.Any(page => page.Status == AiPageUiStatus.SystemError)
-                    ? AiStyleUiStatus.SystemError
-                    : activePages.All(page => page.Status == AiPageUiStatus.Ready)
-                        ? AiStyleUiStatus.Ready
-                        : activePages.Any(page => page.Status == AiPageUiStatus.BusinessError)
-                            ? activePages.Any(page => page.Status is AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired)
-                                ? AiStyleUiStatus.ReviewRequired
-                                : AiStyleUiStatus.BusinessError
-                            : activePages.Any(page => page.Status == AiPageUiStatus.ReviewRequired)
-                                ? AiStyleUiStatus.ReviewRequired
-                            : activePages.Any(page => page.Status == AiPageUiStatus.Analysing)
-                                ? AiStyleUiStatus.Analysing
-                                : AiStyleUiStatus.Waiting;
-        var statusText = status switch
-        {
-            AiStyleUiStatus.Ready => "可生成",
-            AiStyleUiStatus.ReviewRequired when pages.Any(page =>
-                page.Status == AiPageUiStatus.ReviewRequired
-                && !page.RequiresManualConfiguration)
-                && !pages.Any(page => page.RequiresManualConfiguration
-                    || page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError)
-                => "可生成 · 建议检查",
-            AiStyleUiStatus.ReviewRequired => "部分页面需处理",
-            AiStyleUiStatus.BusinessError => "需要修复",
-            AiStyleUiStatus.SystemError => "需要恢复",
-            AiStyleUiStatus.Cancelled => "已取消",
-            AiStyleUiStatus.Analysing => "分析中",
-            _ => "待分析"
-        };
+        var status = AiProjectionStatusPolicy.DetermineStyleStatus(pages);
+        var statusText = AiProjectionStatusPolicy.StyleStatusText(status, pages);
         return new AiStyleAnalysisProjection(
             context.Batch.BatchId,
             style.StyleId,
@@ -311,7 +279,7 @@ public sealed class AiBatchProjectionService
                 "分析记录未能对应到当前请求，已阻止选图和生成。",
                 "结果引用异常");
         }
-        if (ledger is null || ledgerStatus is "Queued" or "RetryableError")
+        if (ledger is null || AiLedgerStatusPolicy.IsRunnable(ledgerStatus))
         {
             var requirementStatus = context.Started
                 ? AiRequirementSelectionUiStatus.Analysing
@@ -324,7 +292,7 @@ public sealed class AiBatchProjectionService
                     context, style, page, pageBindings, [], [], requirementStatus,
                     context.Started ? "分析中" : "等待分析"));
         }
-        if (ledgerStatus is "Uploading" or "Analysing")
+        if (AiLedgerStatusPolicy.IsInFlight(ledgerStatus))
         {
             return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
                 AiPageUiStatus.Analysing, "分析中", "分析中", [], [],
@@ -332,7 +300,7 @@ public sealed class AiBatchProjectionService
                     context, style, page, pageBindings, [], [],
                     AiRequirementSelectionUiStatus.Analysing, "分析中"));
         }
-        if (ledgerStatus == "Cancelled")
+        if (ledgerStatus == AiLedgerStatusPolicy.Cancelled)
         {
             return new(context.Batch.BatchId, style.StyleId, page.PageId, pageName,
                 AiPageUiStatus.Cancelled, "已取消", "返回批次", [], [],
@@ -340,7 +308,7 @@ public sealed class AiBatchProjectionService
                     context, style, page, pageBindings, [], [],
                     AiRequirementSelectionUiStatus.Cancelled, "已取消"));
         }
-        if (ledgerStatus == "AiResultUnknown")
+        if (ledgerStatus == AiLedgerStatusPolicy.AiResultUnknown)
         {
             var unknownSession = await _reader.LoadSessionAsync(
                 $"session-{request.RequestId}", cancellationToken).ConfigureAwait(false);
@@ -358,7 +326,7 @@ public sealed class AiBatchProjectionService
                     AiRequirementSelectionUiStatus.Unavailable,
                     presentation.RequirementStatusText));
         }
-        if (ledgerStatus == "TerminalError")
+        if (ledgerStatus == AiLedgerStatusPolicy.TerminalError)
         {
             var hasTerminalError = context.TerminalErrors.TryGetValue(
                     request.RequestId,
@@ -528,7 +496,7 @@ public sealed class AiBatchProjectionService
                 && input.Request.Assets.Any(asset => selectedAssetIds.Contains(asset.AssetId)))
             .ToArray();
         var unknownRefinement = relevantRefinements.FirstOrDefault(input =>
-            ProjectionStatus(context, input) == "AiResultUnknown");
+            ProjectionStatus(context, input) == AiLedgerStatusPolicy.AiResultUnknown);
         if (unknownRefinement is not null)
         {
             return ResultFailureProjection(
@@ -541,7 +509,7 @@ public sealed class AiBatchProjectionService
                 "主体分析结果未知");
         }
         var terminalRefinement = relevantRefinements.FirstOrDefault(input =>
-            input.Ledger?.Status == "TerminalError");
+            input.Ledger?.Status == AiLedgerStatusPolicy.TerminalError);
         if (terminalRefinement is not null)
         {
             return ResultFailureProjection(
@@ -569,7 +537,7 @@ public sealed class AiBatchProjectionService
                 "主体分析结果不可用");
         }
         var hasActiveGeometryRefinement = relevantRefinements.Any(input =>
-            input.Ledger?.Status is "Queued" or "RetryableError" or "Uploading" or "Analysing");
+            AiLedgerStatusPolicy.IsRecoverableAdmissionState(input.Ledger?.Status));
 
         var geometryByAsset = styleResults
             .Where(input => input.Result is not null
@@ -650,7 +618,7 @@ public sealed class AiBatchProjectionService
             assessment == AiTargetRequirementAssessment.BusinessError);
         var warnings = relevantResults
             .SelectMany(input => input.Result!.Warnings)
-            .Where(warning => IsNormalPageWarningRelevant(
+            .Where(warning => AiProjectionWarningPolicy.IsRelevant(
                 warning,
                 matches.Length > 0,
                 hasMissingRequiredMatch,
@@ -777,9 +745,9 @@ public sealed class AiBatchProjectionService
     private static string? ProjectionStatus(AiBatchProjectionSnapshot context, AiStyleAnalysisResultInput? input)
     {
         var status = input?.Ledger?.Status;
-        return status is "Uploading" or "Analysing"
+        return AiLedgerStatusPolicy.IsInFlight(status)
             && context.RecoveredInFlightRequestIds.Contains(input!.Request.RequestId)
-                ? "AiResultUnknown"
+                ? AiLedgerStatusPolicy.AiResultUnknown
                 : status;
     }
 
@@ -798,7 +766,7 @@ public sealed class AiBatchProjectionService
                 string.Equals(input.Request.AnalysisKind, AiAnalysisKind.SizeTableExtraction, StringComparison.Ordinal))
             .ToArray();
         var unknownSizeResult = sizeRefinements.FirstOrDefault(input =>
-            ProjectionStatus(context, input) == "AiResultUnknown");
+            ProjectionStatus(context, input) == AiLedgerStatusPolicy.AiResultUnknown);
         if (unknownSizeResult is not null)
         {
             return ResultFailureProjection(
@@ -811,7 +779,7 @@ public sealed class AiBatchProjectionService
                 "尺码分析结果未知");
         }
         var terminalSizeResult = sizeRefinements.FirstOrDefault(input =>
-            input.Ledger?.Status == "TerminalError");
+            input.Ledger?.Status == AiLedgerStatusPolicy.TerminalError);
         if (terminalSizeResult is not null)
         {
             return ResultFailureProjection(
@@ -839,7 +807,7 @@ public sealed class AiBatchProjectionService
                 "尺码分析结果不可用");
         }
         var hasActiveSizeRefinement = sizeRefinements.Any(input =>
-            input.Ledger?.Status is "Queued" or "RetryableError" or "Uploading" or "Analysing");
+            AiLedgerStatusPolicy.IsRecoverableAdmissionState(input.Ledger?.Status));
 
         var styleAssetIds = style.AssetIds.ToHashSet(StringComparer.Ordinal);
         var relevantResults = styleResults.Where(input => input.Result is not null
@@ -889,7 +857,8 @@ public sealed class AiBatchProjectionService
                     asset is null ? null : ResolvePreviewPath(context.Batch.InputRoot, asset.SourceRelativePath),
                     candidate is not null,
                     candidate?.Confidence,
-                    string.Equals(assetId, automaticallySelectedAssetId, StringComparison.Ordinal));
+                    string.Equals(assetId, automaticallySelectedAssetId, StringComparison.Ordinal),
+                    candidate is not null);
             })
             .ToArray();
         var sourceStatus = hasActiveSizeRefinement
@@ -1050,85 +1019,6 @@ public sealed class AiBatchProjectionService
             "查询状态",
             "供应商处理结果未知；系统不会自动重发，请查询状态或人工处理。")
     };
-
-    private static bool IsNormalPageWarningRelevant(
-        AiWarningV1 warning,
-        bool hasMatches,
-        bool hasMissingRequiredMatch,
-        bool hasVariantConflict)
-    {
-        if (warning.Code == "low_confidence"
-            || warning.Code == "size_source_conflict"
-            || warning.Scope == "size_table")
-        {
-            return false;
-        }
-
-        return warning.Code switch
-        {
-            "asset_missing" => hasMissingRequiredMatch,
-            "variant_conflict" => hasVariantConflict,
-            _ => warning.Scope is "request" or "product"
-                || hasMatches
-                || hasMissingRequiredMatch
-        };
-    }
-
-    private static AiBatchUiStatus DetermineBatchStatus(
-        List<AiStyleAnalysisProjection> styles,
-        AiAnalysisSchedulingControlState controlState,
-        bool manualSelection,
-        bool budgetStopped)
-    {
-        var pages = styles.SelectMany(style => style.Pages).ToArray();
-        if (controlState == AiAnalysisSchedulingControlState.Cancelled
-            || pages.Length > 0 && pages.All(page => page.Status == AiPageUiStatus.Cancelled))
-        {
-            return AiBatchUiStatus.Cancelled;
-        }
-        if (styles.Any(style => style.Status == AiStyleUiStatus.SystemError))
-        {
-            return AiBatchUiStatus.RecoveryRequired;
-        }
-        var allSettled = pages.Length > 0 && pages.All(page => page.Status is
-            AiPageUiStatus.Ready or AiPageUiStatus.ReviewRequired
-                or AiPageUiStatus.BusinessError or AiPageUiStatus.Cancelled);
-        var hasExecutablePage = pages.Any(page => page.CanGenerate);
-        var hasBlockingConfiguration = pages.Any(page =>
-            page.Status == AiPageUiStatus.ReviewRequired
-            && page.RequiresManualConfiguration);
-        // A hard budget stop is an actionable batch state only while work is
-        // still unresolved. If all pages have settled, preserve the terminal
-        // business result (ready, review, or no-output) instead of hiding it
-        // behind a historical budget boundary.
-        if (budgetStopped && !allSettled)
-        {
-            return AiBatchUiStatus.BudgetStopped;
-        }
-        if (allSettled && !hasExecutablePage && !hasBlockingConfiguration)
-        {
-            return AiBatchUiStatus.NotGeneratable;
-        }
-        if (styles.Count > 0 && styles.All(style => style.Status == AiStyleUiStatus.Ready))
-        {
-            return AiBatchUiStatus.Ready;
-        }
-        if (manualSelection && hasBlockingConfiguration)
-        {
-            return AiBatchUiStatus.ManualConfiguration;
-        }
-        if (styles.Any(style => style.Status is AiStyleUiStatus.ReviewRequired or AiStyleUiStatus.BusinessError))
-        {
-            return AiBatchUiStatus.ReviewRequired;
-        }
-        if (styles.Any(style => style.Status is AiStyleUiStatus.Analysing or AiStyleUiStatus.Waiting))
-        {
-            return styles.Any(style => style.Status == AiStyleUiStatus.Analysing)
-                ? AiBatchUiStatus.Analysing
-                : AiBatchUiStatus.Waiting;
-        }
-        return AiBatchUiStatus.Failed;
-    }
 
     private static AiStyleAssetProjection[] BuildStyleAssetProjections(
         AiBatchProjectionSnapshot context,

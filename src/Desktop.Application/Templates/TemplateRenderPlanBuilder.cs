@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Desktop.Application.Rendering;
 using Desktop.Domain.Templates;
 
@@ -31,6 +32,20 @@ public sealed record TemplateRenderSelection(
     string AssetResourceId,
     TemplateRenderSubjectGeometry? SubjectGeometry);
 
+public sealed record TemplateRenderInstanceIdentity(
+    string PageInstanceId,
+    string SnapshotId,
+    string RuleDigest,
+    string InputFactsDigest,
+    string ProjectionDigest,
+    string SourcePageId,
+    string BranchId,
+    string RecipeId,
+    int RepetitionIndex,
+    int StableOrder,
+    IReadOnlyList<TemplateRuleColorAssignment> Slots,
+    IReadOnlyList<TemplateInstanceFrameProjection> Frames);
+
 public sealed record TemplateRenderPlanRequest(
     string PlanId,
     string IdempotencyKey,
@@ -45,7 +60,8 @@ public sealed record TemplateRenderPlanRequest(
     IReadOnlyList<TemplateRenderSource> Sources,
     IReadOnlyList<TemplateRenderSelection>? ConfirmedSelections = null,
     bool RequireAbsolutePlacement = false,
-    string? OutputVariantId = null);
+    string? OutputVariantId = null,
+    TemplateRenderInstanceIdentity? InstanceIdentity = null);
 
 public interface ITemplateRenderPlanBuilder
 {
@@ -59,6 +75,7 @@ public interface ITemplateRenderPlanBuilder
 public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : ITemplateRenderPlanBuilder
 {
     private static readonly string[] BaseCapabilities = ["psd-layer-path/psd-bottom-to-top", "smart-object/replace", "output/jpeg-srgb-icc"];
+    private static readonly string[] InstanceIdentityCapabilities = ["template/page-instance-identity-v1"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
@@ -187,7 +204,8 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             plan_digest = digest,
             created_at = request.CreatedAt,
             required_capabilities = BaseCapabilities
-                .Concat(request.RequireAbsolutePlacement ? new[] { RenderPlanPlacementMigration.Capability } : []).ToArray(),
+                .Concat(request.RequireAbsolutePlacement ? new[] { RenderPlanPlacementMigration.Capability } : [])
+                .Concat(request.InstanceIdentity is null ? [] : InstanceIdentityCapabilities).ToArray(),
             resources = new object[]
             {
                 new
@@ -211,6 +229,21 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 template_resource_id = templateResource.ResourceId,
                 page_id = page.PageId,
                 content_type = "ordinary_set",
+                instance_identity = request.InstanceIdentity is null ? null : new
+                {
+                    page_instance_id = request.InstanceIdentity.PageInstanceId,
+                    snapshot_id = request.InstanceIdentity.SnapshotId,
+                    rule_digest = request.InstanceIdentity.RuleDigest,
+                    input_facts_digest = request.InstanceIdentity.InputFactsDigest,
+                    projection_digest = request.InstanceIdentity.ProjectionDigest,
+                    source_page_id = request.InstanceIdentity.SourcePageId,
+                    branch_id = request.InstanceIdentity.BranchId,
+                    recipe_id = request.InstanceIdentity.RecipeId,
+                    repetition_index = request.InstanceIdentity.RepetitionIndex,
+                    stable_order = request.InstanceIdentity.StableOrder,
+                    slots = request.InstanceIdentity.Slots.Select(slot => new { slot_id = slot.SlotId, variant_id = slot.VariantId }),
+                    frames = request.InstanceIdentity.Frames.Select(frame => new { frame_id = frame.FrameId, slot_id = frame.SlotId, variant_id = frame.VariantId, asset_id = frame.AssetId })
+                },
                 canvas = new
                 {
                     width = templateResource.Inspection.Canvas.Width,
@@ -244,11 +277,18 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             }
         };
 
-        var digestPreimage = JsonSerializer.Serialize(
-            CreateDocument("sha256:" + new string('0', 64)),
-            JsonOptions);
+        static string SerializeDocument(object document)
+        {
+            var node = JsonNode.Parse(JsonSerializer.Serialize(document, JsonOptions))!;
+            if (node["document"]!["instance_identity"] is null)
+                node["document"]!.AsObject().Remove("instance_identity");
+            return node.ToJsonString();
+        }
+
+        var digestPreimage = SerializeDocument(
+            CreateDocument("sha256:" + new string('0', 64)));
         var digest = RenderPlanDigest.Compute(digestPreimage);
-        var json = JsonSerializer.Serialize(CreateDocument(digest), JsonOptions);
+        var json = SerializeDocument(CreateDocument(digest));
         json = RenderPlanVariantIdentity.AddToNewPlan(json, request.OutputVariantId);
         var validation = validator.Validate(json);
         if (!validation.IsValid)

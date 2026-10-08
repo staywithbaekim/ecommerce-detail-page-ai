@@ -124,7 +124,7 @@ public sealed partial class BridgeExecutionBroker(
             var accepted = new BridgeEventV1($"event_{Guid.NewGuid():N}", 1, _time.GetUtcNow(),
                 "execution_accepted", id, "accepted");
             var record = new BridgeExecutionRecord(taskId, id, key, digest,
-                plan.GetProperty("document").GetProperty("page_id").GetString()!, "accepted", false, 1, [accepted]);
+                plan.GetProperty("document").GetProperty("page_id").GetString()!, "accepted", false, 1, [accepted], RenderPlanInstanceIdentity.Read(plan));
             _records.Add(id, record);
             await Save(cancellationToken).ConfigureAwait(false);
             _deliveries.Add(id, new Delivery(body.GetProperty("session_id").GetString()!, requestJson,
@@ -393,7 +393,8 @@ public sealed partial class BridgeExecutionBroker(
 
     private void ValidateJournal(BridgeExecutionJournal previous)
     {
-        if (previous.Version != 1 || previous.Executions is null || previous.Executions.Count > 10000)
+        if (previous.Version is not (1 or 2) || previous.Executions is null || previous.Executions.Count > 10000
+            || previous.Version == 2 && !previous.Executions.Any(record => record?.Instance is not null))
             throw new InvalidDataException("BRIDGE_JOURNAL_INVALID");
         var executions = new HashSet<string>(StringComparer.Ordinal);
         var keys = new HashSet<(string, string)>();
@@ -401,6 +402,8 @@ public sealed partial class BridgeExecutionBroker(
         foreach (var record in previous.Executions)
         {
             if (record is null || !ValidId(record.TaskId) || !ValidId(record.ExecutionId)
+                || record.Instance is { } instance && (previous.Version != 2 || !RenderPlanInstanceIdentity.IsValid(instance)
+                    || instance.BatchId != record.TaskId || instance.SourcePageId != record.PageId)
                 || !ValidKey(record.IdempotencyKey) || !ValidId(record.PageId)
                 || record.PlanDigest is not { Length: 71 } || !record.PlanDigest.StartsWith("sha256:", StringComparison.Ordinal)
                 || record.PlanDigest.Skip(7).Any(c => !char.IsAsciiHexDigit(c))
@@ -448,7 +451,7 @@ public sealed partial class BridgeExecutionBroker(
 
     private async Task Save(CancellationToken cancellationToken)
     {
-        try { await journal.SaveAsync(new(1, _records.Values.ToArray()), cancellationToken).ConfigureAwait(false); }
+        try { await journal.SaveAsync(new(_records.Values.Any(record => record.Instance is not null) ? 2 : 1, _records.Values.ToArray()), cancellationToken).ConfigureAwait(false); }
         catch { _poisoned = true; await ReleaseResources().ConfigureAwait(false); throw; }
     }
 

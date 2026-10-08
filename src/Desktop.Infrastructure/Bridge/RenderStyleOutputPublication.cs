@@ -11,7 +11,8 @@ namespace Desktop.Infrastructure.Bridge;
 
 internal sealed record RenderPublicFile(string FileName, long ByteLength, string Sha256, string SourceManifestSha256);
 internal sealed record RenderPublicPage(string PageId, string? OutputVariantId, int Attempt,
-    string CommitManifestSha256, ImmutableArray<RenderPublicFile> Files);
+    string CommitManifestSha256, ImmutableArray<RenderPublicFile> Files,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] RenderInstanceIdentity? Instance = null);
 internal sealed record RenderStylePublicManifest(int Version, string BatchId, string StyleId,
     string RegistrationSha256, ImmutableArray<RenderPublicPage> Pages);
 internal sealed record RenderStyleOutputPublication(int Version, string BatchId, string StyleId,
@@ -49,10 +50,10 @@ internal static class RenderStyleOutputPublicationData
     internal static byte[] Bytes<T>(T value) => Encoding.UTF8.GetBytes(Encode(value));
     internal static bool Equal<T>(T left, T right) => Encode(left) == Encode(right);
     internal static InvalidDataException Invalid(string code = "RENDER_OUTPUT_PUBLICATION_RECOVERY_REQUIRED") => new(code);
-    internal static byte[] ManifestBytes(RenderStyleOutputPublication publication) => Bytes(new RenderStylePublicManifest(1,
+    internal static byte[] ManifestBytes(RenderStyleOutputPublication publication) => Bytes(new RenderStylePublicManifest(publication.Version,
         publication.BatchId, publication.StyleId, publication.RegistrationSha256, publication.Pages));
     internal static byte[] MarkerBytes(RenderStyleOutputPublication publication) =>
-        Encoding.UTF8.GetBytes("render-style-output/v1\n" + publication.ManifestSha256 + "\n");
+        Encoding.UTF8.GetBytes((publication.Version == 1 ? "render-style-output/v1\n" : "render-style-output/v2\n") + publication.ManifestSha256 + "\n");
     internal static IReadOnlyList<RenderPublicFile> ExpectedFiles(RenderStyleOutputPublication publication) =>
         [.. publication.Pages.SelectMany(page => page.Files),
             new(ManifestName, ManifestBytes(publication).Length, publication.ManifestSha256, ""),
@@ -60,22 +61,24 @@ internal static class RenderStyleOutputPublicationData
 
     internal static IReadOnlyList<RenderBatchPage> LatestPagesForStyle(RenderBatchJournal journal, string styleId) =>
         journal.Pages.Where(page => page.StyleId == styleId && page.PlanJson is not null)
-            .GroupBy(page => (page.PageId, page.OutputVariantId))
+            .GroupBy(page => (page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId))
             .Select(group => group.OrderByDescending(page => page.Attempt).First())
             .OrderBy(page => page.PageId, StringComparer.Ordinal)
             .ThenBy(page => page.OutputVariantId, StringComparer.Ordinal)
             .ToArray();
 
     internal static bool SupportsPublicationJournal(RenderBatchJournal journal) =>
-        journal.Version == 1
+        journal.Version is 1 or 4
         || journal.Version == 2 && journal.RegenerationPageIndex == journal.Pages.Count - 1
             && journal.Pages.All(page => page.SizeTableRepair is null);
 
     internal static void Validate(RenderStyleOutputPublication value)
     {
-        if (value.Version != 1 || value.State is not (Copying or Verified or Committed)
+        if (value.Version is not (1 or 2) || value.State is not (Copying or Verified or Committed)
             || value.Pages.IsDefaultOrEmpty || value.Pages.Length > 10000
-            || value.Pages.Any(page => page is null || page.Files.IsDefaultOrEmpty || page.Files.Length is < 1 or > 2
+            || value.Pages.Any(page => page is null || (value.Version == 2) != (page.Instance is not null)
+                || page.Instance is { } identity && (!RenderPlanInstanceIdentity.IsValid(identity)
+                    || identity.BatchId != value.BatchId || identity.StyleId != value.StyleId || identity.SourcePageId != page.PageId) || page.Files.IsDefaultOrEmpty || page.Files.Length is < 1 or > 2
                 || !Digest(page.CommitManifestSha256) || page.Files.Any(file => file is null || file.ByteLength is < 1 or > 2147483648
                     || !Digest(file.Sha256) || file.SourceManifestSha256 != page.CommitManifestSha256))
             || !Digest(value.RegistrationSha256) || !Digest(value.ManifestSha256)
@@ -105,13 +108,13 @@ internal static class RenderStyleOutputPublicationData
         var required = style.Pages.Where(page => page.PlanDigest is not null).ToArray();
         var currentPages = LatestPagesForStyle(journal, value.StyleId);
         if (value.Pages.Length != required.Length || currentPages.Count != required.Length) throw Invalid();
-        var seen = new HashSet<(string, string?)>();
+        var seen = new HashSet<(string, string?, string?)>();
         foreach (var page in value.Pages)
         {
-            if (!seen.Add((page.PageId, page.OutputVariantId))) throw Invalid();
-            var planned = required.SingleOrDefault(item => item.PageId == page.PageId && item.OutputVariantId == page.OutputVariantId) ?? throw Invalid();
+            if (!seen.Add((page.PageId, page.OutputVariantId, page.Instance?.PageInstanceId))) throw Invalid();
+            var planned = required.SingleOrDefault(item => item.PageId == page.PageId && item.OutputVariantId == page.OutputVariantId && item.Instance == page.Instance) ?? throw Invalid();
             var current = currentPages.SingleOrDefault(item => item.PageId == page.PageId
-                && item.OutputVariantId == page.OutputVariantId) ?? throw Invalid();
+                && item.OutputVariantId == page.OutputVariantId && item.Instance == page.Instance) ?? throw Invalid();
             var initial = journal.Pages.Where(item => RenderBatchJournalValidator.SamePage(item, current))
                 .OrderBy(item => item.Attempt).FirstOrDefault() ?? throw Invalid();
             if (initial.Attempt != planned.Attempt || initial.PlanJson is null || PlanDigest(initial.PlanJson) != planned.PlanDigest)
@@ -144,20 +147,28 @@ public sealed class RenderStyleOutputPublisher(SqliteDesktopStore store, IRender
     public async Task<bool> UsesPublicOutputAsync(string batchId, CancellationToken cancellationToken) =>
         (await store.GetAsync(batchId, cancellationToken).ConfigureAwait(false) ?? throw Invalid()).OutputSelection is not null;
 
-    public async Task<bool> CanRecoverFailedPageAsync(string batchId, string styleId, string pageId, string? outputVariantId,
-        int expectedAttempt, CancellationToken cancellationToken)
+    public Task<bool> CanRecoverFailedPageAsync(string batchId, string styleId, string pageId, string? outputVariantId,
+        int expectedAttempt, CancellationToken cancellationToken) =>
+        CanRecoverAsync(batchId, styleId, pageId, outputVariantId, null, expectedAttempt, cancellationToken);
+
+    public Task<bool> CanRecoverFailedInstanceAsync(string batchId, string styleId, string pageInstanceId,
+        int expectedAttempt, CancellationToken cancellationToken) =>
+        CanRecoverAsync(batchId, styleId, null, null, pageInstanceId, expectedAttempt, cancellationToken);
+
+    private async Task<bool> CanRecoverAsync(string batchId, string styleId, string? pageId, string? outputVariantId,
+        string? pageInstanceId, int expectedAttempt, CancellationToken cancellationToken)
     {
         var batch = await store.GetAsync(batchId, cancellationToken).ConfigureAwait(false);
         if (batch?.OutputSelection is null) return false;
         var journal = await store.LoadRenderBatchAsync(batchId, cancellationToken).ConfigureAwait(false);
-        var page = journal?.Pages.SingleOrDefault(item => item.StyleId == styleId && item.PageId == pageId
-            && item.OutputVariantId == outputVariantId && item.Attempt == expectedAttempt);
+        var page = journal?.Pages.SingleOrDefault(item => item.StyleId == styleId && (pageId is null || item.PageId == pageId)
+            && item.Instance?.PageInstanceId == pageInstanceId && item.OutputVariantId == outputVariantId && item.Attempt == expectedAttempt);
         if (journal is null || page?.Status != RenderBatchPageStatus.Failed
             || !RenderBatchJournalValidator.CanRegenerate(journal, page)
             || !RenderStyleOutputPublicationData.SupportsPublicationJournal(journal)) return false;
         var registration = await store.LoadRenderOutputRegistrationAsync(batchId, cancellationToken).ConfigureAwait(false);
         var style = registration?.Styles.SingleOrDefault(item => item.Target.StyleId == styleId);
-        if (style is null || !style.Pages.Any(item => item.PageId == pageId && item.OutputVariantId == outputVariantId
+        if (style is null || !style.Pages.Any(item => item.PageId == page.PageId && item.OutputVariantId == outputVariantId && item.Instance == page.Instance
                 && item.PlanDigest is not null)) return false;
         // Once a style has a publication intent, recovery must finish that intent rather than
         // create another execution against a public destination.
@@ -202,7 +213,7 @@ public sealed class RenderStyleOutputPublisher(SqliteDesktopStore store, IRender
             foreach (var page in publication.Pages)
             {
                 var current = journal.Pages.Single(item => item.StyleId == styleId && item.PageId == page.PageId
-                    && item.OutputVariantId == page.OutputVariantId && item.Attempt == page.Attempt);
+                    && item.OutputVariantId == page.OutputVariantId && item.Instance == page.Instance && item.Attempt == page.Attempt);
                 var original = await RenderPageCommitter.OpenCommittedPageAsync(new LocalAppPathPolicy(batch.OutputRoot), commits, current.Commit!, token).ConfigureAwait(false);
                 originals.Add(original);
                 var files = original.Manifest.Files.Select(file => new RenderPublicFile(file.FileName, file.ByteLength, file.Sha256, current.Commit!.ManifestSha256)).ToImmutableArray();
@@ -265,11 +276,11 @@ public sealed class RenderStyleOutputPublisher(SqliteDesktopStore store, IRender
                 var original = await RenderPageCommitter.OpenCommittedPageAsync(new LocalAppPathPolicy(batch.OutputRoot), commits, page.Commit!, token).ConfigureAwait(false);
                 originals.Add(original);
                 publicPages.Add(new(page.PageId, page.OutputVariantId, page.Attempt, page.Commit!.ManifestSha256,
-                    original.Manifest.Files.Select(file => new RenderPublicFile(file.FileName, file.ByteLength, file.Sha256, page.Commit.ManifestSha256)).ToImmutableArray()));
+                    original.Manifest.Files.Select(file => new RenderPublicFile(file.FileName, file.ByteLength, file.Sha256, page.Commit.ManifestSha256)).ToImmutableArray(), page.Instance));
             }
             var registrationHash = RenderStyleOutputRegistrationData.Hash(RenderStyleOutputRegistrationData.Encode(registration));
-            var manifest = new RenderStylePublicManifest(1, batch.BatchId, target.StyleId, registrationHash, publicPages.ToImmutable());
-            var candidate = new RenderStyleOutputPublication(1, batch.BatchId, target.StyleId, RenderStyleOutputPublicationData.Copying,
+            var manifest = new RenderStylePublicManifest(journal.Version == 4 ? 2 : 1, batch.BatchId, target.StyleId, registrationHash, publicPages.ToImmutable());
+            var candidate = new RenderStyleOutputPublication(journal.Version == 4 ? 2 : 1, batch.BatchId, target.StyleId, RenderStyleOutputPublicationData.Copying,
                 registrationHash, stageFact.Identity, null, target.FinalDirectory,
                 RenderStyleOutputPublicationData.Hash(RenderStyleOutputPublicationData.Bytes(manifest)), manifest.Pages);
             RenderStyleOutputPublicationData.ValidateAgainst(candidate, registration, journal, stageFact);

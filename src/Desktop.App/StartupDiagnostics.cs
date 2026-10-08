@@ -9,11 +9,13 @@ internal static class StartupDiagnostics
     internal const string DisplayLogPath = "logs\\desktop-v1.jsonl";
 
     internal static bool TryLogFailure(
-        DesktopDataOptions dataOptions,
+        DesktopDataOptions? dataOptions,
         string eventCode,
         string phase,
         Exception exception)
     {
+        // Argument rejection has no trusted root. Never invent a default log path.
+        if (dataOptions is null) return false;
         try
         {
             var logger = new RedactingFileLogger(

@@ -15,12 +15,15 @@
     <SolidColorBrush x:Key="TextBrush" Color="#171717" />
     <SolidColorBrush x:Key="TextMutedBrush" Color="#52525B" />
     <SolidColorBrush x:Key="TextDisabledBrush" Color="#85858B" />
-    <SolidColorBrush x:Key="FocusBrush" Color="#1D4ED8" />
+    <!-- Keyboard focus stays visible but uses the neutral product palette; blue is reserved for status/info surfaces. -->
+    <SolidColorBrush x:Key="FocusBrush" Color="#A1A1AA" />
     <SolidColorBrush x:Key="PrimaryBrush" Color="#171717" />
     <SolidColorBrush x:Key="DangerBrush" Color="#C62828" />
     <SolidColorBrush x:Key="DangerHoverBrush" Color="#A91F1F" />
     <SolidColorBrush x:Key="InfoSurfaceBrush" Color="#EEF4FF" />
     <SolidColorBrush x:Key="ModalOverlayBrush" Color="#52000000" />
+    <SolidColorBrush x:Key="MediaOverlayBrush" Color="#B3000000" />
+    <SolidColorBrush x:Key="MediaOverlayStrongBrush" Color="#CC171717" />
     <SolidColorBrush x:Key="StatusAnalyzingBrush" Color="#1D4ED8" />
     <SolidColorBrush x:Key="StatusCompletedBrush" Color="#34C759" />
     <SolidColorBrush x:Key="StatusPausedBrush" Color="#E7C46A" />
@@ -113,7 +116,8 @@
                 <ControlTemplate>
                     <Border Margin="2"
                             BorderBrush="{StaticResource FocusBrush}"
-                            BorderThickness="2"
+                            BorderThickness="1"
+                            Opacity="0.9"
                             CornerRadius="6" />
                 </ControlTemplate>
             </Setter.Value>
@@ -545,6 +549,14 @@
     </Style>
 
     <Style x:Key="SectionCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="16" />
+    </Style>
+
+    <Style x:Key="TaskRowCardStyle" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />

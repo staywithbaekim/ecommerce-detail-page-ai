@@ -176,7 +176,7 @@ public sealed partial class SqliteDesktopStore
         if (reader.GetInt64(0) is < 1 or > RenderStyleOutputRegistrationData.MaxBytes || reader.GetInt64(3) != 1)
             throw RenderStyleOutputRegistrationData.Invalid();
         var value = RenderStyleOutputRegistrationData.Decode<RenderStyleOutputRegistration>(reader.GetString(1), reader.GetString(2));
-        if (value.BatchId != batchId || value.Version != 1 || value.Styles.IsDefaultOrEmpty || value.Styles.Any(style => style?.Target is null))
+        if (value.BatchId != batchId || value.Version is not (1 or 2) || value.Styles.IsDefaultOrEmpty || value.Styles.Any(style => style?.Target is null))
             throw RenderStyleOutputRegistrationData.Invalid();
         return value;
     }
