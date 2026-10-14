@@ -3018,7 +3018,7 @@ public sealed partial class WpfShellTests
                 if (trustedSource)
                 {
                     Assert.Equal(
-                        ["全部", "可生成 1", "待检查 0", "不可生成 0"],
+                        ["全部", "可生成 1", "部分可生成 0", "待检查 0", "不可生成 0"],
                         viewModel.AiAnalysisPageViewModel.AiStatusFilters.Select(filter => filter.DisplayText).ToArray());
                 }
                 viewModel.AiAnalysisPageViewModel.AiStyles[0].IsExpanded = true;
@@ -3039,6 +3039,47 @@ public sealed partial class WpfShellTests
                     viewModel.AiAnalysisPageViewModel.AiStyles[0].Pages[0].SizeTableSource!.StatusText,
                     StringComparison.Ordinal);
                 Assert.Empty(viewModel.AiAnalysisPageViewModel.AiStyles[0].Pages[0].Requirements);
+            }
+            finally
+            {
+                window.Close();
+                viewModel.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public void MixedPageStyleAppearsOnlyInPartialGenerationFilter()
+    {
+        RunInSta(() =>
+        {
+            var viewModel = new MainWindowViewModel(new AppLaunchOptions(true, null));
+            var window = new MainWindow(viewModel);
+            try
+            {
+                window.Show();
+                var ready = new AiPageAnalysisProjection(
+                    "batch_mixed", "style_mixed", "page_ready", "正面页",
+                    AiPageUiStatus.Ready, "可生成", "已通过", [], []);
+                var blocked = new AiPageAnalysisProjection(
+                    "batch_mixed", "style_mixed", "page_blocked", "背面页",
+                    AiPageUiStatus.BusinessError, "需要修复", "处理此页", [], ["缺少可用候选。"], true);
+                var style = new AiStyleAnalysisProjection(
+                    "batch_mixed", "style_mixed", "混合款",
+                    AiStyleUiStatus.BusinessError, "部分页面需要处理", [ready, blocked], 2);
+                var projection = new AiBatchAnalysisProjection(
+                    "batch_mixed", AiBatchUiStatus.Ready, "4/5 页可生成", "进入生成",
+                    1, 1, 1, 2, [style], AiAnalysisSchedulingControlState.Running, null);
+
+                ApplyAiProjection(viewModel, projection);
+                SetAiScreen(viewModel);
+
+                Assert.Equal(
+                    ["全部", "可生成 0", "部分可生成 1", "待检查 0", "不可生成 0"],
+                    viewModel.AiAnalysisPageViewModel.AiStatusFilters.Select(filter => filter.DisplayText).ToArray());
+                viewModel.AiAnalysisPageViewModel.SelectAiStatusFilterCommand.Execute(
+                    viewModel.AiAnalysisPageViewModel.AiStatusFilters.Single(filter => filter.Filter == AiStyleFilter.Partial));
+                Assert.Single(viewModel.AiAnalysisPageViewModel.VisibleAiStyles);
             }
             finally
             {
@@ -3475,7 +3516,7 @@ public sealed partial class WpfShellTests
                 Assert.True(FindByAutomationId<Grid>(window, "AiStyleReviewPage").IsVisible);
                 Assert.True(FindByAutomationId<Button>(window, "ReturnFromAiStyleReviewButton").IsVisible);
                 Assert.Equal(
-                    ["全部", "可生成 1", "待检查 0", "不可生成 0"],
+                    ["全部", "可生成 1", "部分可生成 0", "待检查 0", "不可生成 0"],
                     viewModel.AiAnalysisPageViewModel.AiStatusFilters.Select(filter => filter.DisplayText).ToArray());
                 Assert.Equal(ScrollBarVisibility.Visible,
                     FindByAutomationId<ScrollViewer>(window, "AiStyleReviewUsageScrollViewer").VerticalScrollBarVisibility);

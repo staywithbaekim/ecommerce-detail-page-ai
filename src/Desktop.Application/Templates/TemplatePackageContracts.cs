@@ -7,6 +7,9 @@ public static class TemplatePackageProtocol
     public const string Version = "template-package/v1";
     public const string Version2 = "template-package/v2";
     public const string CurrentVersion = "template-package/v3";
+    public const string RasterVersion = "template-package/v4";
+    public const string CandidateExclusionVersion = "template-package/v5";
+
 }
 
 public sealed record TemplatePackageEntry(
@@ -66,7 +69,9 @@ public sealed record TemplatePackageFrameBinding(
     double SafeRight,
     double SafeBottom,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<TemplatePackageSupersededLayer>? SupersededLayers = null);
+    IReadOnlyList<TemplatePackageSupersededLayer>? SupersededLayers = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? ExpectedKind = null);
 
 public sealed record TemplatePackageSupersededLayer(
     IReadOnlyList<int> LayerPath,

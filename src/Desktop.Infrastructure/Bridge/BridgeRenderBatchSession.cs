@@ -56,7 +56,20 @@ public sealed class BridgeRenderBatchSessionFactory(IBatchRepository batches, Br
             BridgeOutputReservation.ValidatePath(batch.OutputRoot);
             var paths = new LocalAppPathPolicy(batch.OutputRoot);
             var outputDirectory = "rendered/id-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(batch.BatchId)))[..32];
-            owner = await owners.StartTaskOwnerAsync(batch.BatchId, cancellationToken, journal.Version == 4).ConfigureAwait(false);
+            var imageLayerContract = journal.Pages.Where(page => page.PlanJson is not null).Any(page =>
+            {
+                using var json = JsonDocument.Parse(page.PlanJson!);
+                return json.RootElement.GetProperty("required_capabilities").EnumerateArray()
+                    .Any(item => item.GetString() == RenderTemplateEvidenceValidator.RasterReplacementCapability);
+            });
+            var coveredStackContract = journal.Pages.Where(page => page.PlanJson is not null).Any(page =>
+            {
+                using var json = JsonDocument.Parse(page.PlanJson!);
+                return json.RootElement.GetProperty("required_capabilities").EnumerateArray()
+                    .Any(item => item.GetString() == RenderTemplateEvidenceValidator.CoveredRasterStackCapability);
+            });
+            owner = await owners.StartTaskOwnerAsync(batch.BatchId, cancellationToken, journal.Version == 4,
+                imageLayerContract, coveredStackContract).ConfigureAwait(false);
             Volatile.Write(ref _lastTransportFault, null);
             Volatile.Write(ref _lastBindingFault, null);
             Volatile.Write(ref _current, owner);

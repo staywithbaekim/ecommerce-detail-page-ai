@@ -13,7 +13,8 @@ public sealed class SqliteTemplateRepository(SqliteDesktopStore store) :
     ITemplateResourceRepository,
     ICalibrationStateRepository,
     ITemplatePreviewRepository,
-    IBatchSnapshotRepository
+    IBatchSnapshotRepository,
+    ITemplateRuleCommandStore
 {
     private readonly SqliteDesktopStore _store = store ?? throw new ArgumentNullException(nameof(store));
 
@@ -65,6 +66,10 @@ public sealed class SqliteTemplateRepository(SqliteDesktopStore store) :
     public Task<ImportedTemplateResource> RecordExistingSelectionAsync(string commandId, ImportedTemplateResource resource, CancellationToken cancellationToken) =>
         _store.RecordExistingSelectionAsync(commandId, resource, cancellationToken);
 
+    public Task<ImportedTemplateResource> RefreshInspectionCacheAsync(ImportedTemplateResource expected,
+        Desktop.Application.Psd.PsdInspectionDocument inspected, CancellationToken cancellationToken) =>
+        _store.RefreshInspectionCacheAsync(expected, inspected, cancellationToken);
+
     public Task SaveCalibrationStateAsync(CalibrationStateSnapshot snapshot, CancellationToken cancellationToken) =>
         _store.SaveCalibrationStateAsync(snapshot, cancellationToken);
 
@@ -85,4 +90,18 @@ public sealed class SqliteTemplateRepository(SqliteDesktopStore store) :
 
     public Task ReplaceDraftAsync(BatchTemplateSnapshot snapshot, string expectedSnapshotId, CancellationToken cancellationToken) =>
         _store.ReplaceDraftAsync(snapshot, expectedSnapshotId, cancellationToken);
+
+    public Task<IReadOnlyList<string>> GetUndoableRuleCommandsAsync(string revisionId, CancellationToken cancellationToken) =>
+        _store.GetUndoableRuleCommandsAsync(revisionId, cancellationToken);
+
+    public Task<TemplateRuleCommandReceipt?> GetRuleCommandAsync(string revisionId, string commandId, CancellationToken cancellationToken) =>
+        _store.GetRuleCommandAsync(revisionId, commandId, cancellationToken);
+
+    public Task SaveRuleCommandAsync(TemplateRevision revision, TemplateRuleCommandReceipt receipt,
+        string? undoOf, CancellationToken cancellationToken) =>
+        _store.SaveRuleCommandAsync(revision, receipt, undoOf, cancellationToken);
+
+    public Task<IReadOnlyList<TemplateRuleReference>> GetRuleReferencesAsync(string revisionId, string pageId,
+        CancellationToken cancellationToken) =>
+        _store.GetRuleReferencesAsync(revisionId, pageId, cancellationToken);
 }

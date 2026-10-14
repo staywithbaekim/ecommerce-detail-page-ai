@@ -7,6 +7,49 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class TemplateResourceRepositoryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InspectionEnrichmentPreservesIdentityAndRejectsStaleResourceMutation(bool mutateIdentity)
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await store.SaveGroupAsync(TemplateGroup.Create("group_01", "Template", DateTimeOffset.UtcNow), default);
+        var resource = Resource("resource_01");
+        resource = resource with { Inspection = resource.Inspection with
+        {
+            LayerCount = 1,
+            Layers = [new PsdLayerInspection([0], 41, "pixel", "pixel", false, true, true,
+                false, 255, 255, "normal", new(0, 0, 10, 10), false, false, null, null)]
+        } };
+        await store.SaveImportedAsync("command_01", resource, default);
+        var inspected = resource.Inspection with { Layers = [resource.Inspection.Layers[0] with
+        {
+            PixelEvidence = new(true, 100, 90, new(0, 0, 10, 10)) { RasterImage = new(true, 200, .1) }
+        }] };
+        if (mutateIdentity)
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => store.RefreshInspectionCacheAsync(
+                resource with { InternalRelativePath = "templates/changed.psd" }, inspected, default));
+            Assert.Equal("TPL_PSD_INSPECTION_CACHE_CONFLICT", error.Message);
+            Assert.True((await store.GetByResourceIdAsync(resource.ResourceId, default))!.Inspection.NeedsRasterImageEvidence);
+            return;
+        }
+        var enriched = await store.RefreshInspectionCacheAsync(resource, inspected, default);
+        var racing = await store.RefreshInspectionCacheAsync(resource, inspected, default);
+        Assert.Equal(enriched.Inspection.Layers[0].PixelEvidence, racing.Inspection.Layers[0].PixelEvidence);
+        Assert.Equal(resource.Sha256, enriched.Sha256);
+        Assert.Equal(resource.StructureSignature, enriched.StructureSignature);
+        Assert.Equal(resource.CreatedAt, enriched.CreatedAt);
+        Assert.Equal(resource.InternalRelativePath, enriched.InternalRelativePath);
+        Assert.False((await store.GetByCommandIdAsync("command_01", default))!.Inspection.NeedsRasterImageEvidence);
+        var errorConflict = await Assert.ThrowsAsync<InvalidOperationException>(() => store.RefreshInspectionCacheAsync(
+            resource, inspected with { Layers = [inspected.Layers[0] with
+            { PixelEvidence = inspected.Layers[0].PixelEvidence with { CompositeContributionPixelCount = 80 } }] }, default));
+        Assert.Equal("TPL_PSD_INSPECTION_CACHE_CONFLICT", errorConflict.Message);
+    }
+
     private const string FileHash =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private const string StructureHash =

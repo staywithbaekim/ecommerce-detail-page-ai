@@ -7,6 +7,8 @@ const capabilities = Object.freeze([
   "adapter/pull-v1",
   "psd-layer-path/psd-bottom-to-top",
   "smart-object/replace",
+  "image-layer/replace-v1",
+  "image-layer/covered-stack-v1",
   "output/jpeg-srgb-icc",
   "layout/absolute-placement-v1",
   "output/verification-psd-v1",

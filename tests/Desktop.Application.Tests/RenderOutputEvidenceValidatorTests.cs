@@ -8,6 +8,26 @@ public sealed class RenderOutputEvidenceValidatorTests
 {
     [Theory]
     [InlineData("valid", true)]
+    [InlineData("raster", true)]
+    [InlineData("raster_capability_missing", false)]
+    [InlineData("raster_covered", false)]
+    [InlineData("raster_decoration", false)]
+    [InlineData("raster_id_collision", false)]
+    [InlineData("raster_wrong_payload", false)]
+    [InlineData("raster_group", true)]
+    [InlineData("raster_group_leaf_moved", false)]
+    [InlineData("raster_group_other_moved", false)]
+    [InlineData("raster_group_content_changed", false)]
+    [InlineData("raster_group_id_changed", false)]
+    [InlineData("raster_dormant_still_covered", true)]
+    [InlineData("raster_dormant_exposed", true)]
+    [InlineData("raster_dormant_one_pixel_exposed", true)]
+    [InlineData("raster_dormant_unknown", true)]
+    [InlineData("raster_residual_unchanged", true)]
+    [InlineData("raster_residual_grows", true)]
+    [InlineData("raster_dormant_other_window", true)]
+    [InlineData("raster_dormant_above_target", true)]
+    [InlineData("raster_dormant_photo_pixels", true)]
     [InlineData("old_worker", false)]
     [InlineData("missing_layer", false)]
     [InlineData("pixels", false)]
@@ -17,6 +37,9 @@ public sealed class RenderOutputEvidenceValidatorTests
     [InlineData("both_missing_text_style", false)]
     [InlineData("curves", true)]
     [InlineData("exposure", true)]
+    [InlineData("colorbalance", true)]
+    [InlineData("colorbalance_changed", false)]
+    [InlineData("colorbalance_missing", false)]
     [InlineData("adjustment_changed", false)]
     [InlineData("adjustment_missing", false)]
     [InlineData("shape", true)]
@@ -36,7 +59,7 @@ public sealed class RenderOutputEvidenceValidatorTests
     [InlineData("superseded_name", false)]
     [InlineData("superseded_mask", false)]
     [InlineData("superseded_other_hidden", false)]
-    public void OnlyIndependentMatchingContentsAuthorizePsdOutput(string mutation, bool expected)
+    public void StructuralAndReplacementEvidenceAuthorizesPsdOutput(string mutation, bool expected)
     {
         var plan = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "render-plan-v1.valid.example.json")))!;
         plan["required_capabilities"]!.AsArray().Add(RenderPlanPlacementMigration.Capability);
@@ -58,12 +81,28 @@ public sealed class RenderOutputEvidenceValidatorTests
             EmbeddedContentAvailable = true, EmbeddedContentSha256 = plan["resources"]![1]!["sha256"]!.GetValue<string>(),
             TransformBox = [-5, 10, 795, 10, 795, 1210, -5, 1210] } };
         var renderedFixed = fixedLayer;
-        if (mutation is "curves" or "exposure" or "adjustment_changed" or "adjustment_missing" or "shape" or "shape_changed" or "shape_missing")
+        if (mutation.StartsWith("raster", StringComparison.Ordinal))
         {
-            fixedLayer = fixedLayer with { Kind = mutation.StartsWith("shape", StringComparison.Ordinal) ? "shape" : mutation == "exposure" ? "exposure" : "curves",
-                ContentEvidence = content with { AdjustmentSha256 = mutation is "adjustment_missing" or "shape_missing" ? null : hash } };
+            plan["targets"]![0]!["expected_layer"]!["kind"] = "pixel";
+            if (mutation != "raster_capability_missing")
+                plan["required_capabilities"]!.AsArray().Add(RenderTemplateEvidenceValidator.RasterReplacementCapability);
+            target = target with { Kind = "pixel", SmartObject = null,
+                PixelEvidence = new(true, 10000, mutation == "raster_covered" ? 0 : 9000,
+                    mutation == "raster_covered" ? null : new(0, 0, 100, 100))
+                { RasterImage = new(true, mutation == "raster_decoration" ? 2 : 500, .2) } };
+            baseline = baseline with { SmartObjectCount = 0, Layers = [fixedLayer, target] };
+            renderedTarget = renderedTarget with { LayerId = mutation == "raster_id_collision" ? fixedLayer.LayerId : 9000 };
+            if (mutation == "raster_wrong_payload")
+                renderedTarget = renderedTarget with { SmartObject = renderedTarget.SmartObject! with { EmbeddedContentSha256 = hash } };
+        }
+        if (mutation is "curves" or "exposure" or "adjustment_changed" or "adjustment_missing" or "shape" or "shape_changed" or "shape_missing"
+            or "colorbalance" or "colorbalance_changed" or "colorbalance_missing")
+        {
+            fixedLayer = fixedLayer with { Kind = mutation.StartsWith("shape", StringComparison.Ordinal) ? "shape"
+                : mutation.StartsWith("colorbalance", StringComparison.Ordinal) ? "colorbalance" : mutation == "exposure" ? "exposure" : "curves",
+                ContentEvidence = content with { AdjustmentSha256 = mutation is "adjustment_missing" or "shape_missing" or "colorbalance_missing" ? null : hash } };
             baseline = baseline with { Layers = [fixedLayer, target] };
-            renderedFixed = mutation is "adjustment_changed" or "shape_changed"
+            renderedFixed = mutation is "adjustment_changed" or "shape_changed" or "colorbalance_changed"
                 ? fixedLayer with { ContentEvidence = content with { AdjustmentSha256 = new string('b', 64) } }
                 : fixedLayer;
         }
@@ -80,6 +119,49 @@ public sealed class RenderOutputEvidenceValidatorTests
         if (mutation == "geometry") renderedTarget = renderedTarget with { SmartObject = renderedTarget.SmartObject! with { TransformBox = [-4, 10, 795, 10, 795, 1210, -5, 1210] } };
         if (mutation == "linked") renderedTarget = renderedTarget with { SmartObject = renderedTarget.SmartObject! with { Kind = "external" } };
         var output = baseline with { Layers = [renderedFixed, renderedTarget] };
+        if (mutation.StartsWith("raster_dormant", StringComparison.Ordinal)
+            || mutation.StartsWith("raster_residual", StringComparison.Ordinal))
+        {
+            var clippingBase = new PsdClippingBaseInspection([0], 701, "window", "pixel", true, true,
+                new(0, 0, 790, 1252), false, false, 255, "norm");
+            target = target with { Path = [3], Clipping = true, ClippingBase = clippingBase };
+            renderedTarget = renderedTarget with { Path = [3], Clipping = true, ClippingBase = clippingBase };
+            plan["targets"]![0]!["layer_path"] = JsonNode.Parse("[4]");
+            plan["targets"]![0]!["expected_layer"]!["clipping"] = true;
+            var oldCount = mutation.StartsWith("raster_residual", StringComparison.Ordinal) ? 1 : 0;
+            var old = renderedTarget with { Path = [2], LayerId = 702, Name = "covered old photo",
+                SmartObject = renderedTarget.SmartObject! with { UniqueId = "old", EmbeddedContentSha256 = hash },
+                PixelEvidence = new(true, 10000, oldCount, oldCount == 0 ? null : new(0, 0, 1, 1)) };
+            if (mutation == "raster_dormant_other_window") old = old with { ClippingBase = clippingBase with { Path = [1], LayerId = 703 } };
+            if (mutation == "raster_dormant_above_target") old = old with { Path = [4] };
+            if (mutation == "raster_dormant_photo_pixels") old = old with { Kind = "pixel", SmartObject = null,
+                PixelEvidence = old.PixelEvidence with { RasterImage = new(true, 500, .2) } };
+            var count = mutation is "raster_dormant_still_covered" ? 0 : mutation is "raster_residual_unchanged" or "raster_dormant_one_pixel_exposed" ? 1 : 2351;
+            var exposed = old with { PixelEvidence = old.PixelEvidence with { Available = mutation != "raster_dormant_unknown",
+                CompositeContributionPixelCount = count, CompositeContributionBounds = count == 0 ? null : new(0, 0, 790, 1252) } };
+            var baseLayer = fixedLayer with { Kind = "pixel", LayerId = 701, ContentEvidence = content };
+            baseline = baseline with { Layers = [baseLayer, old, target], LayerCount = 3 };
+            output = baseline with { Layers = [baseLayer, exposed, renderedTarget] };
+        }
+        if (mutation.StartsWith("raster_group", StringComparison.Ordinal))
+        {
+            plan["targets"]![0]!["layer_path"] = JsonNode.Parse("[2,1]");
+            target = target with { Path = [1, 0] };
+            renderedTarget = renderedTarget with { Path = [1, 0] };
+            fixedLayer = fixedLayer with { Path = [1, 1] };
+            renderedFixed = fixedLayer;
+            var group = fixedLayer with { Path = [1], LayerId = 805, Kind = "group", IsGroup = true,
+                ContentEvidence = new(true, null, null, null, null, null), Bounds = new(0, 0, 1000, 1400) };
+            var other = group with { Path = [0], LayerId = 806 };
+            var changedGroup = group with { Bounds = new(-5, 10, 800, 1400) };
+            var changedOther = other;
+            if (mutation == "raster_group_leaf_moved") renderedFixed = renderedFixed with { Bounds = new(1, 0, 790, 1252) };
+            if (mutation == "raster_group_other_moved") changedOther = other with { Bounds = new(1, 0, 1000, 1400) };
+            if (mutation == "raster_group_content_changed") changedGroup = changedGroup with { ContentEvidence = content };
+            if (mutation == "raster_group_id_changed") changedGroup = changedGroup with { LayerId = 807 };
+            baseline = baseline with { Layers = [other, group, target, fixedLayer], LayerCount = 4 };
+            output = baseline with { Layers = [changedOther, changedGroup, renderedTarget, renderedFixed] };
+        }
         if (mutation.StartsWith("superseded", StringComparison.Ordinal))
         {
             var visible = mutation != "superseded_already_hidden";

@@ -14,38 +14,35 @@ public sealed class TemplatePlacementResolverTests
         double left, double top, double right, double bottom)
     {
         var subject = new TemplateRenderSubjectGeometry("asset", (decimal)left, (decimal)top, (decimal)right, (decimal)bottom, 1);
-        var placement = TemplatePlacementResolver.Resolve(Binding(scale: 9, offsetX: 10000, offsetY: -10000),
+        var placement = TemplatePlacementResolver.Resolve(Binding(scale: 9, offsetX: 10000, offsetY: -10000, clipping: true),
             new("asset", new string('a', 64), 64, PixelWidth: width, PixelHeight: height), subject, Inspection());
-        Assert.True(placement.Left <= 100 && placement.Top <= 100);
-        Assert.True(placement.Left + placement.Width >= 900 && placement.Top + placement.Height >= 900);
-        Assert.True(placement.Left + placement.Width * subject.Left >= 100);
-        Assert.True(placement.Top + placement.Height * subject.Top >= 100);
-        Assert.True(placement.Left + placement.Width * subject.Right <= 900);
-        Assert.True(placement.Top + placement.Height * subject.Bottom <= 900);
+        Assert.True(placement.Left <= 98 && placement.Top <= 98);
+        Assert.True(placement.Left + placement.Width >= 902 && placement.Top + placement.Height >= 902);
+        Assert.True(placement.Left + placement.Width * subject.Left >= 98);
+        Assert.True(placement.Top + placement.Height * subject.Top >= 98);
+        Assert.True(placement.Left + placement.Width * subject.Right <= 902);
+        Assert.True(placement.Top + placement.Height * subject.Bottom <= 902);
         Assert.InRange(Math.Abs(placement.Width / width - placement.Height / height), 0, .000000001m);
     }
 
     [Fact]
     public void RepeatingScaleAtExactBoundaryDoesNotRejectAFeasiblePlacement()
     {
-        var placement = TemplatePlacementResolver.Resolve(Binding(),
+        var placement = TemplatePlacementResolver.Resolve(Binding(clipping: true),
             new("asset", new string('a', 64), 64, PixelWidth: 1233, PixelHeight: 1233),
             new("asset", 0, 0, 1, 1, 1), Inspection());
-        Assert.InRange(Math.Abs(placement.Left - 100), 0, .000000001m);
-        Assert.InRange(Math.Abs(placement.Top - 100), 0, .000000001m);
-        Assert.InRange(Math.Abs(placement.Width - 800), 0, .000000001m);
-        Assert.InRange(Math.Abs(placement.Height - 800), 0, .000000001m);
+        Assert.InRange(Math.Abs(placement.Left - 98), 0, .000000001m);
+        Assert.InRange(Math.Abs(placement.Top - 98), 0, .000000001m);
+        Assert.InRange(Math.Abs(placement.Width - 804), 0, .000000001m);
+        Assert.InRange(Math.Abs(placement.Height - 804), 0, .000000001m);
     }
 
     [Fact]
-    public void ImpossibleCompleteSubjectIsReviewRequiredButExplicitDetailCropCanFill()
+    public void InfeasibleCompleteSubjectStillProducesCenteredCoverPlacement()
     {
         var source = new TemplateRenderSource("asset", new string('a', 64), 64, PixelWidth: 2000, PixelHeight: 1000);
         var subject = new TemplateRenderSubjectGeometry("asset", 0, 0, 1, 1, 1);
-        var error = Assert.Throws<TemplateRuleViolationException>(() =>
-            TemplatePlacementResolver.Resolve(Binding(), source, subject, Inspection()));
-        Assert.Equal("TPL_RENDER_LAYOUT_REVIEW_REQUIRED", error.Code);
-        var placement = TemplatePlacementResolver.Resolve(Binding("detail_crop"), source, subject, Inspection());
+        var placement = TemplatePlacementResolver.Resolve(Binding(), source, subject, Inspection());
         Assert.Equal(-300m, placement.Left); Assert.Equal(1600m, placement.Width);
         Assert.Equal(100m, placement.Top); Assert.Equal(800m, placement.Height);
     }
@@ -75,8 +72,8 @@ public sealed class TemplatePlacementResolverTests
     }
 
     private static FrameBinding Binding(string intent = "subject_complete", double scale = 1,
-        double offsetX = 0, double offsetY = 0, bool learned = false) => FrameBinding.Create("frame", "page", LayerPath.Create([1]),
-            ExpectedLayerEvidence.Create(1, "slot", true, false, false, false, 255, "normal", LayerStructureSignature.Create("sha256:" + new string('b', 64))),
+        double offsetX = 0, double offsetY = 0, bool learned = false, bool clipping = false) => FrameBinding.Create("frame", "page", LayerPath.Create([1]),
+            ExpectedLayerEvidence.Create(1, "slot", true, clipping, false, false, 255, "normal", LayerStructureSignature.Create("sha256:" + new string('b', 64))),
             [], SelectionRequirement.Create("商品主体", learned ? [SelectionCriterion.Create("reference_only", "true")] : []),
             LayoutIntent.Create(intent, scale, offsetX, offsetY, TemplateRect.Create(100, 100, 900, 900)));
 

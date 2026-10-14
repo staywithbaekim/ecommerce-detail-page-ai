@@ -46,7 +46,7 @@ public sealed class TemplateRuleWorkbenchViewModel : INotifyPropertyChanged, IDi
     public bool CanUndo => _undo.Count > 0;
     public bool IsEmpty => Pages.Count == 0;
     public IReadOnlyList<TemplateRuleRelationGroup> Relations => TemplateRuleRelations.Build(Draft, Pages);
-    public bool HasPendingEdits => Pages.SelectMany(page => page.EditableFrames).Any(frame => frame.IsDirty);
+    public bool HasPendingEdits => Pages.SelectMany(page => page.EditableFrames).Any(frame => !frame.IsExcluded && frame.IsDirty);
     public string GroupRulesText => Draft?.Rules is not { } rules
         ? "沿用模板当前生成规则。跨模板条件尚未修改；不会从备注猜测主副色。"
         : string.Join("\n\n", rules.Branches.Select(branch =>
@@ -146,7 +146,7 @@ public sealed class TemplateRuleWorkbenchViewModel : INotifyPropertyChanged, IDi
             while (HasPendingEdits)
             {
                 var candidates = Pages.SelectMany(page => page.EditableFrames
-                    .Where(frame => frame.IsCandidate && frame.IsDirty)
+                    .Where(frame => frame.IsCandidate && !frame.IsExcluded && frame.IsDirty)
                     .Select(frame => (Page: page, Frame: frame, Value: frame.Description))).ToArray();
                 foreach (var item in candidates)
                 {
@@ -158,7 +158,7 @@ public sealed class TemplateRuleWorkbenchViewModel : INotifyPropertyChanged, IDi
                     Status = "选图规则已保存，无需参考款素材。其他候选图层不会自动登记。";
                     NotifyDraft();
                 }
-                var pending = Pages.SelectMany(page => page.Frames).Where(frame => frame.IsDirty)
+                var pending = Pages.SelectMany(page => page.Frames).Where(frame => !frame.IsExcluded && frame.IsDirty)
                     .Select(frame => (Frame: frame, Value: frame.Description)).ToArray();
                 if (pending.Length == 0) continue;
                 var command = "rule_" + Guid.NewGuid().ToString("N");
@@ -231,14 +231,32 @@ public sealed class TemplateRuleWorkbenchViewModel : INotifyPropertyChanged, IDi
         await _writes.WaitAsync().ConfigureAwait(true);
         try
         {
-            var command = "remove_frame_" + Guid.NewGuid().ToString("N");
+            var command = "exclude_frame_" + Guid.NewGuid().ToString("N");
             Draft = await _editing.ApplyRulePatchAsync(Session, new(command, Draft!.Version,
-                new([], [], Targets: [new(frame.FrameId, null)])), CancellationToken.None).ConfigureAwait(true);
+                new([], []) { CandidateVisibility = [new(frame.FrameId, true)] }), CancellationToken.None).ConfigureAwait(true);
             _undo.Push(command);
         }
         finally { _writes.Release(); }
         await RefreshAsync().ConfigureAwait(true);
-        Status = "已停止替换该目标，PSD 原图层未删除；相关总规则请查看诊断。";
+        Status = "已设为不替换；PSD 图层与规则均保留，可随时恢复。";
+    }
+
+    public async Task RestoreReplacingAsync(TemplateRulePageViewModel page, TemplateRuleFrameViewModel frame)
+    {
+        CancelInterpretation();
+        if (page.IsReadOnly) throw new InvalidOperationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
+        await FlushAsync().ConfigureAwait(true);
+        await _writes.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            var command = "restore_frame_" + Guid.NewGuid().ToString("N");
+            Draft = await _editing.ApplyRulePatchAsync(Session, new(command, Draft!.Version,
+                new([], []) { CandidateVisibility = [new(frame.FrameId, false)] }), CancellationToken.None).ConfigureAwait(true);
+            _undo.Push(command);
+        }
+        finally { _writes.Release(); }
+        await RefreshAsync().ConfigureAwait(true);
+        Status = "已恢复替换；原有规则和 PSD 图层保持不变。";
     }
 
     public async Task RemovePageAsync(TemplateRulePageViewModel page)
@@ -400,7 +418,7 @@ public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
     public int? VariantCapacity { get; private set; }
     public string Purpose { get; private set; } = "每款使用一次";
     public string EmptyFrameMessage => IsSizeTable ? "按本款素材中的尺码图换数据；与商品照片共用输入，不另选目录。"
-        : EditableFrames.Count > 0 ? "" : "未找到可直接设置的可见图片框；请检查 PSD 的图层结构。参考款学习是可选方式。";
+        : EditableFrames.Count > 0 ? "" : "未找到有效图片位。隐藏、被覆盖和无效残留不会显示为框；复杂合并内容仍需受支持的替换结构。参考款学习可选。";
     internal void SetPurpose(string value)
     {
         if (Purpose == value) return;
@@ -460,46 +478,62 @@ public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
         var existing = EditableFrames.ToDictionary(frame => frame.Target.FrameId, StringComparer.Ordinal);
         var rows = new List<TemplateRuleFrameViewModel>();
         var registered = new List<TemplateRuleFrameViewModel>();
-        foreach (var target in view.Frames.Where(target => target.HasPersistedBinding && target.PersistedFrameId is not null
+        var candidates = DraftCandidates(draft, PageId);
+        var orderedTargets = TemplateCalibrationService.OrderFramesVisually(view.Frames);
+        foreach (var target in orderedTargets.Where(target => target.HasPersistedBinding && target.PersistedFrameId is not null
             && target.IsVisible && HasRulePreviewGeometry(target))
-            .OrderBy(target => draft.Aliases.Single(item => item.PageId == PageId && item.FrameId == target.PersistedFrameId).Number))
+            .OrderBy(target => CandidateNumber(candidates, target, draft)))
         {
             var id = target.PersistedFrameId!;
+            var candidate = candidates.SingleOrDefault(item => item.Target.LayerId == target.LayerId
+                && item.Target.LayerPath.SequenceEqual(target.LayerPath));
             var alias = draft.Aliases.Single(item => item.PageId == PageId && item.FrameId == id);
-            var authoritative = draft.Frames.Single(item => item.FrameId == id);
+            var authoritative = draft.Frames.SingleOrDefault(item => item.FrameId == id);
+            var excluded = candidate?.IsExcluded == true;
             if (existing.TryGetValue(target.FrameId, out var frame))
             {
-                frame.UpdateTarget(target, id, $"框{alias.Number}", isCandidate: false);
-                if (!frame.IsDirty) frame.Reset(authoritative.Description);
+                frame.UpdateTarget(target, id, $"框{(candidate is null ? alias.Number : CandidateNumber(candidates, target, draft))}", isCandidate: false, isExcluded: excluded);
+                if (!frame.IsDirty) frame.Reset(authoritative?.Description ?? target.SelectionRequirement);
             }
-            else frame = new(target, id, $"框{alias.Number}", authoritative.Description, changed);
+            else frame = new(target, id, $"框{(candidate is null ? alias.Number : CandidateNumber(candidates, target, draft))}",
+                authoritative?.Description ?? target.SelectionRequirement, changed,
+                isExcluded: excluded);
             rows.Add(frame); registered.Add(frame);
         }
-        Candidates = view.Frames.Where(target => !target.HasPersistedBinding && target.IsPreviewSupported && target.IsVisible
-            && target.HasCompositeContribution != false && HasRulePreviewGeometry(target)).ToArray();
-        var nextNumber = draft.Aliases.Where(alias => alias.PageId == PageId && alias.FrameId is not null)
-            .Select(alias => alias.Number).DefaultIfEmpty().Max();
-        foreach (var target in Candidates)
+        var available = orderedTargets.Where(target => !target.HasPersistedBinding && target.IsPreviewSupported && target.IsVisible
+            && HasMeaningfulCompositeContribution(target) && HasRulePreviewGeometry(target)).ToArray();
+        Candidates = available;
+        foreach (var target in available)
         {
-            var reserved = draft.Candidates.SingleOrDefault(candidate => candidate.PageId == PageId && candidate.Target.FrameId == target.FrameId);
+            var reserved = candidates.SingleOrDefault(candidate => candidate.Target.LayerId == target.LayerId
+                && candidate.Target.LayerPath.SequenceEqual(target.LayerPath));
             var id = reserved?.FrameId ?? target.FrameId;
-            var number = reserved is null ? ++nextNumber
-                : draft.Aliases.Single(alias => alias.PageId == PageId && alias.FrameId == id).Number;
+            var number = reserved is null ? 0 : CandidateNumber(candidates, target, draft);
             var label = $"框{number}";
             if (!existing.TryGetValue(target.FrameId, out var frame))
-                frame = new(target, id, label, "", changed, isCandidate: true);
-            else frame.UpdateTarget(target, id, label, isCandidate: true);
+                frame = new(target, id, label, "", changed, isCandidate: true, isExcluded: reserved?.IsExcluded == true);
+            else frame.UpdateTarget(target, id, label, isCandidate: true, isExcluded: reserved?.IsExcluded == true);
             rows.Add(frame);
         }
         SyncRows(Frames, registered);
-        // Registering a later candidate must not move its focused editor above
-        // the still-empty rows while the user is typing or composing Chinese.
-        var byTarget = rows.ToDictionary(frame => frame.Target.FrameId, StringComparer.Ordinal);
-        SyncRows(EditableFrames, view.Frames.Where(target => byTarget.ContainsKey(target.FrameId))
-            .Select(target => byTarget[target.FrameId]).ToList());
+        var visualOrder = orderedTargets.Select((target, index) => (target.FrameId, index))
+            .ToDictionary(item => item.FrameId, item => item.index, StringComparer.Ordinal);
+        rows.Sort((left, right) => visualOrder[left.Target.FrameId].CompareTo(visualOrder[right.Target.FrameId]));
+        SyncRows(EditableFrames, rows);
         SelectedFrame = EditableFrames.SingleOrDefault(frame => frame.Target.FrameId == selectedTarget);
         PropertyChanged?.Invoke(this, new(nameof(Candidates)));
         PropertyChanged?.Invoke(this, new(nameof(EmptyFrameMessage)));
+    }
+    private static TemplateRuleCandidateView[] DraftCandidates(TemplateRuleDraftView draft, string pageId) =>
+        [.. draft.Candidates.Concat(draft.ExcludedCandidates).Where(candidate => candidate.PageId == pageId)];
+
+    private static int CandidateNumber(TemplateRuleCandidateView[] candidates, TemplateFrameProjection target,
+        TemplateRuleDraftView draft)
+    {
+        var candidate = candidates.SingleOrDefault(item => item.Target.LayerId == target.LayerId
+            && item.Target.LayerPath.SequenceEqual(target.LayerPath));
+        return candidate is null ? int.MaxValue
+            : draft.Aliases.Single(alias => alias.PageId == candidate.PageId && alias.FrameId == candidate.FrameId).Number;
     }
     private static void SyncRows(ObservableCollection<TemplateRuleFrameViewModel> collection,
         List<TemplateRuleFrameViewModel> rows)
@@ -521,6 +555,27 @@ public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
             && double.IsFinite(bounds.Width) && double.IsFinite(bounds.Height)
             && bounds.Width > 0 && bounds.Height > 0
         : target.IsPreviewSupported && target.Width > 0 && target.Height > 0;
+
+    private bool HasMeaningfulCompositeContribution(TemplateFrameProjection target)
+    {
+        if (target.HasCompositeContribution is null)
+        {
+            // Older inspection workers cannot provide this evidence. Keep the
+            // candidate visible, but existing registration gates remain fail-closed.
+            return true;
+        }
+        if (target.HasCompositeContribution != true || target.PreviewBounds is not { } bounds
+            || CanvasWidth <= 0 || CanvasHeight <= 0
+            || !double.IsFinite(bounds.Width) || !double.IsFinite(bounds.Height))
+        {
+            return false;
+        }
+
+        // Reject remnants in absolute pixels, not as a percentage of a long PSD:
+        // a real small detail photograph must not disappear when the canvas grows.
+        var visibleArea = Math.Max(0, bounds.Width) * Math.Max(0, bounds.Height);
+        return Math.Min(bounds.Width, bounds.Height) >= 4 && visibleArea >= 64;
+    }
 }
 
 public sealed class TemplateRuleFrameViewModel : INotifyPropertyChanged
@@ -529,17 +584,18 @@ public sealed class TemplateRuleFrameViewModel : INotifyPropertyChanged
     private string _saved;
     private readonly Action _changed;
     public TemplateRuleFrameViewModel(TemplateFrameProjection target, string frameId, string label, string description, Action changed,
-        bool isCandidate = false)
-    { Target = target; FrameId = frameId; Label = label; IsCandidate = isCandidate; _description = _saved = description; _changed = changed; }
+        bool isCandidate = false, bool isExcluded = false)
+    { Target = target; FrameId = frameId; Label = label; IsCandidate = isCandidate; IsExcluded = isExcluded; _description = _saved = description; _changed = changed; }
     public event PropertyChangedEventHandler? PropertyChanged;
     public TemplateFrameProjection Target { get; private set; }
     public string FrameId { get; private set; }
     public string Label { get; private set; }
     public bool IsCandidate { get; private set; }
-    public void UpdateTarget(TemplateFrameProjection target, string frameId, string label, bool isCandidate)
+    public bool IsExcluded { get; private set; }
+    public void UpdateTarget(TemplateFrameProjection target, string frameId, string label, bool isCandidate, bool isExcluded = false)
     {
-        Target = target; FrameId = frameId; Label = label; IsCandidate = isCandidate;
-        foreach (var name in new[] { nameof(Target), nameof(FrameId), nameof(Label), nameof(IsCandidate) })
+        Target = target; FrameId = frameId; Label = label; IsCandidate = isCandidate; IsExcluded = isExcluded;
+        foreach (var name in new[] { nameof(Target), nameof(FrameId), nameof(Label), nameof(IsCandidate), nameof(IsExcluded) })
             PropertyChanged?.Invoke(this, new(name));
     }
     public string Description

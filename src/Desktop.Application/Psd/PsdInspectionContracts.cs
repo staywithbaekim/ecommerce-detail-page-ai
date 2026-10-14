@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Desktop.Application.Psd;
@@ -52,7 +53,42 @@ public sealed record PsdInspectionDocument(
     PsdInspectionTiming Timing,
     long ProcessPeakWorkingSetBytes,
     PsdPreviewInspection? Preview,
-    IReadOnlyList<PsdLayerInspection> Layers);
+    IReadOnlyList<PsdLayerInspection> Layers)
+{
+    [JsonIgnore]
+    public bool NeedsRasterImageEvidence => Layers.Any(layer => layer.Kind == "pixel"
+        && layer.PixelEvidence.RasterImage is null);
+
+    // Enrich derived evidence only. Existing structural/content evidence,
+    // preview and identities remain frozen, including evidence from older workers.
+    public PsdInspectionDocument WithRasterImageEvidenceFrom(PsdInspectionDocument inspected)
+    {
+        static string Digest(string value) => (value.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+            ? value[7..] : value).ToLowerInvariant();
+        static object Structure(PsdInspectionDocument document) => new
+        {
+            FileSha256 = Digest(document.FileSha256), document.SizeBytes, document.Canvas, document.LayerCount,
+            document.SmartObjectCount, document.MaskCount, document.VectorMaskCount,
+            document.ClippingCount, StructureSignature = Digest(document.StructureSignature),
+            Layers = document.Layers.Select(layer => layer with
+            {
+                PixelEvidence = new(false, 0, 0, null), ContentEvidence = null,
+                SmartObject = layer.SmartObject is { } smart ? smart with
+                { EmbeddedContentSha256 = null, EmbeddedContentAvailable = false } : null
+            })
+        };
+        if (inspected.NeedsRasterImageEvidence
+            || JsonSerializer.Serialize(Structure(this)) != JsonSerializer.Serialize(Structure(inspected)))
+            throw new InvalidDataException("TPL_PSD_INSPECTION_CACHE_MISMATCH");
+        return this with
+        {
+            Layers = Layers.Select((layer, index) => layer.Kind == "pixel"
+                && layer.PixelEvidence.RasterImage is null
+                    ? layer with { PixelEvidence = inspected.Layers[index].PixelEvidence }
+                    : layer).ToArray()
+        };
+    }
+}
 
 public sealed record PsdCanvasInspection(
     int Width,
@@ -120,7 +156,33 @@ public sealed record PsdLayerPixelEvidence(
     bool Available,
     long RenderedPixelCount,
     long CompositeContributionPixelCount,
-    PsdLayerBounds? CompositeContributionBounds);
+    PsdLayerBounds? CompositeContributionBounds)
+{
+    [JsonIgnore]
+    public bool HasMeaningfulCompositeContribution => Available && RenderedPixelCount > 0
+        && CompositeContributionPixelCount >= 64
+        && CompositeContributionBounds is { } bounds
+        && (long)bounds.Right - bounds.Left >= 4 && (long)bounds.Bottom - bounds.Top >= 4
+        && ((double)bounds.Right - bounds.Left) * ((double)bounds.Bottom - bounds.Top) >= 64;
+
+    [JsonIgnore]
+    public bool HasReplaceableRasterContent => HasMeaningfulCompositeContribution
+        && RasterImage?.HasPhotographicContent == true
+        && CompositeContributionPixelCount >= ((double)CompositeContributionBounds!.Right - CompositeContributionBounds.Left)
+            * ((double)CompositeContributionBounds.Bottom - CompositeContributionBounds.Top) * .02;
+
+    // Additive evidence: old workers remain readable, but raster targets fail closed.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PsdRasterImageEvidence? RasterImage { get; init; }
+}
+
+public sealed record PsdRasterImageEvidence(bool Available, int ColorCount, double DetailPixelRatio)
+{
+    // A conservative content gate, not a claim that every textured layer is a product.
+    [JsonIgnore]
+    public bool HasPhotographicContent => Available && ColorCount >= 128
+        && double.IsFinite(DetailPixelRatio) && DetailPixelRatio is >= .02 and <= 1;
+}
 
 public sealed record PsdClippingBaseInspection(
     IReadOnlyList<int> Path,

@@ -204,6 +204,11 @@ public sealed partial class WpfShellTests
             var page = model.Pages[0];
             Assert.Empty(page.Frames);
             Assert.Equal(twoCandidates ? 2 : 1, page.EditableFrames.Count);
+            if (twoCandidates)
+            {
+                Assert.Equal(["框1", "框2"], page.EditableFrames.Select(frame => frame.Label));
+                Assert.True(page.EditableFrames[0].Target.Top < page.EditableFrames[1].Target.Top);
+            }
             var candidate = page.EditableFrames.Last();
             Assert.True(candidate.IsCandidate);
             Assert.Equal(twoCandidates ? "框2" : "框1", candidate.Label);
@@ -216,7 +221,8 @@ public sealed partial class WpfShellTests
                 box.Focus(); box.Text = "假模特正面完整图；不使用背面照片。";
                 PumpRuleTask(model.FlushAsync()); FlushLayout(window);
                 Assert.Same(candidate, Assert.Single(page.Frames));
-                Assert.Same(candidate, page.EditableFrames.Last());
+                Assert.Contains(candidate, page.EditableFrames);
+                Assert.Same(candidate, page.SelectedFrame);
                 Assert.False(candidate.IsCandidate);
                 Assert.DoesNotContain("待设置", candidate.Label, StringComparison.Ordinal);
                 Assert.Same(box, Descendants<TextBox>(card).Last());
@@ -236,6 +242,39 @@ public sealed partial class WpfShellTests
     }
 
     [Fact]
+    public void CandidateCanBeExcludedAndRestoredWithoutRemovingItsBinding()
+    {
+        RunInSta(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext());
+            using var fixture = new RuleUiFixture(); using var writes = new SemaphoreSlim(1);
+            using var model = new TemplateRuleWorkbenchViewModel(fixture.Workspace, fixture.Calibration, fixture.Session, writes);
+            PumpRuleTask(model.RefreshAsync());
+            var page = model.Pages[0];
+            var candidate = Assert.Single(page.EditableFrames);
+            PumpRuleTask(model.RegisterAsync(page, candidate.Target, "正面主体图"));
+            var frameId = Assert.Single(fixture.Store.GetRevisionAsync("revision", default).GetAwaiter().GetResult()!.FrameBindings).FrameId;
+
+            PumpRuleTask(model.StopReplacingAsync(page, candidate));
+            var excludedRevision = fixture.Store.GetRevisionAsync("revision", default).GetAwaiter().GetResult()!;
+            Assert.Equal(frameId, Assert.Single(excludedRevision.FrameBindings).FrameId);
+            Assert.True(Assert.Single(model.Pages[0].EditableFrames).IsExcluded);
+            Assert.Empty(model.Draft!.Frames);
+
+            using var reopened = new TemplateRuleWorkbenchViewModel(fixture.Workspace,
+                new TemplateCalibrationService(fixture.Store, fixture.Store), fixture.Session, writes);
+            PumpRuleTask(reopened.RefreshAsync());
+            var restoredRow = Assert.Single(reopened.Pages[0].EditableFrames);
+            Assert.True(restoredRow.IsExcluded);
+            PumpRuleTask(reopened.RestoreReplacingAsync(reopened.Pages[0], restoredRow));
+            var restoredRevision = fixture.Store.GetRevisionAsync("revision", default).GetAwaiter().GetResult()!;
+            Assert.Equal(frameId, Assert.Single(restoredRevision.FrameBindings).FrameId);
+            Assert.False(Assert.Single(reopened.Pages[0].EditableFrames).IsExcluded);
+            Assert.Equal("正面主体图", Assert.Single(reopened.Draft!.Frames).Description);
+        });
+    }
+
+    [Fact]
     public void CandidateRowsRejectKnownCoveredLayersAndDoNotRegisterEmptyInputs()
     {
         RunInSta(() =>
@@ -248,8 +287,34 @@ public sealed partial class WpfShellTests
             var target = Assert.Single(view.Frames);
             page.SetFrames(view with { Frames = [target with { HasCompositeContribution = false }] }, model.Draft!, () => { });
             Assert.Empty(page.Candidates); Assert.Empty(page.EditableFrames);
-            page.SetFrames(view with { Frames = [target with { HasCompositeContribution = true }] }, model.Draft!, () => { });
+            Assert.Contains("图片位", page.EmptyFrameMessage, StringComparison.Ordinal);
+            page.SetFrames(view with
+            {
+                Frames = [target with
+                {
+                    HasCompositeContribution = true,
+                    PreviewBounds = new TemplateFramePreviewBounds(18, 1679, 1, 1)
+                }]
+            }, model.Draft!, () => { });
+            Assert.Empty(page.Candidates); Assert.Empty(page.EditableFrames);
+            page.SetFrames(view with
+            {
+                Frames = [target with
+                {
+                    HasCompositeContribution = true,
+                    PreviewBounds = new TemplateFramePreviewBounds(10, 20, 100, 100)
+                }]
+            }, model.Draft!, () => { });
             Assert.Single(page.EditableFrames); Assert.Empty(page.Frames);
+            page.SetFrames(view with
+            {
+                Frames = [target with
+                {
+                    HasCompositeContribution = true,
+                    PreviewBounds = new TemplateFramePreviewBounds(10, 20, 10, 10)
+                }]
+            }, model.Draft!, () => { });
+            Assert.Single(page.EditableFrames);
             PumpRuleTask(model.FlushAsync());
             Assert.Empty(fixture.Store.GetRevisionAsync(fixture.Session.DraftRevisionId, default).GetAwaiter().GetResult()!.FrameBindings);
         });
@@ -667,7 +732,8 @@ public sealed partial class WpfShellTests
             }
             finally { window.Close(); }
             PumpRuleTask(model.StopReplacingAsync(model.Pages[0], model.Pages[0].Frames[0]));
-            Assert.Empty(model.Pages[0].Frames); PumpRuleTask(model.UndoAsync()); Assert.Single(model.Pages[0].Frames);
+            Assert.True(Assert.Single(model.Pages[0].Frames).IsExcluded);
+            PumpRuleTask(model.UndoAsync()); Assert.False(Assert.Single(model.Pages[0].Frames).IsExcluded);
             PumpRuleTask(model.RemovePageAsync(model.Pages[0])); Assert.Single(model.Pages);
             PumpRuleTask(model.UndoAsync()); Assert.Equal(2, model.Pages.Count);
             Assert.Equal("@1", model.Pages[0].Label); Assert.Equal("@2", model.Pages[1].Label);

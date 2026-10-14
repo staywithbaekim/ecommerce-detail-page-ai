@@ -94,7 +94,7 @@ public static class AiAnalysisInputProjector
         var selectedPages = batch.TemplateSnapshot.Pages
             .Select(page => page.PageId)
             .ToHashSet(StringComparer.Ordinal);
-        var selectedBindings = templateRevision.FrameBindings
+        var selectedBindings = templateRevision.ActiveFrameBindings
             .Where(binding => selectedPages.Contains(binding.PageId))
             .OrderBy(binding => binding.PageId, StringComparer.Ordinal)
             .ThenBy(binding => binding.FrameId, StringComparer.Ordinal)

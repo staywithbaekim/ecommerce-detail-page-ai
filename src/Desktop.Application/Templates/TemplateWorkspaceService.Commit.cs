@@ -387,8 +387,7 @@ public sealed partial class TemplateWorkspaceService
                 binding.PageId,
                 page.PageId,
                 StringComparison.Ordinal)).ToArray();
-            if (resource.Inspection.SmartObjectCount <= 0
-                || registered.Length == 0
+            if (registered.Length == 0
                 || registered.Any(binding => string.IsNullOrWhiteSpace(binding.SelectionRequirement.Description)))
             {
                 throw new TemplateRuleViolationException("TPL_CALIBRATION_INCOMPLETE");

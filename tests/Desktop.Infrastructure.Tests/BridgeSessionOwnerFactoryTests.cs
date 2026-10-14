@@ -145,7 +145,7 @@ public sealed partial class BridgeLoopbackHostTests
     private static async Task AuthenticateDevice(byte[] secret, Action beforeThirdHeartbeat, CancellationToken token,
         bool protectedStorage = true, int heartbeatCount = 3, string hostState = "ready", string modalState = "idle",
         string? photoshopBuild = null, byte[]? wrongHandshakeSecret = null, bool useSocket = true,
-        bool instanceIdentity = false, bool expectCapabilityRejection = false)
+        bool instanceIdentity = false, bool expectCapabilityRejection = false, bool imageLayers = false, bool coveredStack = false)
     {
         using var client = new HttpClient(useSocket ? new SocketHttpHandler() : new HttpClientHandler { UseProxy = false })
             { Timeout = TimeSpan.FromSeconds(5) };
@@ -160,6 +160,8 @@ public sealed partial class BridgeLoopbackHostTests
             .Where(capability => capability != BridgeSessionOwnerFactory.ProtectedPairingCapability).ToArray() };
         if (photoshopBuild is not null) request = request with { PhotoshopBuild = photoshopBuild };
         if (instanceIdentity) request = request with { Capabilities = [.. request.Capabilities, RenderPlanInstanceIdentity.Capability] };
+        if (imageLayers) request = request with { Capabilities = [.. request.Capabilities, RenderTemplateEvidenceValidator.RasterReplacementCapability] };
+        if (coveredStack) request = request with { Capabilities = [.. request.Capabilities, RenderTemplateEvidenceValidator.CoveredRasterStackCapability] };
         byte[]? key = null;
         try
         {

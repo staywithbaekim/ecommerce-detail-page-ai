@@ -100,10 +100,13 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
         }
 
         var sources = request.Sources.ToDictionary(source => source.ResourceId, StringComparer.Ordinal);
-        var bindings = revision.FrameBindings.Where(binding => string.Equals(
+        var bindings = revision.ActiveFrameBindings.Where(binding => string.Equals(
             binding.PageId,
             page.PageId,
             StringComparison.Ordinal)).ToArray();
+        var hasRasterTargets = bindings.Any(binding => binding.ExpectedLayer.Kind == TemplateLayerKind.Pixel);
+        if (hasRasterTargets && !request.RequireAbsolutePlacement)
+            throw new TemplateRuleViolationException("TPL_RENDER_GEOMETRY_INVALID");
         if (bindings.Length == 0)
         {
             throw new TemplateRuleViolationException("TPL_FRAME_EVIDENCE_INCOMPLETE");
@@ -168,7 +171,7 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 expected_layer = new
                 {
                     layer_id = binding.ExpectedLayer.LayerId,
-                    kind = "smartObject",
+                    kind = binding.ExpectedLayer.Kind == TemplateLayerKind.Pixel ? "pixel" : "smartObject",
                     name_before = binding.ExpectedLayer.NameBefore,
                     visible = binding.ExpectedLayer.Visible,
                     clipping = binding.ExpectedLayer.Clipping,
@@ -178,15 +181,9 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                     blend_mode = binding.ExpectedLayer.BlendMode,
                     structure_signature = binding.ExpectedLayer.StructureSignature.Value
                 },
-                superseded_layers = binding.SupersededLayers.Select(layer => new
-                {
-                    layer_path = layer.LayerPath.Segments,
-                    layer_path_order = layer.LayerPath.Order,
-                    expected_kind = "smartObject",
-                    expected_visible = layer.ExpectedVisible,
-                    expected_clipping = layer.ExpectedClipping,
-                    expected_layer_id = layer.ExpectedLayerId
-                }).ToArray(),
+                // Keep lower PSD layers intact. Replacement coverage comes from
+                // the placement bleed, not visibility changes to the source stack.
+                superseded_layers = Array.Empty<object>(),
                 asset_resource_id = assetId,
                 layout
             };
@@ -205,7 +202,9 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
             created_at = request.CreatedAt,
             required_capabilities = BaseCapabilities
                 .Concat(request.RequireAbsolutePlacement ? new[] { RenderPlanPlacementMigration.Capability } : [])
-                .Concat(request.InstanceIdentity is null ? [] : InstanceIdentityCapabilities).ToArray(),
+                .Concat(request.InstanceIdentity is null ? [] : InstanceIdentityCapabilities)
+                .Concat(hasRasterTargets ? new[] { RenderTemplateEvidenceValidator.RasterReplacementCapability } : [])
+                .Order(StringComparer.Ordinal).ToArray(),
             resources = new object[]
             {
                 new

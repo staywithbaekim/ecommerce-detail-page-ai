@@ -19,7 +19,9 @@ const request = { request_id: "request_mac", session_id: challenge.session_id, p
 const currentBuildCases = [false, true].map(instanceContract => {
   const current = { ...challenge, plugin_version: "0.1.1", photoshop_build: "26.8.1 (20250624.r.8 5e0d05d)",
     uxp_runtime_version: "uxp-8.3.0-uxp-b1d8c85", capabilities: require("../src/pairing-capabilities").createPairingCapabilities()
-      .filter(value => value !== "pairing/protected-storage-v1" && (instanceContract || value !== "template/page-instance-identity-v1")) };
+      .filter(value => value !== "pairing/protected-storage-v1" && value !== "image-layer/replace-v1"
+        && value !== "image-layer/covered-stack-v1"
+        && (instanceContract || value !== "template/page-instance-identity-v1")) };
   current.server_proof = auth.challengeProof(secret, current);
   const currentKey = auth.sessionKey(secret, current);
   const result = { instance_contract: instanceContract, challenge: current, key: auth.encode(currentKey),

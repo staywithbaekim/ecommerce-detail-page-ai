@@ -1549,16 +1549,10 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
     {
         _aiPageState.StatusFilters.Clear();
         AddFilter(AiStyleFilter.All, "全部", _aiPageState.Styles.Count, "Neutral");
-        // The executable queue includes advisory-yellow pages. Count a style
-        // when its projection has at least one page that can be rendered;
-        // requiring the enum to be exactly Ready would hide a yellow style.
-        AddFilter(AiStyleFilter.Ready, "可生成", _aiPageState.Styles.Count(style => style.CanGenerate), "Ready");
-        AddFilter(AiStyleFilter.Review, "待检查", _aiPageState.Styles.Count(style => style.Pages.Any(page =>
-            page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing
-            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration)), "Review");
-        AddFilter(AiStyleFilter.Blocked, "不可生成", _aiPageState.Styles.Count(style => style.Pages.Any(page =>
-            page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError
-            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration)), "Blocked");
+        AddFilter(AiStyleFilter.Ready, "可生成", _aiPageState.Styles.Count(IsFullyGeneratableStyle), "Ready");
+        AddFilter(AiStyleFilter.Partial, "部分可生成", _aiPageState.Styles.Count(IsPartiallyGeneratableStyle), "Partial");
+        AddFilter(AiStyleFilter.Review, "待检查", _aiPageState.Styles.Count(IsReviewOnlyStyle), "Review");
+        AddFilter(AiStyleFilter.Blocked, "不可生成", _aiPageState.Styles.Count(IsFullyBlockedStyle), "Blocked");
     }
 
     internal void ApplyStyleFilter()
@@ -1582,15 +1576,31 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
     {
         AiStyleFilter.All => true,
         AiStyleFilter.Processing => style.Status is AiStyleUiStatus.Waiting or AiStyleUiStatus.Analysing,
-        AiStyleFilter.Ready => style.CanGenerate,
-        AiStyleFilter.Review => style.Pages.Any(page =>
-            page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing
-            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration),
-        AiStyleFilter.Blocked => style.Pages.Any(page =>
-            page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError
-            || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration),
+        AiStyleFilter.Ready => IsFullyGeneratableStyle(style),
+        AiStyleFilter.Partial => IsPartiallyGeneratableStyle(style),
+        AiStyleFilter.Review => IsReviewOnlyStyle(style),
+        AiStyleFilter.Blocked => IsFullyBlockedStyle(style),
         _ => true
     };
+
+    private static bool IsHardBlocked(AiPageAnalysisViewModel page) =>
+        page.Status is AiPageUiStatus.BusinessError or AiPageUiStatus.SystemError;
+
+    private static bool NeedsReview(AiPageAnalysisViewModel page) =>
+        page.Status is AiPageUiStatus.Waiting or AiPageUiStatus.Analysing
+        || page.Status == AiPageUiStatus.ReviewRequired && page.RequiresManualConfiguration;
+
+    private static bool IsFullyGeneratableStyle(AiStyleAnalysisViewModel style) =>
+        style.CanGenerate && !style.Pages.Any(IsHardBlocked);
+
+    private static bool IsPartiallyGeneratableStyle(AiStyleAnalysisViewModel style) =>
+        style.CanGenerate && style.Pages.Any(IsHardBlocked);
+
+    private static bool IsFullyBlockedStyle(AiStyleAnalysisViewModel style) =>
+        !style.CanGenerate && style.Pages.Any(IsHardBlocked);
+
+    private static bool IsReviewOnlyStyle(AiStyleAnalysisViewModel style) =>
+        !style.CanGenerate && !style.Pages.Any(IsHardBlocked) && style.Pages.Any(NeedsReview);
 
     public async Task<bool> EnsureAiUploadConsentForReferenceLearningAsync()
     {

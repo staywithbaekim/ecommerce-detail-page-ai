@@ -366,6 +366,7 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
                 layer.PixelEvidence.CompositeContributionBbox is null
                     ? null
                     : Bounds(layer.PixelEvidence.CompositeContributionBbox))
+            { RasterImage = layer.PixelEvidence.RasterImage }
     };
 
     private static PsdLayerBounds Bounds(int[] values) => new(
@@ -472,6 +473,9 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
     }
 
     private static bool IsValid(WorkerLayerPixelEvidence evidence) =>
+        (evidence.RasterImage is null || evidence.RasterImage.ColorCount is >= 0 and <= 9216
+            && double.IsFinite(evidence.RasterImage.DetailPixelRatio)
+            && evidence.RasterImage.DetailPixelRatio is >= 0 and <= 1) &&
         evidence.RenderedPixelCount >= 0 &&
         evidence.CompositeContributionPixelCount >= 0 &&
         (evidence.Available ||
@@ -620,7 +624,10 @@ public sealed class PsdInspectionWorkerClient : IPsdInspectionPort
         bool Available,
         long RenderedPixelCount,
         long CompositeContributionPixelCount,
-        int[]? CompositeContributionBbox);
+        int[]? CompositeContributionBbox)
+    {
+        public PsdRasterImageEvidence? RasterImage { get; init; }
+    }
 
     private sealed record WorkerClippingBase(
         int[]? Path,

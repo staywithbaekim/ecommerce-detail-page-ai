@@ -10,6 +10,33 @@ namespace Desktop.Infrastructure.Tests;
 public sealed class TemplateRepositoryTests
 {
     [Fact]
+    public async Task RasterTargetKindSurvivesCommittedRevisionReopen()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        var now = DateTimeOffset.UtcNow;
+        var page = Page("page_pixel", "revision_pixel", 0);
+        var binding = FrameBinding.Create("frame_pixel", page.PageId, LayerPath.Create([2]),
+            ExpectedLayerEvidence.Create(257, "photo", true, true, false, false, 255, "normal",
+                LayerStructureSignature.Create(RuleDigest), TemplateLayerKind.Pixel), [],
+            SelectionRequirement.Create("面料近景"), LayoutIntent.Create("detail_crop", 1, 0, 0,
+                TemplateRect.Create(0, 0, 790, 1252)));
+        var draft = TemplateRevision.CreateDraft(page.RevisionId, "group_pixel", 1, now, [page], [binding]);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await store.SaveGroupAsync(TemplateGroup.Create(draft.GroupId, "raster", now), default);
+            await store.SaveDraftRevisionAsync(draft, default);
+            await store.CommitRevisionAsync(Commit(draft), null, default);
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var restored = Assert.Single((await reopened.GetRevisionAsync(page.RevisionId, default))!.FrameBindings);
+        Assert.Equal(TemplateLayerKind.Pixel, restored.ExpectedLayer.Kind);
+        Assert.True(restored.ExpectedLayer.Clipping);
+    }
+
+    [Fact]
     public async Task ExactLayerNameWhitespaceSurvivesCommittedRevisionReopen()
     {
         using var directory = new TestDirectory();

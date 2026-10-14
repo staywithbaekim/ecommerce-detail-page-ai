@@ -162,7 +162,7 @@ public sealed partial class AiRenderPreparationService
             throw new InvalidDataException("TPL_INSTANCE_COLOR_FACTS_UNRESOLVED");
         var selections = ImmutableArray.CreateBuilder<TemplateInstanceFrameSelection>();
         foreach (var variant in variantPlan.Variants)
-        foreach (var binding in source.TemplateRevision.FrameBindings)
+        foreach (var binding in source.TemplateRevision.ActiveFrameBindings)
         {
             var group = groups.Single(group => group.VariantId == variant.VariantId);
             var matches = joint.Result.RequirementMatches.Where(match => match.RequirementId == binding.FrameId
@@ -170,8 +170,14 @@ public sealed partial class AiRenderPreparationService
                 .ThenBy(match => match.AssetId, StringComparer.Ordinal).ToArray();
             var assessment = AiTargetMatchPolicy.Assess(binding, matches, false);
             if (assessment == AiTargetRequirementAssessment.InvalidResult) throw new InvalidDataException("TPL_INSTANCE_AI_EVIDENCE_INVALID");
-            if (assessment == AiTargetRequirementAssessment.Ready && matches.Length > 0)
-                selections.Add(new(binding.FrameId, variant.VariantId, matches[0].AssetId));
+            var top = matches.FirstOrDefault();
+            var isUsableLowConfidenceFit = assessment == AiTargetRequirementAssessment.ReviewRequired
+                && top is not null
+                && !top.EvidenceCodes.Contains(AiTargetMatchEvidence.Unsafe, StringComparer.Ordinal)
+                && (!AiAnalysisInputProjector.IsLearnedReferenceBinding(binding)
+                    || top.EvidenceCodes.Any(code => code is AiTargetMatchEvidence.Exact or AiTargetMatchEvidence.SafeSimilar));
+            if ((assessment == AiTargetRequirementAssessment.Ready || isUsableLowConfidenceFit) && top is not null)
+                selections.Add(new(binding.FrameId, variant.VariantId, top.AssetId));
         }
         var facts = new TemplateInstanceInputFacts(1,
             new(variantPlan.Variants.Select(variant => variant.VariantId).ToImmutableArray(), variantPlan.PrimaryVariantId, true),
@@ -187,7 +193,7 @@ public sealed partial class AiRenderPreparationService
         var first = TemplateInstanceProjector.Project(new(scope, source.TemplateRevision, facts));
         var overrides = ImmutableArray.CreateBuilder<TemplateInstanceSelectionOverride>();
         foreach (var selection in session.LockedSelections.Values.Where(selection =>
-            source.TemplateRevision.FrameBindings.Any(frame => frame.FrameId == selection.RequirementId)))
+            source.TemplateRevision.ActiveFrameBindings.Any(frame => frame.FrameId == selection.RequirementId)))
         {
             var targets = first.Instances.Where(instance => instance.Frames.Any(frame => frame.FrameId == selection.RequirementId
                 && facts.Variants.Single(variant => variant.VariantId == frame.VariantId).AssetIds.Contains(selection.AssetId, StringComparer.Ordinal))).ToArray();

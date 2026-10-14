@@ -236,6 +236,40 @@
           "items": {
             "$ref": "#/$defs/alias"
           }
+        },
+        "excludedCandidates": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/excludedCandidate"
+          }
+        }
+      }
+    },
+    "excludedCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pageId",
+        "layerId",
+        "layerPath"
+      ],
+      "properties": {
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "layerId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "layerPath": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
     }

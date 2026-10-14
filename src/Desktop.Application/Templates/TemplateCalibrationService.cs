@@ -10,7 +10,8 @@ public sealed class TemplateCalibrationService(
     ITemplateResourceRepository resources,
     ICalibrationStateRepository? calibrationStates = null,
     ICalibrationAssetSourcePort? assetSources = null,
-    IPathPolicy? paths = null) : ITemplateCalibrationService
+    IPathPolicy? paths = null,
+    TemplatePageImportService? importer = null) : ITemplateCalibrationService
 {
     private const string DefaultSelectionRequirement = "商品主体清晰完整，构图适合当前图片框。";
     private readonly ConcurrentDictionary<string, CalibrationState> _states = new(StringComparer.Ordinal);
@@ -28,6 +29,9 @@ public sealed class TemplateCalibrationService(
         var resource = await resources.GetByResourceIdAsync(page.TemplateResourceId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");
+
+        if (session.CanEditPage(pageId) && importer is not null)
+            resource = await importer.EnsureCurrentInspectionAsync(resource, cancellationToken).ConfigureAwait(false);
 
         var key = Key(session, pageId);
         if (!_states.TryGetValue(key, out var state))
@@ -397,6 +401,12 @@ public sealed class TemplateCalibrationService(
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
         var binding = FindPersistedBinding(revision, state, frameId)
             ;
+        var identified = state.Frames.SingleOrDefault(frame => frame.FrameId == frameId
+            || frame.PersistedFrameId == frameId);
+        if (binding is not null && revision.IsFrameExcluded(binding)
+            || identified is not null && revision.RuleWorkspace?.IsCandidateExcluded(pageId,
+                identified.TemplateSha256, identified.StructureSignature, identified.LayerId, identified.LayerPath) == true)
+            throw new InvalidOperationException("TPL_RULE_REFERENCE_INACTIVE");
         if (binding is null)
         {
             var target = state.Frames.SingleOrDefault(frame => frame.FrameId == frameId)
@@ -541,10 +551,13 @@ public sealed class TemplateCalibrationService(
             LayerPath.Create(target.LayerPath.Select(segment => checked(segment + 1))),
             ExpectedLayerEvidence.Create(target.LayerId, target.LayerName, target.IsVisible, target.IsClipping,
                 target.HasMask, target.HasVectorMask, target.Opacity, target.BlendMode,
-                LayerStructureSignature.Create(NormalizeStructureSignature(target.StructureSignature))), [],
+                LayerStructureSignature.Create(NormalizeStructureSignature(target.StructureSignature)), target.LayerKind), target.SupersededLayers,
             SelectionRequirement.Create(description), LayoutIntent.Create("subject_complete", 1, 0, 0,
-                TemplateRect.Create(Math.Max(0, target.Left), Math.Max(0, target.Top),
-                    Math.Min(canvas.Width, (double)target.Left + target.Width), Math.Min(canvas.Height, (double)target.Top + target.Height))));
+                target.LayerKind == TemplateLayerKind.Pixel && target.PreviewBounds is { } visible
+                    ? TemplateRect.Create(Math.Max(0, visible.Left), Math.Max(0, visible.Top),
+                        Math.Min(canvas.Width, visible.Left + visible.Width), Math.Min(canvas.Height, visible.Top + visible.Height))
+                    : TemplateRect.Create(Math.Max(0, target.Left), Math.Max(0, target.Top),
+                        Math.Min(canvas.Width, (double)target.Left + target.Width), Math.Min(canvas.Height, (double)target.Top + target.Height))));
     }
 
     private static void EnsurePageEditable(TemplateDraftSession session, string pageId)
@@ -578,14 +591,17 @@ public sealed class TemplateCalibrationService(
     internal static IReadOnlyList<TemplateFrameProjection> InspectFrames(string pageId, PsdInspectionDocument inspection)
     {
         return inspection.Layers
-            .Where(layer => layer.SmartObject is not null && layer.Visible && layer.EffectiveVisible)
+            .Where(layer => layer.Visible && layer.EffectiveVisible
+                && (layer.SmartObject is not null || layer.Kind == "pixel"
+                    && layer.PixelEvidence.HasReplaceableRasterContent)
+                && !IsCoveredPhotoEdgeResidual(inspection, layer))
             .Select(layer => new TemplateFrameProjection(
                 $"frame_{layer.LayerId}",
                 pageId,
                 layer.Path,
                 layer.LayerId,
                 layer.Name,
-                inspection.StructureSignature,
+                NormalizeStructureSignature(inspection.StructureSignature),
                 layer.Bounds.Left,
                 layer.Bounds.Top,
                 Math.Max(1, layer.Bounds.Right - layer.Bounds.Left),
@@ -598,19 +614,128 @@ public sealed class TemplateCalibrationService(
                 layer.BlendMode,
                 IsPreviewSupported: !layer.HasMask
                     && !layer.HasVectorMask
-                    && IsAxisAlignedTransform(layer.SmartObject!.TransformBox),
+                    && (layer.SmartObject is null || IsAxisAlignedTransform(layer.SmartObject.TransformBox)),
                 IsRegistered: false)
             {
+                LayerKind = layer.SmartObject is null ? TemplateLayerKind.Pixel : TemplateLayerKind.SmartObject,
+                SupersededLayers = CoveredPhotoStack(inspection, layer),
+                TemplateSha256 = inspection.FileSha256,
                 HasCompositeContribution = layer.PixelEvidence.Available
-                    ? layer.PixelEvidence.RenderedPixelCount > 0
-                        && layer.PixelEvidence.CompositeContributionPixelCount > 0
-                        && layer.PixelEvidence.CompositeContributionBounds is not null
+                    ? layer.PixelEvidence.HasMeaningfulCompositeContribution
+                        && !IsCoveredPhotoEdgeResidual(inspection, layer)
                     : null,
                 PreviewBounds = layer.PixelEvidence.CompositeContributionBounds is { } bounds
                     ? new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top)
                     : null
             })
             .ToArray();
+    }
+
+    // A fully covered embedded photograph can acquire a one-pixel perimeter in
+    // an inspected, Photoshop-saved PSD. Its contribution bbox then spans the
+    // whole window even though it is not another independently replaceable slot.
+    // Only dismiss the lower of two adjacent, full-window photographs in the
+    // same explicit clipping stack; small photographs in their own windows stay.
+    internal static bool IsCoveredPhotoEdgeResidual(PsdInspectionDocument inspection, PsdLayerInspection old)
+    {
+        var isPhoto = old.Kind == "pixel" && old.PixelEvidence.HasReplaceableRasterContent
+            || old.Kind == "smartobject" && old.SmartObject is
+                { Kind: "data", EmbeddedContentAvailable: true, IsPsd: false } oldPhoto
+                && oldPhoto.DetectedFileType is "jpg" or "jpeg" or "png";
+        if (!isPhoto || !old.Visible || !old.EffectiveVisible || !old.Clipping
+            || old.ClippingBase is not { Visible: true, EffectiveVisible: true } window
+            || old.HasMask || old.HasVectorMask || old.Opacity != 255 || old.FillOpacity != 255
+            || old.BlendMode is not ("norm" or "normal") || old.Path.Count == 0
+            || !old.PixelEvidence.HasMeaningfulCompositeContribution) return false;
+
+        var bounds = new PsdLayerBounds(Math.Max(0, window.Bounds.Left), Math.Max(0, window.Bounds.Top),
+            Math.Min(inspection.Canvas.Width, window.Bounds.Right), Math.Min(inspection.Canvas.Height, window.Bounds.Bottom));
+        var width = (long)bounds.Right - bounds.Left;
+        var height = (long)bounds.Bottom - bounds.Top;
+        if (width < 4 || height < 4 || old.PixelEvidence.CompositeContributionBounds != bounds
+            || old.PixelEvidence.CompositeContributionPixelCount > 2 * (width + height)
+            || old.Bounds.Left > bounds.Left || old.Bounds.Top > bounds.Top
+            || old.Bounds.Right < bounds.Right || old.Bounds.Bottom < bounds.Bottom) return false;
+
+        var upper = inspection.Layers.SingleOrDefault(layer => layer.Path.Count == old.Path.Count
+            && layer.Path.Take(layer.Path.Count - 1).SequenceEqual(old.Path.Take(old.Path.Count - 1))
+            && (long)layer.Path[^1] == (long)old.Path[^1] + 1);
+        if (upper is null || !upper.Visible || !upper.EffectiveVisible || !upper.Clipping
+            || upper.ClippingBase is null || upper.ClippingBase.LayerId != window.LayerId
+            || !upper.ClippingBase.Path.SequenceEqual(window.Path)
+            || upper.HasMask || upper.HasVectorMask || upper.Opacity != 255 || upper.FillOpacity != 255
+            || upper.BlendMode is not ("norm" or "normal")
+            || upper.Bounds.Left > bounds.Left || upper.Bounds.Top > bounds.Top
+            || upper.Bounds.Right < bounds.Right || upper.Bounds.Bottom < bounds.Bottom
+            || !upper.PixelEvidence.Available || upper.PixelEvidence.RenderedPixelCount <= 0
+            || upper.PixelEvidence.CompositeContributionBounds != bounds
+            || upper.PixelEvidence.CompositeContributionPixelCount < .9 * width * height) return false;
+        return upper.Kind == "pixel" && upper.PixelEvidence.HasReplaceableRasterContent
+            || upper.Kind == "smartobject" && upper.SmartObject is
+                { Kind: "data", EmbeddedContentAvailable: true, IsPsd: false } photo
+                && photo.DetectedFileType is "jpg" or "jpeg" or "png";
+    }
+
+    private static List<SupersededLayerEvidence> CoveredPhotoStack(PsdInspectionDocument inspection,
+        PsdLayerInspection target)
+    {
+        var photograph = target.Kind == "pixel" && target.PixelEvidence.HasReplaceableRasterContent
+            || target.SmartObject is { Kind: "data", EmbeddedContentAvailable: true, IsPsd: false } image
+                && image.DetectedFileType is "jpg" or "jpeg" or "png" && image.EmbeddedContentSha256 is { Length: 64 }
+                && target.PixelEvidence.HasMeaningfulCompositeContribution;
+        if (!photograph
+            || !target.Clipping || target.ClippingBase is not { Visible: true, EffectiveVisible: true } window
+            || target.Opacity != 255 || target.FillOpacity != 255 || target.BlendMode is not ("norm" or "normal")
+            || target.HasMask || target.HasVectorMask || target.Path.Count == 0) return [];
+        var bounds = new PsdLayerBounds(Math.Max(0, window.Bounds.Left), Math.Max(0, window.Bounds.Top),
+            Math.Min(inspection.Canvas.Width, window.Bounds.Right), Math.Min(inspection.Canvas.Height, window.Bounds.Bottom));
+        if (bounds.Right <= bounds.Left || bounds.Bottom <= bounds.Top || !Contains(target.Bounds, bounds)) return [];
+        var siblings = inspection.Layers.Where(layer => layer.Path.Count == target.Path.Count
+            && layer.Path.Take(layer.Path.Count - 1).SequenceEqual(target.Path.Take(target.Path.Count - 1)))
+            .ToDictionary(layer => layer.Path[^1]);
+        var result = new List<SupersededLayerEvidence>();
+        // Only consecutive lower embedded photographs in this explicit window.
+        // Stop at an adjustment, decoration, other frame or missing evidence;
+        // never broaden this into every smart object or a rectangle heuristic.
+        for (var index = target.Path[^1] - 1; index >= 0; index--)
+        {
+            if (!siblings.TryGetValue(index, out var old) || !old.Visible || !old.EffectiveVisible || !old.Clipping
+                || old.ClippingBase is null || old.ClippingBase.LayerId != window.LayerId
+                || !old.ClippingBase.Path.SequenceEqual(window.Path) || old.HasMask || old.HasVectorMask
+                || old.Opacity != 255 || old.FillOpacity != 255 || old.BlendMode is not ("norm" or "normal")
+                || !old.PixelEvidence.Available || old.PixelEvidence.RenderedPixelCount <= 0
+                || old.PixelEvidence.CompositeContributionPixelCount is < 0 or > 1 || !Contains(old.Bounds, bounds)
+                || old.SmartObject is not { Kind: "data", EmbeddedContentAvailable: true, IsPsd: false } oldImage
+                || oldImage.DetectedFileType is not ("jpg" or "jpeg" or "png")
+                || oldImage.EmbeddedContentSha256 is not { Length: 64 }) break;
+            result.Add(SupersededLayerEvidence.Create(LayerPath.Create(old.Path.Select(part => checked(part + 1))),
+                expectedClipping: true, old.LayerId));
+        }
+        return result;
+
+        static bool Contains(PsdLayerBounds image, PsdLayerBounds window) => image.Left <= window.Left
+            && image.Top <= window.Top && image.Right >= window.Right && image.Bottom >= window.Bottom;
+    }
+
+    public static IReadOnlyList<TemplateFrameProjection> OrderFramesVisually(IEnumerable<TemplateFrameProjection> frames)
+    {
+        var remaining = frames.OrderBy(frame => frame.PreviewBounds?.Top ?? frame.Top)
+            .ThenBy(frame => frame.PreviewBounds?.Left ?? frame.Left).ThenBy(frame => frame.LayerId).ToList();
+        var ordered = new List<TemplateFrameProjection>(remaining.Count);
+        while (remaining.Count > 0)
+        {
+            var first = remaining[0];
+            var top = first.PreviewBounds?.Top ?? first.Top;
+            var height = first.PreviewBounds?.Height ?? first.Height;
+            // Small vertical offsets within a row must not reverse left-to-right reading.
+            var row = remaining.Where(frame => (frame.PreviewBounds?.Top ?? frame.Top) - top
+                <= Math.Max(4, Math.Min(height, frame.PreviewBounds?.Height ?? frame.Height) * 0.15))
+                .OrderBy(frame => frame.PreviewBounds?.Left ?? frame.Left)
+                .ThenBy(frame => frame.PreviewBounds?.Top ?? frame.Top).ThenBy(frame => frame.LayerId).ToArray();
+            ordered.AddRange(row);
+            foreach (var frame in row) remaining.Remove(frame);
+        }
+        return ordered;
     }
 
     private static bool IsAxisAlignedTransform(IReadOnlyList<double> transformBox)
@@ -696,11 +821,12 @@ public sealed class TemplateCalibrationService(
                 geometry.Scale,
                 geometry.OffsetX,
                 geometry.OffsetY,
-                TemplateRect.Create(
-                    Math.Max(0, frame.Left),
-                    Math.Max(0, frame.Top),
-                    Math.Min(CanvasWidth, frame.Left + frame.Width),
-                    Math.Min(CanvasHeight, frame.Top + frame.Height)));
+                frame.LayerKind == TemplateLayerKind.Pixel && frame.PreviewBounds is { } visible
+                    ? TemplateRect.Create(Math.Max(0, visible.Left), Math.Max(0, visible.Top),
+                        Math.Min(CanvasWidth, visible.Left + visible.Width), Math.Min(CanvasHeight, visible.Top + visible.Height))
+                    : TemplateRect.Create(
+                        Math.Max(0, frame.Left), Math.Max(0, frame.Top),
+                        Math.Min(CanvasWidth, frame.Left + frame.Width), Math.Min(CanvasHeight, frame.Top + frame.Height)));
         }
 
         public SelectionRequirement BuildSelectionRequirement(
@@ -747,8 +873,8 @@ public sealed class TemplateCalibrationService(
                     frame.HasVectorMask,
                     frame.Opacity,
                     frame.BlendMode,
-                    LayerStructureSignature.Create(NormalizeStructureSignature(frame.StructureSignature))),
-                [],
+                    LayerStructureSignature.Create(NormalizeStructureSignature(frame.StructureSignature)), frame.LayerKind),
+                frame.SupersededLayers,
                 BuildSelectionRequirement(frameId),
                 BuildLayoutIntent(frameId));
         }

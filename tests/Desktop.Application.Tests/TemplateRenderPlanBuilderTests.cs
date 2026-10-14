@@ -9,6 +9,46 @@ namespace Desktop.Application.Tests;
 
 public sealed class TemplateRenderPlanBuilderTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RasterBindingRequiresNegotiatedCapabilityAndExplicitRendererNeutralPlacement(bool covered)
+    {
+        var page = TemplatePage.Create("page_render", "revision_render", 0, "photo", TemplatePageContentType.NormalComposition,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource_template");
+        var old = Binding();
+        var pixel = FrameBinding.Create(old.FrameId, old.PageId, old.LayerPath,
+            ExpectedLayerEvidence.Create(257, "registered_frame", true, false, false, false, 255, "normal",
+                old.ExpectedLayer.StructureSignature, TemplateLayerKind.Pixel),
+            covered ? [SupersededLayerEvidence.Create(LayerPath.Create([3]), false, 259)] : [], old.SelectionRequirement, old.LayoutIntent);
+        var revision = Commit(TemplateRevision.CreateDraft("revision_render", "group_render", 1,
+            DateTimeOffset.UtcNow, [page], [pixel]));
+        var validator = new RenderPlanValidator(new JsonSchemaContractValidator());
+        var builder = new TemplateRenderPlanBuilder(validator);
+        var request = new TemplateRenderPlanRequest("plan_raster", "raster_page_01", "corr_raster", "batch_raster",
+            "product_raster", "artifact_raster", "01-detail.jpg", false, null, DateTimeOffset.UtcNow,
+            [new("asset_front", new string('c', 64), 32, "image/jpeg", 4000, 6000)], RequireAbsolutePlacement: true);
+        var json = builder.Build(revision, page, Resource(), request);
+        using var parsed = JsonDocument.Parse(json);
+        Assert.Equal("pixel", parsed.RootElement.GetProperty("targets")[0].GetProperty("expected_layer").GetProperty("kind").GetString());
+        Assert.Contains(parsed.RootElement.GetProperty("required_capabilities").EnumerateArray(),
+            item => item.GetString() == RenderTemplateEvidenceValidator.RasterReplacementCapability);
+        Assert.Empty(parsed.RootElement.GetProperty("targets")[0].GetProperty("superseded_layers").EnumerateArray());
+        Assert.True(validator.Validate(json).IsValid);
+        Assert.DoesNotContain(parsed.RootElement.GetProperty("required_capabilities").EnumerateArray(),
+            item => item.GetString() == RenderTemplateEvidenceValidator.CoveredRasterStackCapability);
+        var coverageMutation = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        var coverageCapabilities = coverageMutation["required_capabilities"]!.AsArray();
+        coverageCapabilities.Add(RenderTemplateEvidenceValidator.CoveredRasterStackCapability);
+        Assert.False(new JsonSchemaContractValidator().Validate(ContractDocumentKind.RenderPlan, coverageMutation.ToJsonString()).IsValid);
+        Assert.Throws<TemplateRuleViolationException>(() => builder.Build(revision, page, Resource(),
+            request with { RequireAbsolutePlacement = false }));
+        var invalid = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        var capabilities = invalid["required_capabilities"]!.AsArray();
+        capabilities.Remove(capabilities.Single(item => item!.GetValue<string>() == RenderTemplateEvidenceValidator.RasterReplacementCapability));
+        Assert.False(validator.Validate(invalid.ToJsonString()).IsValid);
+    }
+
     [Fact]
     public void CalibratedBindingBuildsSchemaValidRendererNeutralTarget()
     {

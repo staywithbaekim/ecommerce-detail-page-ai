@@ -64,6 +64,106 @@
   },
   "allOf": [
     {
+      "if": { "properties": { "required_capabilities": { "contains": { "const": "image-layer/covered-stack-v1" } } } },
+      "then": {
+        "properties": {
+          "required_capabilities": { "contains": { "const": "image-layer/replace-v1" } },
+          "targets": { "contains": { "properties": {
+            "expected_layer": { "properties": { "kind": { "const": "pixel" } } },
+            "superseded_layers": { "minItems": 1 }
+          } } }
+        }
+      },
+      "else": { "properties": { "targets": { "items": {
+        "if": { "properties": { "expected_layer": { "properties": { "kind": { "const": "pixel" } } } } },
+        "then": { "properties": { "superseded_layers": { "maxItems": 0 } } }
+      } } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "required_capabilities": {
+            "contains": {
+              "const": "image-layer/replace-v1"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "required_capabilities": {
+            "contains": {
+              "const": "layout/absolute-placement-v1"
+            }
+          },
+          "document": {
+            "properties": {
+              "content_type": {
+                "const": "ordinary_set"
+              }
+            }
+          },
+          "targets": {
+            "contains": {
+              "properties": {
+                "expected_layer": {
+                  "properties": {
+                    "kind": {
+                      "const": "pixel"
+                    }
+                  }
+                }
+              }
+            },
+            "items": {
+              "if": {
+                "properties": {
+                  "expected_layer": {
+                    "properties": {
+                      "kind": {
+                        "const": "pixel"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "expected_layer": {
+                    "properties": {
+                      "user_mask": {
+                        "const": false
+                      },
+                      "vector_mask": {
+                        "const": false
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "targets": {
+            "items": {
+              "properties": {
+                "expected_layer": {
+                  "properties": {
+                    "kind": {
+                      "const": "smartObject"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "if": {
         "properties": {
           "required_capabilities": {
@@ -291,7 +391,7 @@
       ],
       "properties": {
         "layer_id": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
-        "kind": { "const": "smartObject" },
+        "kind": { "enum": ["smartObject", "pixel"] },
         "name_before": { "type": "string", "minLength": 1, "maxLength": 256 },
         "visible": { "const": true },
         "clipping": { "type": "boolean" },

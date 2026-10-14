@@ -31,6 +31,31 @@ public sealed class AiAnalysisInputProjectorTests
     }
 
     [Fact]
+    public void ExcludedTemplateFrameIsAbsentFromBatchSnapshotAndAiRequirements()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var original = CommittedRevision(now);
+        var first = Assert.Single(original.FrameBindings);
+        var excluded = FrameBinding.Create("frame_02", "page_01", LayerPath.Create([2]),
+            ExpectedLayerEvidence.Create(2, "frame_02", true, false, false, false, 255, "normal",
+                LayerStructureSignature.Create("sha256:" + new string('c', 64))), [],
+            SelectionRequirement.Create("背面商品图", [SelectionCriterion.Create("asset_id", "asset_01")]),
+            first.LayoutIntent);
+        var workspace = new TemplateRuleWorkspace(1, null, [])
+            .SetCandidateExcluded("page_01", new string('e', 64), excluded.ExpectedLayer.StructureSignature.Value,
+                excluded.ExpectedLayer.LayerId, excluded.LayerPath.Segments.Select(segment => segment - 1).ToArray(), true);
+        var revision = TemplateRevision.Restore(original.RevisionId, original.GroupId, original.RevisionNo,
+            original.State, original.ManifestRef, original.RuleDigest, original.CreatedAt,
+            original.Pages, [first, excluded], workspace);
+        var batch = ReadyBatch(revision, now);
+
+        Assert.Equal(first.FrameId, Assert.Single(Assert.Single(batch.TemplateSnapshot.Pages).FrameIds));
+        var request = AiAnalysisInputProjector.Project(batch, revision, "style_01", Options());
+        Assert.Equal(first.FrameId, Assert.Single(request.Requirements).RequirementId);
+        Assert.Equal(2, revision.FrameBindings.Length);
+    }
+
+    [Fact]
     public void DynamicSizeTablePageAddsSourceRequirementWithoutAProductFrame()
     {
         var now = DateTimeOffset.UtcNow;

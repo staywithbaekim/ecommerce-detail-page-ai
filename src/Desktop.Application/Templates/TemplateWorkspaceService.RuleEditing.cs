@@ -21,9 +21,12 @@ public sealed partial class TemplateWorkspaceService
             await templates.SaveDraftRevisionAsync(revision.WithRuleWorkspace(TemplateRuleWorkspace.Empty), cancellationToken).ConfigureAwait(false);
             revision = await LoadRuleRevisionAsync(session, cancellationToken).ConfigureAwait(false);
         }
-        var candidates = await LoadRuleCandidatesAsync(revision, session, cancellationToken).ConfigureAwait(false);
+        var allCandidates = await LoadRuleCandidatesAsync(revision, session, cancellationToken).ConfigureAwait(false);
         var reserved = revision.RuleWorkspace!.Reconcile(revision)
-            .ReserveFrames(candidates.Select(candidate => (candidate.PageId, candidate.FrameId)));
+            .ReserveFrames(allCandidates.Select(candidate => (candidate.PageId, candidate.FrameId)))
+            .ReorderUnboundCandidateAliases(
+                allCandidates.Select(candidate => (candidate.PageId, candidate.FrameId)),
+                revision.FrameBindings.Select(binding => binding.FrameId).ToHashSet(StringComparer.Ordinal));
         if (!reserved.Aliases.SequenceEqual(revision.RuleWorkspace.Aliases))
         {
             var store = templates as ITemplateRuleCommandStore ?? throw new TemplateRuleViolationException("TPL_RULE_STORE_UNAVAILABLE");
@@ -35,9 +38,12 @@ public sealed partial class TemplateWorkspaceService
                 cancellationToken).ConfigureAwait(false);
             revision = await LoadRuleRevisionAsync(session, cancellationToken).ConfigureAwait(false);
         }
+        var excluded = allCandidates.Where(candidate => candidate.IsExcluded).ToArray();
+        var candidates = allCandidates.Where(candidate => !candidate.IsExcluded).ToArray();
         return RuleView(revision) with
         {
             Candidates = candidates,
+            ExcludedCandidates = excluded,
             UndoCommandIds = templates is ITemplateRuleCommandStore commands
                 ? await commands.GetUndoableRuleCommandsAsync(revision.RevisionId, cancellationToken).ConfigureAwait(false) : []
         };
@@ -64,7 +70,10 @@ public sealed partial class TemplateWorkspaceService
         var current = await LoadRuleRevisionAsync(session, cancellationToken).ConfigureAwait(false);
         EnsureRuleVersion(current, patch.ExpectedDraftVersion);
         var additions = await ValidateCandidateAdditionsAsync(current, session, patch.Changes, cancellationToken).ConfigureAwait(false);
-        var (updated, inverse) = ApplyEdits(current, session, patch.Changes, additions: additions);
+        var visibilityCandidates = await ValidateCandidateVisibilityAsync(current, session, patch.Changes, cancellationToken)
+            .ConfigureAwait(false);
+        var (updated, inverse) = ApplyEdits(current, session, patch.Changes,
+            additions: additions, visibilityCandidates: visibilityCandidates);
         await store.SaveRuleCommandAsync(updated,
             new(patch.CommandId, digest, checked(patch.ExpectedDraftVersion + 1), patch.Changes, inverse, false,
                 current.RuleWorkspace!.Rules is null), null, cancellationToken).ConfigureAwait(false);
@@ -89,6 +98,10 @@ public sealed partial class TemplateWorkspaceService
             throw new TemplateRuleViolationException("TPL_RULE_UNDO_UNAVAILABLE");
         var current = await LoadRuleRevisionAsync(session, cancellationToken).ConfigureAwait(false);
         EnsureRuleVersion(current, expectedDraftVersion);
+        var currentCandidates = await LoadRuleCandidatesAsync(current, session, cancellationToken).ConfigureAwait(false);
+        var candidatesById = currentCandidates.ToDictionary(candidate => candidate.FrameId, StringComparer.Ordinal);
+        var candidateVisibilityConflicts = (original.Applied.CandidateVisibility ?? []).Any(edit =>
+            !candidatesById.TryGetValue(edit.FrameId, out var candidate) || candidate.IsExcluded != edit.Excluded);
         if (original.Applied.Frames.Any(edit => current.FrameBindings.SingleOrDefault(frame => frame.FrameId == edit.FrameId)
                 ?.SelectionRequirement.Description != edit.Description.Trim())
             || (original.Applied.Pages ?? []).Any(edit => current.Pages.Any(page => page.PageId == edit.PageId))
@@ -96,10 +109,14 @@ public sealed partial class TemplateWorkspaceService
                 ? current.FrameBindings.Any(frame => frame.FrameId == edit.FrameId)
                 : current.FrameBindings.SingleOrDefault(frame => frame.FrameId == edit.FrameId) is not { } target
                     || TemplateRuleCodec.Serialize(TemplatePackageService.ToPackageBinding(target)) != TemplateRuleCodec.Serialize(edit.Binding))
+            || candidateVisibilityConflicts
             || original.Applied.Branches.Any(edit => TemplateRuleCodec.Serialize(current.RuleWorkspace!.Rules?.Branches
                 .SingleOrDefault(branch => branch.BranchId == edit.BranchId)) != TemplateRuleCodec.Serialize(edit.Branch)))
             throw new TemplateRuleViolationException("TPL_RULE_UNDO_CONFLICT");
-        var (updated, inverse) = ApplyEdits(current, session, original.Inverse, restoring: true);
+        var visibilityCandidates = await ValidateCandidateVisibilityAsync(current, session, original.Inverse, cancellationToken)
+            .ConfigureAwait(false);
+        var (updated, inverse) = ApplyEdits(current, session, original.Inverse, restoring: true,
+            visibilityCandidates: visibilityCandidates);
         if (original.BeforeRulesWereLegacy && updated.RuleWorkspace!.Rules is { Branches.IsEmpty: true })
             updated = updated.WithRuleWorkspace(updated.RuleWorkspace with { Rules = null });
         await store.SaveRuleCommandAsync(updated, new(undoCommandId, digest, checked(expectedDraftVersion + 1),
@@ -122,7 +139,7 @@ public sealed partial class TemplateWorkspaceService
         return new(revision.RevisionId, workspace.Version, TemplateRuleCodec.BusinessDigest(revision),
             TemplateRuleViewMapper.ToView(workspace.Rules), TemplateRuleViewMapper.ToViews(workspace.Aliases),
             workspace.Rules is null ? [] : TemplateRuleViewMapper.ToViews(TemplateRuleEvaluator.Validate(workspace.Rules, revision)),
-            revision.FrameBindings.Select(frame => new TemplateRuleFrameOverview(frame.PageId, frame.FrameId,
+            revision.ActiveFrameBindings.Select(frame => new TemplateRuleFrameOverview(frame.PageId, frame.FrameId,
                 frame.SelectionRequirement.Description)).ToImmutableArray());
     }
 
@@ -135,7 +152,8 @@ public sealed partial class TemplateWorkspaceService
 
     private static (TemplateRevision Updated, TemplateRuleEditSet Inverse) ApplyEdits(
         TemplateRevision revision, TemplateDraftSession session, TemplateRuleEditSet changes, bool restoring = false,
-        HashSet<string>? additions = null)
+        HashSet<string>? additions = null,
+        Dictionary<string, TemplateRuleCandidateView>? visibilityCandidates = null)
     {
         ValidateEdits(changes);
         var inverseFrames = ImmutableArray.CreateBuilder<TemplateFrameRuleEdit>();
@@ -143,6 +161,7 @@ public sealed partial class TemplateWorkspaceService
         var updated = revision;
         var inversePages = new List<TemplateRulePageEdit>();
         var inverseTargets = new List<TemplateRuleTargetEdit>();
+        var inverseVisibility = new List<TemplateRuleCandidateVisibilityEdit>();
         foreach (var edit in changes.Pages ?? [])
         {
             if (!session.CanEditPage(edit.PageId)) throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
@@ -187,10 +206,26 @@ public sealed partial class TemplateWorkspaceService
                 inverseTargets.Add(new(edit.FrameId, null));
             }
         }
+        foreach (var edit in changes.CandidateVisibility ?? [])
+        {
+            if (visibilityCandidates is null || !visibilityCandidates.TryGetValue(edit.FrameId, out var candidate))
+                throw new TemplateRuleViolationException("TPL_RULE_TARGET_REFERENCE_INVALID");
+            if (!session.CanEditPage(candidate.PageId))
+                throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
+            inverseVisibility.Add(new(edit.FrameId, !edit.Excluded));
+            updated = updated.WithRuleWorkspace(updated.RuleWorkspace!.SetCandidateExcluded(
+                candidate.PageId,
+                candidate.Target.TemplateSha256,
+                candidate.Target.StructureSignature,
+                candidate.Target.LayerId,
+                candidate.Target.LayerPath,
+                edit.Excluded));
+        }
         foreach (var edit in changes.Frames)
         {
             var frame = updated.FrameBindings.SingleOrDefault(frame => frame.FrameId == edit.FrameId)
                 ?? throw new TemplateRuleViolationException("TPL_RULE_FRAME_REFERENCE_INVALID");
+            if (updated.IsFrameExcluded(frame)) throw new TemplateRuleViolationException("TPL_RULE_REFERENCE_INACTIVE");
             if (!session.CanEditPage(frame.PageId)) throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
             inverseFrames.Add(new(frame.FrameId, frame.SelectionRequirement.Description));
             updated = updated.UpdateFrameBinding(frame.FrameId, SelectionRequirement.Create(edit.Description, frame.SelectionRequirement.Criteria));
@@ -217,7 +252,11 @@ public sealed partial class TemplateWorkspaceService
         }
         if (!changes.Branches.IsEmpty)
             updated = updated.WithRuleWorkspace(updated.RuleWorkspace! with { Rules = new(1, [.. branches]) });
-        return (updated, new(inverseFrames.ToImmutable(), inverseBranches.ToImmutable(), inversePages, inverseTargets));
+        var inverse = new TemplateRuleEditSet(inverseFrames.ToImmutable(), inverseBranches.ToImmutable(), inversePages, inverseTargets)
+        {
+            CandidateVisibility = inverseVisibility
+        };
+        return (updated, inverse);
     }
 
     private async Task<List<TemplateRuleCandidateView>> LoadRuleCandidatesAsync(TemplateRevision revision,
@@ -233,13 +272,21 @@ public sealed partial class TemplateWorkspaceService
             // missing resource cannot authorize a new target, but must not
             // break legacy rule-only editing/recovery.
             if (resource is null) continue;
-            foreach (var target in TemplateCalibrationService.InspectFrames(page.PageId, resource.Inspection))
+            if (importer is not null)
+                resource = await importer.EnsureCurrentInspectionAsync(resource, cancellationToken).ConfigureAwait(false);
+            foreach (var target in TemplateCalibrationService.OrderFramesVisually(
+                TemplateCalibrationService.InspectFrames(page.PageId, resource.Inspection)))
             {
-                if (!TemplateCalibrationService.CanSetRule(target, resource.Inspection.Canvas.Width, resource.Inspection.Canvas.Height)
-                    || revision.FrameBindings.Any(frame => frame.PageId == page.PageId && frame.ExpectedLayer.LayerId == target.LayerId
-                        && frame.LayerPath.Segments.SequenceEqual(target.LayerPath.Select(segment => segment + 1)))) continue;
-                result.Add(new(page.PageId, TemplateCalibrationService.CandidateBindingIdentity(revision, target), target,
-                    target.HasCompositeContribution == true));
+                var binding = revision.FrameBindings.SingleOrDefault(frame => frame.PageId == page.PageId
+                    && frame.ExpectedLayer.LayerId == target.LayerId
+                    && frame.LayerPath.Segments.SequenceEqual(target.LayerPath.Select(segment => segment + 1)));
+                if (binding is null && !TemplateCalibrationService.CanSetRule(target,
+                    resource.Inspection.Canvas.Width, resource.Inspection.Canvas.Height)) continue;
+                var excluded = revision.RuleWorkspace?.IsCandidateExcluded(
+                    target.PageId, target.TemplateSha256, target.StructureSignature,
+                    target.LayerId, target.LayerPath) == true;
+                result.Add(new(page.PageId, binding?.FrameId ?? TemplateCalibrationService.CandidateBindingIdentity(revision, target), target,
+                    !excluded && binding is null && target.HasCompositeContribution == true, excluded));
             }
         }
         return result;
@@ -271,12 +318,39 @@ public sealed partial class TemplateWorkspaceService
         return result;
     }
 
+    private async Task<Dictionary<string, TemplateRuleCandidateView>> ValidateCandidateVisibilityAsync(
+        TemplateRevision revision,
+        TemplateDraftSession session,
+        TemplateRuleEditSet changes,
+        CancellationToken cancellationToken)
+    {
+        var edits = changes.CandidateVisibility ?? [];
+        if (edits.Count == 0) return new(StringComparer.Ordinal);
+        var candidates = await LoadRuleCandidatesAsync(revision, session, cancellationToken).ConfigureAwait(false);
+        var byId = candidates.ToDictionary(candidate => candidate.FrameId, StringComparer.Ordinal);
+        var result = new Dictionary<string, TemplateRuleCandidateView>(StringComparer.Ordinal);
+        foreach (var edit in edits)
+        {
+            if (!byId.TryGetValue(edit.FrameId, out var candidate))
+                throw new TemplateRuleViolationException("TPL_RULE_TARGET_REFERENCE_INVALID");
+            var excluded = revision.RuleWorkspace!.IsCandidateExcluded(
+                candidate.PageId, candidate.Target.TemplateSha256, candidate.Target.StructureSignature,
+                candidate.Target.LayerId, candidate.Target.LayerPath);
+            if (excluded == edit.Excluded)
+                throw new TemplateRuleViolationException("TPL_RULE_TARGET_REFERENCE_INVALID");
+            result.Add(edit.FrameId, candidate);
+        }
+        return result;
+    }
+
     private static void ValidateEdits(TemplateRuleEditSet changes)
     {
         if (changes is null || changes.Frames.IsDefault || changes.Branches.IsDefault
             || changes.Frames.Length > 1024 || changes.Branches.Length > 128
             || changes.Pages?.Count > 256 || changes.Targets?.Count > 1024
-            || changes.Frames.IsEmpty && changes.Branches.IsEmpty && (changes.Pages?.Count ?? 0) == 0 && (changes.Targets?.Count ?? 0) == 0)
+            || changes.CandidateVisibility?.Count > 1024
+            || changes.Frames.IsEmpty && changes.Branches.IsEmpty && (changes.Pages?.Count ?? 0) == 0
+                && (changes.Targets?.Count ?? 0) == 0 && (changes.CandidateVisibility?.Count ?? 0) == 0)
             throw new TemplateRuleViolationException("TPL_RULE_PATCH_INVALID");
         if (changes.Source is { } source)
         {
@@ -290,11 +364,15 @@ public sealed partial class TemplateWorkspaceService
         }
         if ((changes.Pages ?? []).Any(edit => edit is null || edit.Bindings is null)
             || (changes.Targets ?? []).Any(edit => edit is null)
+            || (changes.CandidateVisibility ?? []).Any(edit => edit is null)
+            || (changes.CandidateVisibility ?? []).Select(edit => edit.FrameId).Distinct(StringComparer.Ordinal).Count()
+                != (changes.CandidateVisibility?.Count ?? 0)
             || (changes.Pages ?? []).Select(edit => edit.PageId).Distinct(StringComparer.Ordinal).Count() != (changes.Pages?.Count ?? 0)
             || (changes.Targets ?? []).Select(edit => edit.FrameId).Distinct(StringComparer.Ordinal).Count() != (changes.Targets?.Count ?? 0))
             throw new TemplateRuleViolationException("TPL_RULE_PATCH_INVALID");
         foreach (var edit in changes.Pages ?? []) TemplateValueRules.Identifier(edit.PageId, "TPL_RULE_PATCH_INVALID");
         foreach (var edit in changes.Targets ?? []) TemplateValueRules.Identifier(edit.FrameId, "TPL_RULE_PATCH_INVALID");
+        foreach (var edit in changes.CandidateVisibility ?? []) TemplateValueRules.Identifier(edit.FrameId, "TPL_RULE_PATCH_INVALID");
         var targets = new HashSet<string>(StringComparer.Ordinal);
         foreach (var edit in changes.Frames)
         {

@@ -6,11 +6,19 @@ namespace Desktop.Application.Rendering;
 /// <summary>Closes a validated plan against the inspection of its exact immutable PSD bytes.</summary>
 public static class RenderTemplateEvidenceValidator
 {
+    public const string RasterReplacementCapability = "image-layer/replace-v1";
+    public const string CoveredRasterStackCapability = "image-layer/covered-stack-v1";
+
     public static bool Matches(string planJson, PsdInspectionDocument? inspection)
     {
         if (inspection is null) return false;
         using var json = JsonDocument.Parse(planJson);
         var plan = json.RootElement;
+        var coveredRaster = plan.GetProperty("targets").EnumerateArray().Any(target =>
+            target.GetProperty("expected_layer").GetProperty("kind").GetString() == "pixel"
+            && target.GetProperty("superseded_layers").GetArrayLength() > 0);
+        if (coveredRaster != plan.GetProperty("required_capabilities").EnumerateArray()
+            .Any(item => item.GetString() == CoveredRasterStackCapability)) return false;
         var document = plan.GetProperty("document");
         var template = plan.GetProperty("resources").EnumerateArray().Single(resource =>
             resource.GetProperty("resource_id").GetString() == document.GetProperty("template_resource_id").GetString());
@@ -53,7 +61,9 @@ public static class RenderTemplateEvidenceValidator
         {
             var layer = Resolve(inspection, target.GetProperty("layer_path"));
             var expected = target.GetProperty("expected_layer");
-            if (layer is null || !touched.Add(layer.LayerId) || !IsEmbeddedVisibleSmartObject(layer)
+            var raster = expected.GetProperty("kind").GetString() == "pixel";
+            if (layer is null || !touched.Add(layer.LayerId)
+                || (raster ? !IsVisibleRasterTarget(layer, plan) : !IsEmbeddedVisibleSmartObject(layer))
                 || layer.LayerId != expected.GetProperty("layer_id").GetInt32()
                 || layer.Name != expected.GetProperty("name_before").GetString()
                 || layer.Visible != expected.GetProperty("visible").GetBoolean()
@@ -81,6 +91,14 @@ public static class RenderTemplateEvidenceValidator
         }
         return true;
     }
+
+    private static bool IsVisibleRasterTarget(PsdLayerInspection layer, JsonElement plan) =>
+        plan.GetProperty("document").GetProperty("content_type").GetString() == "ordinary_set"
+        && plan.GetProperty("required_capabilities").EnumerateArray().Any(item => item.GetString() == RasterReplacementCapability)
+        && RenderPlanPlacementMigration.IsExplicit(plan)
+        && layer.Kind == "pixel" && !layer.IsGroup && layer.SmartObject is null
+        && layer.Visible && layer.EffectiveVisible && !layer.HasMask && !layer.HasVectorMask
+        && layer.PixelEvidence.HasReplaceableRasterContent;
 
     private static PsdLayerInspection? Resolve(PsdInspectionDocument inspection, JsonElement path)
     {

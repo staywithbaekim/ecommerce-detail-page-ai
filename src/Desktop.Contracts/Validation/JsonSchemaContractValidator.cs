@@ -124,6 +124,8 @@ public sealed class JsonSchemaContractValidator : IJsonContractDiagnosticValidat
         [ContractDocumentKind.TemplatePackageManifest] = LoadSchema("template-package-v1.schema.json"),
         [ContractDocumentKind.TemplatePackageManifestV2] = LoadSchema("template-package-v2.schema.json"),
         [ContractDocumentKind.TemplatePackageManifestV3] = LoadSchema("template-package-v3.schema.json"),
+        [ContractDocumentKind.TemplatePackageManifestV4] = LoadSchema("template-package-v4.schema.json"),
+        [ContractDocumentKind.TemplatePackageManifestV5] = LoadSchema("template-package-v5.schema.json"),
         [ContractDocumentKind.TemplateRuleWorkspace] = LoadSchema("template-rules-v1.schema.json"),
         [ContractDocumentKind.TemplateRuleAiResult] = LoadSchema("template-rule-ai-v1.schema.json"),
         [ContractDocumentKind.AssetManifest] = LoadSchema("asset-manifest-v1.schema.json"),

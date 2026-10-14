@@ -104,6 +104,13 @@ public interface ITemplateSourceFilePort
 
 public interface ITemplateResourceRepository
 {
+    // Optional for legacy repositories; never silently pretend an upgrade was persisted.
+    Task<ImportedTemplateResource> RefreshInspectionCacheAsync(
+        ImportedTemplateResource expected,
+        PsdInspectionDocument inspected,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("TPL_PSD_INSPECTION_CACHE_REFRESH_UNSUPPORTED");
+
     Task<ImportedTemplateResource?> GetByResourceIdAsync(
         string resourceId,
         CancellationToken cancellationToken);

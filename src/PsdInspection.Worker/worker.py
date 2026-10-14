@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -13,7 +14,8 @@ from PIL import ImageChops
 from psd_tools import PSDImage
 from psd_tools.constants import EffectOSType, Tag
 from psd_tools.psd import descriptor as psd_descriptor
-from psd_tools.psd.effects_layer import BevelInfo
+from psd_tools.psd.effects_layer import BevelInfo, SolidFillInfo
+from psd_tools.psd.color import Color
 from psd_tools.terminology import Unit
 
 
@@ -167,11 +169,15 @@ def flatten_layers(
     return records
 
 
-def _viewport(layer: Any, psd: Any) -> tuple[int, int, int, int] | None:
+def _viewport(layer: Any, psd: Any, clipping_base: dict[str, Any] | None = None) -> tuple[int, int, int, int] | None:
     left = max(0, int(layer.left))
     top = max(0, int(layer.top))
     right = min(int(psd.width), int(layer.right))
     bottom = min(int(psd.height), int(layer.bottom))
+    if clipping_base is not None:
+        bounds = clipping_base["bbox"]
+        left, top = max(left, bounds[0]), max(top, bounds[1])
+        right, bottom = min(right, bounds[2]), min(bottom, bounds[3])
     return (left, top, right, bottom) if right > left and bottom > top else None
 
 
@@ -188,17 +194,64 @@ def _difference_mask(first: Any, second: Any) -> Any:
     return mask
 
 
-def pixel_evidence(psd: Any, layer: Any, complete_document: Any) -> dict[str, Any]:
+def raster_image_evidence(layer: Any, viewport: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+    """Bounded local photo-content evidence; names and template identities are irrelevant."""
+    unavailable = {"available": False, "color_count": 0, "detail_pixel_ratio": 0.0}
+    image = sample = None
+    try:
+        if layer.kind != "pixel" or not layer.is_visible() or not layer.has_pixels():
+            return unavailable
+        image = layer.topil()
+        if image is None or min(image.size) < 4:
+            return unavailable
+        if viewport is not None:
+            cropped = image.crop((viewport[0] - layer.left, viewport[1] - layer.top,
+                viewport[2] - layer.left, viewport[3] - layer.top))
+            image.close()
+            image = cropped
+        from PIL import Image
+        import numpy as np
+        sample = image.convert("RGB")
+        sample.thumbnail((96, 96), Image.Resampling.BILINEAR)
+        colors = len(sample.getcolors(96 * 96) or [])
+        values = np.asarray(sample, dtype=np.int16)
+        if min(values.shape[:2]) < 4:
+            return {**unavailable, "available": True, "color_count": colors}
+        # Second differences reject smooth fills/gradients even when they contain
+        # many colors; raw entropy alone would admit them as photographs.
+        detail = np.max(np.abs(4 * values[1:-1, 1:-1]
+            - values[:-2, 1:-1] - values[2:, 1:-1]
+            - values[1:-1, :-2] - values[1:-1, 2:]), axis=2)
+        ratio = float(np.count_nonzero(detail > 12) / detail.size)
+        return {"available": True, "color_count": colors, "detail_pixel_ratio": round(ratio, 6)}
+    except MemoryError:
+        raise
+    except Exception:
+        return unavailable
+    finally:
+        for value in (sample, image):
+            if value is not None:
+                value.close()
+
+
+def pixel_evidence(psd: Any, layer: Any, complete_document: Any,
+    clipping_base: dict[str, Any] | None = None) -> dict[str, Any]:
     unavailable = {
         "available": False,
         "rendered_pixel_count": 0,
         "composite_contribution_pixel_count": 0,
         "composite_contribution_bbox": None,
     }
-    if layer.kind != "smartobject":
+    if layer.kind not in ("smartobject", "pixel"):
         return unavailable
 
-    viewport = _viewport(layer, psd)
+    viewport = _viewport(layer, psd, clipping_base)
+    if layer.kind == "pixel":
+        raster = raster_image_evidence(layer, viewport)
+        unavailable["raster_image"] = raster
+        if not raster["available"] or raster["color_count"] < 128 or raster["detail_pixel_ratio"] < 0.02:
+            return {**unavailable, "available": True}
+
     if viewport is None or not layer.is_visible() or int(layer.opacity) <= 0:
         return {
             **unavailable,
@@ -240,6 +293,7 @@ def pixel_evidence(psd: Any, layer: Any, complete_document: Any) -> dict[str, An
                 relative_bbox[3] + viewport[1],
             ]
         return {
+            **unavailable,
             "available": True,
             "rendered_pixel_count": rendered_pixel_count,
             "composite_contribution_pixel_count": contribution_count,
@@ -269,7 +323,7 @@ def attach_pixel_evidence(
     )
     try:
         for layer, record in layer_entries:
-            record["pixel_evidence"] = pixel_evidence(psd, layer, complete_document)
+            record["pixel_evidence"] = pixel_evidence(psd, layer, complete_document, record["clipping_base"])
     finally:
         complete_document.close()
 
@@ -380,6 +434,32 @@ def linear_contour(value: Any) -> bool:
 
 
 def legacy_effect_value(block: Any, modern_blocks: list[Any]) -> Any:
+    # PS 26.8.1 can refresh the redundant RGB16 solid-fill compatibility
+    # cache by one integer around the same exact modern RGB double. Retain
+    # the entire modern descriptor and every other legacy field; legacy-only,
+    # conflicting modern blocks, other spaces and larger changes stay exact.
+    solid = block.get(EffectOSType.SOLID_FILL)
+    modern_solids = [item.get(b"SoFi") for item in modern_blocks]
+    channels = (b"Rd  ", b"Grn ", b"Bl  ")
+    if type(solid) is SolidFillInfo and solid.version == 2 and modern_solids:
+        colors = [item.get(b"Clr ") if isinstance(item, psd_descriptor.Descriptor) else None
+                  for item in modern_solids]
+        if all(isinstance(color, psd_descriptor.Descriptor) and color.classID == b"RGBC"
+               and set(color) == set(channels)
+               and all(type(color[key]) is psd_descriptor.Double
+                       and math.isfinite(color[key].value) and 0 <= color[key].value <= 255
+                       for key in channels) for color in colors):
+            values = [colors[0][key].value for key in channels]
+            canonical = [round(value * 257) for value in values]
+            if (all([color[key].value for key in channels] == values for color in colors)
+                    and all(type(color) is Color and int(color.id) == 0
+                            and len(color.values) == 4 and color.values[3] == 0
+                            and all(abs(value - reference) <= 1
+                                    for value, reference in zip(color.values[:3], canonical))
+                            for color in (solid.color, solid.native_color))):
+                block = copy.deepcopy(block)
+                for color in (block[EffectOSType.SOLID_FILL].color, block[EffectOSType.SOLID_FILL].native_color):
+                    color.values[:3] = canonical
     bevel = block.get(EffectOSType.BEVEL)
     if bevel is None:
         return block.tobytes().hex()
@@ -434,11 +514,17 @@ def text_style_hash(layer: Any) -> str:
     data = layer._data
     entries = dict(data.text_data.items())
     allowed = {b"Txt ", b"textGridding", b"Ornt", b"AntA", b"bounds",
-               b"boundingBox", b"TextIndex", b"EngineData", b"TxMg"}
+               b"boundingBox", b"TextIndex", b"EngineData", b"TxMg", b"substitutesUsed"}
     if set(entries) - allowed or not {b"EngineData", b"Txt ", b"Ornt", b"AntA"} <= set(entries):
         raise ValueError("Unsupported text descriptor")
     # PS 26.8.1 was observed to materialize this no-mixing value when saving.
     entries.setdefault(b"TxMg", psd_descriptor.Enumerated(typeID=b"TxMg", enum=b"TxNM"))
+    # A missing-font substitution is not a harmless save default. Preserve its
+    # typed state in editable-style evidence so a newly substituted non-target
+    # layer remains rejected even when Photoshop retains the cached pixels.
+    entries.setdefault(b"substitutesUsed", psd_descriptor.Bool(False))
+    if type(entries[b"substitutesUsed"]) is not psd_descriptor.Bool:
+        raise ValueError("Unsupported font-substitution evidence")
     engine = layer._engine_data
     if any(engine.get(key) is None for key in ("EngineDict", "ResourceDict", "DocumentResources")):
         raise ValueError("Missing editable text data")
@@ -452,7 +538,7 @@ def text_style_hash(layer: Any) -> str:
 
 
 def adjustment_hash(layer: Any) -> str:
-    tags = {"curves": Tag.CURVES, "exposure": Tag.EXPOSURE}
+    tags = {"curves": Tag.CURVES, "exposure": Tag.EXPOSURE, "colorbalance": Tag.COLOR_BALANCE}
     tag = tags.get(layer.kind)
     if tag is None or tag not in layer.tagged_blocks:
         raise ValueError("Unsupported adjustment")
@@ -496,7 +582,7 @@ def render_content_evidence(layer: Any) -> dict[str, Any]:
     result = {"available": False, "pixel_sha256": None, "text_sha256": None,
               "mask_sha256": None, "vector_mask_sha256": None, "effects_sha256": None,
               "text_style_sha256": None, "adjustment_sha256": None}
-    if layer.kind not in ("pixel", "type", "smartobject", "group", "curves", "exposure", "shape"):
+    if layer.kind not in ("pixel", "type", "smartobject", "group", "curves", "exposure", "colorbalance", "shape"):
         return result
 
     def image_hash(image: Any) -> str | None:
@@ -529,7 +615,7 @@ def render_content_evidence(layer: Any) -> dict[str, Any]:
         if layer.kind == "type":
             result["text_sha256"] = hashlib.sha256(layer.text.encode("utf-8")).hexdigest().upper()
             result["text_style_sha256"] = text_style_hash(layer)
-        if layer.kind in ("curves", "exposure"):
+        if layer.kind in ("curves", "exposure", "colorbalance"):
             result["adjustment_sha256"] = adjustment_hash(layer)
         if layer.kind == "shape":
             result["adjustment_sha256"] = shape_content_hash(layer)

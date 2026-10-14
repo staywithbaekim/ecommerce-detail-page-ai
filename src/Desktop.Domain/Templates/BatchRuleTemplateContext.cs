@@ -51,7 +51,7 @@ public sealed record BatchRuleTemplateContext : IBatchTemplateContext
             throw new TemplateRuleViolationException("TPL_RULE_CONTEXT_ALL_PAGES_REQUIRED");
         var pages = revision.Pages.OrderBy(page => page.Order).Select(page => new BatchTemplatePageSnapshot(
             page.PageId, page.Order, page.ContentType, page.GenerationMode, page.VariantCapacity, page.TemplateResourceId,
-            revision.FrameBindings.Where(frame => frame.PageId == page.PageId).Select(frame => frame.FrameId)
+            revision.ActiveFrameBindings.Where(frame => frame.PageId == page.PageId).Select(frame => frame.FrameId)
                 .Order(StringComparer.Ordinal).ToImmutableArray())).ToImmutableArray();
         return new(snapshotId, batchId, revision.RevisionId, pages, revision.RuleDigest, businessRuleDigest, createdAt);
     }

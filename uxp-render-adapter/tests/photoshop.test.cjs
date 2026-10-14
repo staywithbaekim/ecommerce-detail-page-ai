@@ -46,6 +46,20 @@ function fixture(sourceName = "resource_owned.jpg") {
         const selectedLayer = layers.get(selected);
         if (selectedLayer) selectedLayer.name = "replacement";
       }
+      if (command._obj === "newPlacedLayer") {
+        if (state.failPixelPreparation) return { _obj: "error" };
+        const selected = commands.find(item => item._obj === "select")?._target?.[0]?._id;
+        const selectedLayer = layers.get(selected), pixelDescriptor = descriptors.get(selected);
+        assert.equal(selectedLayer.kind, "pixel");
+        layers.delete(selected); descriptors.delete(selected);
+        selectedLayer.id = 9000; selectedLayer.kind = "smartObject";
+        pixelDescriptor.smartObject = { linked: false };
+        pixelDescriptor.smartObjectMore = { ID: "converted_1", transform: [0, 0, 400, 0, 400, 600, 0, 600],
+          size: { width: 4000, height: 6000 }, warp: { warpStyle: { _value: "warpNone" } } };
+        if (state.dropPixelClipping) pixelDescriptor.group = false;
+        layers.set(selectedLayer.id, selectedLayer); descriptors.set(selectedLayer.id, pixelDescriptor);
+        state.pixelPreparations = (state.pixelPreparations || 0) + 1;
+      }
       if (command._obj === "transform") {
         const id = command._target[0]._id, currentTarget = layers.get(id), currentDescriptor = descriptors.get(id);
         assert.ok(currentTarget); assert.ok(currentDescriptor);
@@ -84,6 +98,111 @@ function fixture(sourceName = "resource_owned.jpg") {
   const boundary = async () => { state.boundaries++; assert.equal(state.modal, false); };
   return { plan, prepared, executor, ps, doc, target, fixed, descriptor, layers, descriptors, state, entries, boundary };
 }
+
+for (const includePsd of [true, false]) {
+  test(`raster replacement hides only its declared covered photo stack (editable PSD=${includePsd})`, async () => {
+    const f = fixture();
+    f.plan.required_capabilities.push("image-layer/replace-v1");
+    f.plan.required_capabilities.push("image-layer/covered-stack-v1");
+    f.plan.targets[0].expected_layer.kind = "pixel";
+    f.plan.targets[0].expected_layer.clipping = true;
+    f.plan.targets[0].layer_path = [3];
+    f.plan.output.editable_psd = { enabled: includePsd, file_name: includePsd ? "01-detail.psd" : null };
+    f.target.kind = "pixel";
+    delete f.descriptor.smartObject; delete f.descriptor.smartObjectMore;
+    f.descriptor.group = true;
+    const old = { ...f.fixed, id: 260, name: "covered photo", kind: "smartObject" };
+    f.doc.layers.splice(1, 0, old); f.layers.set(old.id, old);
+    f.descriptors.set(old.id, { group: true, smartObject: { linked: false }, smartObjectMore: {
+      ID: "covered_photo", transform: [0, 0, 400, 0, 400, 600, 0, 600],
+      size: { width: 4000, height: 6000 }, warp: { warpStyle: { _value: "warpNone" } } } });
+    f.plan.targets[0].superseded_layers = [{ layer_path: [2], layer_path_order: "psd_bottom_to_top",
+      expected_kind: "smartObject", expected_visible: true, expected_clipping: true, expected_layer_id: old.id }];
+    const result = await f.executor.execute(f.prepared, f.boundary, async () => {});
+    assert.equal(f.state.pixelPreparations, 1); assert.equal(f.state.replacements, 1);
+    assert.equal(old.visible, false); assert.equal(old.id, 260); assert.equal(old.name, "covered photo");
+    assert.equal(f.fixed.visible, true); assert.equal(f.fixed.id, 258);
+    assert.deepEqual(f.state.saves, includePsd ? ["psd", "jpg"] : ["jpg"]);
+    await Promise.all([...result.outputs.values()].map(output => output.dispose()));
+  });
+}
+
+test("raster target is prepared and replaced inside the owned modal with no additional user step", async () => {
+  const f = fixture();
+  f.plan.required_capabilities.push("image-layer/replace-v1");
+  f.plan.targets[0].expected_layer.kind = "pixel";
+  f.target.kind = "pixel";
+  delete f.descriptor.smartObject; delete f.descriptor.smartObjectMore;
+  await f.executor.execute(f.prepared, f.boundary, async () => {});
+  assert.equal(f.state.pixelPreparations, 1);
+  assert.equal(f.state.replacements, 1);
+  assert.equal(f.fixed.id, 258);
+  assert.equal(f.state.closes, 1);
+});
+
+test("nested target changes only its ancestor's derived bounds, not sibling leaf or unrelated group bounds", async () => {
+  const f = fixture();
+  const before = await f.executor.snapshot(f.doc);
+  const target = before.find(r => r.id === 257), fixed = before.find(r => r.id === 258);
+  const group = { ...structuredClone(fixed), path: "2", id: 800, kind: "group", name: "group", bounds: [0,0,1000,1400] };
+  target.path = "2/1"; fixed.path = "2/2";
+  const untouched = { ...structuredClone(group), path: "1", id: 801 };
+  const initial = [untouched,group,target,fixed];
+  f.plan.targets[0].layer_path = [2,1];
+  f.plan.targets[0].expected_layer.kind = "pixel";
+  target.kind = "pixel";
+  const after = structuredClone(initial);
+  after[1].bounds = [-5,10,800,1400]; after[2].id = 9000; after[2].kind = "smartobject";
+  f.executor.replacementLayerIds.set("2/1",9000);
+  assert.doesNotThrow(() => f.executor.audit(f.plan,initial,after));
+  for (const mutate of [a => a[3].bounds[0]++, a => a[0].bounds[0]++, a => a[3].id++,
+    a => a[1].name = "changed", a => a.splice(3,1)]) {
+    const changed = structuredClone(after); mutate(changed);
+    assert.throws(() => f.executor.audit(f.plan,initial,changed), /BRIDGE_PLAN_INVALID/);
+  }
+});
+
+test("raster preparation failure or changed clipping cannot publish output", async () => {
+  for (const mode of ["failPixelPreparation", "dropPixelClipping"]) {
+    const f = fixture();
+    f.plan.required_capabilities.push("image-layer/replace-v1");
+    Object.assign(f.plan.targets[0].expected_layer, { kind: "pixel", clipping: true });
+    f.target.kind = "pixel"; f.descriptor.group = true;
+    delete f.descriptor.smartObject; delete f.descriptor.smartObjectMore;
+    f.state[mode] = true;
+    await assert.rejects(f.executor.execute(f.prepared, f.boundary, async () => {}), /BRIDGE_PLAN_INVALID/);
+    assert.equal(f.state.replacements, 0);
+    assert.deepEqual(f.state.saves, []);
+    assert.equal(f.state.closes, 1);
+  }
+});
+
+test("JPG-only raster production reads declared targets and never saves an extra verification PSD", async () => {
+  const f = fixture();
+  f.plan.required_capabilities.push("image-layer/replace-v1");
+  f.plan.targets[0].expected_layer.kind = "pixel";
+  f.plan.output.editable_psd = { enabled: false, file_name: null };
+  f.target.kind = "pixel";
+  delete f.descriptor.smartObject; delete f.descriptor.smartObjectMore;
+  const batchPlay = f.ps.action.batchPlay.bind(f.ps.action);
+  f.ps.action.batchPlay = async (commands, options) => {
+    assert.ok(!commands.some(command => command._obj === "get" && command._target?.[0]?._id === f.fixed.id),
+      "production must not scan unrelated layer descriptors");
+    return batchPlay(commands, options);
+  };
+  const result = await f.executor.execute(f.prepared, f.boundary, async () => {});
+  assert.deepEqual(f.state.saves, ["jpg"]);
+  assert.deepEqual([...result.outputs.keys()], ["jpg"]);
+  assert.equal(f.state.pixelPreparations, 1);
+  assert.equal(f.state.replacements, 1);
+});
+
+test("raster plans without the negotiated capability are rejected before opening Photoshop", async () => {
+  const f = fixture();
+  f.plan.targets[0].expected_layer.kind = "pixel";
+  await assert.rejects(f.executor.execute(f.prepared, f.boundary, async () => {}), /BRIDGE_PLAN_INVALID/);
+  assert.equal(f.state.opens, 0);
+});
 
 test("one-based nested bottom-to-top paths never use historical zero-based paths", () => {
   const leaf = { id: 9 }, doc = { layers: [{ layers: [leaf, { id: 8 }] }, { id: 7 }] };

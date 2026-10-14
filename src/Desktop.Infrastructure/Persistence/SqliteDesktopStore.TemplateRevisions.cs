@@ -731,7 +731,8 @@ public sealed partial class SqliteDesktopStore
                 binding.ExpectedLayer.VectorMask,
                 binding.ExpectedLayer.Opacity,
                 binding.ExpectedLayer.BlendMode,
-                binding.ExpectedLayer.StructureSignature.Value),
+                binding.ExpectedLayer.StructureSignature.Value)
+            { Kind = binding.ExpectedLayer.Kind == TemplateLayerKind.SmartObject ? null : binding.ExpectedLayer.Kind },
             binding.SupersededLayers.Select(layer => new SupersededLayerDocument(
                 layer.LayerPath.Segments.ToArray(),
                 layer.ExpectedClipping,
@@ -769,7 +770,8 @@ public sealed partial class SqliteDesktopStore
                 document.ExpectedLayer.VectorMask,
                 document.ExpectedLayer.Opacity,
                 document.ExpectedLayer.BlendMode,
-                LayerStructureSignature.Create(document.ExpectedLayer.StructureSignature)),
+                LayerStructureSignature.Create(document.ExpectedLayer.StructureSignature),
+                document.ExpectedLayer.Kind ?? TemplateLayerKind.SmartObject),
             document.SupersededLayers.Select(layer => SupersededLayerEvidence.Create(
                 LayerPath.Create(layer.LayerPath),
                 layer.ExpectedClipping,

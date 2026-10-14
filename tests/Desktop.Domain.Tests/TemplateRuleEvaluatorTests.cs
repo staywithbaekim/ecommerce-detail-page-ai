@@ -273,6 +273,25 @@ public sealed class TemplateRuleEvaluatorTests
     }
 
     [Fact]
+    public void ExcludedCandidateRemainsBoundButDoesNotProduceRuleAssignments()
+    {
+        var revision = Revision(("p", 1));
+        var binding = Assert.Single(revision.FrameBindings);
+        var excluded = TemplateRuleWorkspace.Empty.SetCandidateExcluded("p", new string('b', 64),
+            "sha256:" + new string('a', 64), 1, [0], true);
+        revision = revision.WithRuleWorkspace(excluded);
+
+        Assert.Same(binding, Assert.Single(revision.FrameBindings));
+        Assert.Empty(revision.ActiveFrameBindings);
+        var rules = Rules(PrimaryOnce("p"));
+        rules = rules with { Branches = [rules.Branches[0] with { RequireCompleteColorCoverage = true }] };
+        Assert.Empty(TemplateRuleEvaluator.Validate(rules, revision));
+        var result = TemplateRuleEvaluator.Evaluate(rules, revision, Colors(1));
+        Assert.True(result.CanExpand);
+        Assert.Empty(result.Instances);
+    }
+
+    [Fact]
     public void AValidEarlierRecipeCannotEscapeALaterRuleFailure()
     {
         var rules = Rules(PrimaryOnce("single"), Chunks("pair", 2, TemplateRuleColorRange.Secondary));

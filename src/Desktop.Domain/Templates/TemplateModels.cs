@@ -362,6 +362,13 @@ public sealed record TemplateRevision
 
     public ImmutableArray<FrameBinding> FrameBindings { get; }
 
+    public bool IsFrameExcluded(FrameBinding binding) => RuleWorkspace?.ExcludedCandidates.Any(item =>
+        item.PageId == binding.PageId && item.LayerId == binding.ExpectedLayer.LayerId
+        && string.Equals(item.StructureSignature, binding.ExpectedLayer.StructureSignature.Value, StringComparison.OrdinalIgnoreCase)
+        && item.LayerPath.SequenceEqual(binding.LayerPath.Segments.Select(segment => segment - 1))) == true;
+
+    public ImmutableArray<FrameBinding> ActiveFrameBindings => [.. FrameBindings.Where(binding => !IsFrameExcluded(binding))];
+
     public TemplateRuleWorkspace? RuleWorkspace { get; private init; }
 
     public TemplateRevision WithRuleWorkspace(TemplateRuleWorkspace workspace)
@@ -1068,7 +1075,7 @@ public sealed record BatchTemplateSnapshot : IBatchTemplateContext
             throw new TemplateRuleViolationException("TPL_BATCH_PAGE_SELECTION_INVALID");
         }
 
-        var bindingsByPage = revision.FrameBindings
+        var bindingsByPage = revision.ActiveFrameBindings
             .GroupBy(binding => binding.PageId, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,

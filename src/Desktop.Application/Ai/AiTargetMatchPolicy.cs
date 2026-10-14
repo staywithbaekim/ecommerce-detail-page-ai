@@ -92,10 +92,13 @@ internal static class AiTargetMatchPolicy
             return AiTargetRequirementAssessment.Ready;
         }
 
+        if (fitClass is AiTargetMatchEvidence.Exact or AiTargetMatchEvidence.SafeSimilar)
+        {
+            return AiTargetRequirementAssessment.ReviewRequired;
+        }
+
         return top.Confidence >= ReviewConfidence
-            && fitClass is AiTargetMatchEvidence.Exact
-                or AiTargetMatchEvidence.SafeSimilar
-                or AiTargetMatchEvidence.MaterialDifference
+            && fitClass == AiTargetMatchEvidence.MaterialDifference
             ? AiTargetRequirementAssessment.ReviewRequired
             : AiTargetRequirementAssessment.BusinessError;
     }

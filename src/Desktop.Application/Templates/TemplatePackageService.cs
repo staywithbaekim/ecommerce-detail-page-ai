@@ -63,7 +63,7 @@ public sealed class TemplatePackageService(
 
         await packages.ExportAsync(
             new TemplatePackageManifest(
-                TemplatePackageProtocol.CurrentVersion,
+                TemplatePackageProtocol.CandidateExclusionVersion,
                 group.Name,
                 revision.RevisionNo,
                 revision.RevisionId,
@@ -274,7 +274,8 @@ public sealed class TemplatePackageService(
         binding.LayoutIntent.SafeBounds.Bottom,
         binding.SupersededLayers.IsEmpty ? null : binding.SupersededLayers.Select(layer =>
             new TemplatePackageSupersededLayer(layer.LayerPath.Segments, "smartObject",
-                layer.ExpectedVisible, layer.ExpectedClipping, layer.ExpectedLayerId)).ToArray());
+                layer.ExpectedVisible, layer.ExpectedClipping, layer.ExpectedLayerId)).ToArray(),
+        binding.ExpectedLayer.Kind == TemplateLayerKind.Pixel ? "pixel" : null);
 
     internal static FrameBinding ToDomain(TemplatePackageFrameBinding binding, string pageId, string frameId) =>
         FrameBinding.Create(
@@ -290,7 +291,13 @@ public sealed class TemplatePackageService(
                 binding.VectorMask,
                 binding.Opacity,
                 binding.BlendMode,
-                LayerStructureSignature.Create(binding.StructureSignature)),
+                LayerStructureSignature.Create(binding.StructureSignature),
+                binding.ExpectedKind switch
+                {
+                    null or "smartObject" => TemplateLayerKind.SmartObject,
+                    "pixel" => TemplateLayerKind.Pixel,
+                    _ => throw new TemplateRuleViolationException("TPL_PACKAGE_INVALID")
+                }),
             (binding.SupersededLayers ?? []).Select(layer => SupersededLayerEvidence.Create(
                 LayerPath.Create(layer.LayerPath), layer.ExpectedClipping, layer.ExpectedLayerId)),
             SelectionRequirement.Create(

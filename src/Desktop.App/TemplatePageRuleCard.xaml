@@ -56,12 +56,14 @@
         <ListBox.ItemTemplate><DataTemplate>
          <StackPanel>
           <TextBlock Text="{Binding Label}" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"/>
-          <TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{Binding DataContext.IsReadOnly, RelativeSource={RelativeSource AncestorType=local:TemplatePageRuleCard}}"
+          <TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
              AutomationProperties.Name="{Binding Label, StringFormat={}{0}选图规则}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="88" MaxHeight="190" VerticalScrollBarVisibility="Auto" GotKeyboardFocus="Rule_GotFocus">
-           <TextBox.ContextMenu><ContextMenu><MenuItem Header="停止替换，保留模板内容" Click="StopMenu_Click">
-            <MenuItem.Style><Style TargetType="MenuItem"><Style.Triggers><DataTrigger Binding="{Binding IsCandidate}" Value="True"><Setter Property="IsEnabled" Value="False"/></DataTrigger></Style.Triggers></Style></MenuItem.Style>
-           </MenuItem></ContextMenu></TextBox.ContextMenu>
+           <TextBox.Style><Style TargetType="TextBox" BasedOn="{StaticResource WorkbenchTextBoxStyle}"><Style.Triggers><DataTrigger Binding="{Binding IsExcluded}" Value="True"><Setter Property="IsReadOnly" Value="True"/></DataTrigger><DataTrigger Binding="{Binding DataContext.IsReadOnly, RelativeSource={RelativeSource AncestorType=local:TemplatePageRuleCard}}" Value="True"><Setter Property="IsReadOnly" Value="True"/></DataTrigger></Style.Triggers></Style></TextBox.Style>
           </TextBox>
+          <Button HorizontalAlignment="Left" Margin="0,6,0,0" Padding="8,3" Click="ToggleExclude_Click"
+                  AutomationProperties.Name="切换候选替换状态">
+           <Button.Style><Style TargetType="Button" BasedOn="{StaticResource WorkbenchCardButtonStyle}"><Setter Property="Content" Value="不替换"/><Style.Triggers><DataTrigger Binding="{Binding IsExcluded}" Value="True"><Setter Property="Content" Value="恢复替换"/></DataTrigger><DataTrigger Binding="{Binding DataContext.IsReadOnly, RelativeSource={RelativeSource AncestorType=local:TemplatePageRuleCard}}" Value="True"><Setter Property="IsEnabled" Value="False"/></DataTrigger></Style.Triggers></Style></Button.Style>
+          </Button>
          </StackPanel>
         </DataTemplate></ListBox.ItemTemplate>
        </ListBox>

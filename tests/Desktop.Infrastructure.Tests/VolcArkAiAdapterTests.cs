@@ -1453,6 +1453,9 @@ public sealed class VolcArkAiAdapterTests
         Assert.Contains("material_difference", instructions, StringComparison.Ordinal);
         Assert.Contains("unsafe", instructions, StringComparison.Ordinal);
         Assert.Contains("不要根据文件名推断语义", instructions, StringComparison.Ordinal);
+        Assert.Contains("真人模特正面和假模特正面都符合候选", instructions, StringComparison.Ordinal);
+        Assert.Contains("低置信度表示建议检查，不表示没有可用图", instructions, StringComparison.Ordinal);
+        Assert.Contains("除非用户明确要求“必须真人模特/不要假模特”", instructions, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -55,7 +55,8 @@ public sealed class TemplateRuleInterpretationTests
         Assert.Equal(second.FrameId, Assert.Single(result.Draft.Frames).FrameId);
         Assert.Equal(2, result.Draft.Aliases.Single(alias => alias.FrameId == second.FrameId).Number);
         var view = await workspace.GetRulesAsync(Session, default);
-        Assert.Equal(initial.Candidates[0].FrameId, Assert.Single(view.Candidates).FrameId);
+        Assert.Equal(initial.Candidates[0].FrameId, Assert.Single(view.Candidates, candidate => candidate.CanInterpret).FrameId);
+        Assert.False(view.Candidates.Single(candidate => candidate.FrameId == second.FrameId).CanInterpret);
         Assert.Equal(1, view.Aliases.Single(alias => alias.FrameId == initial.Candidates[0].FrameId).Number);
     }
 

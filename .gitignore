@@ -29,6 +29,7 @@ secrets/
 Thumbs.db
 .idea/
 .vscode/
+graphify-out/
 __pycache__/
 *.py[cod]
 .pytest_cache/

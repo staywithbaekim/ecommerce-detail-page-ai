@@ -60,12 +60,15 @@ public static class RenderOutputEvidenceValidator
             var path = before.Path.ToArray();
             if (inserting && path[0] > anchor) path[0]++;
             var hiddenRoot = hiddenRoots.Contains(before.Path[0]);
+            var raster = targets.TryGetValue(Key(before.Path), out var knownTarget)
+                && knownTarget.GetProperty("expected_layer").GetProperty("kind").GetString() == "pixel";
             if (!after.TryGetValue(Key(path), out var layer)
-                || !SameStructure(before, layer, hidden || hiddenRoot && before.Path.Count == 1, hiddenRoot, anchor)
+                || !SameStructure(before, layer, hidden || hiddenRoot && before.Path.Count == 1, hiddenRoot, anchor, raster)
+                || raster && layer.LayerId != before.LayerId && baseline.Layers.Any(old => old.LayerId == layer.LayerId)
                 || before.ContentEvidence is not { Available: true } || layer.ContentEvidence is not { Available: true }) return false;
             if (before.Kind == "type" && (before.ContentEvidence.TextStyleSha256 is not { Length: 64 }
                 || layer.ContentEvidence.TextStyleSha256 is not { Length: 64 })) return false;
-            if (before.Kind is "curves" or "exposure" or "shape" && (before.ContentEvidence.AdjustmentSha256 is not { Length: 64 }
+            if (before.Kind is "curves" or "exposure" or "colorbalance" or "shape" && (before.ContentEvidence.AdjustmentSha256 is not { Length: 64 }
                 || layer.ContentEvidence.AdjustmentSha256 is not { Length: 64 })) return false;
             if (targets.TryGetValue(Key(before.Path), out var target))
             {
@@ -82,14 +85,20 @@ public static class RenderOutputEvidenceValidator
                 double[] expected = [x, y, right, y, right, bottom, x, bottom];
                 if (smart.TransformBox.Where((value, i) => !double.IsFinite(value) || Math.Abs(value - expected[i]) > 0.1).Any()) return false;
             }
-            else if (before.Name != layer.Name || !SameBounds(before, layer, hiddenRoot)
+            else if (before.Name != layer.Name || !SameBounds(before, layer, hiddenRoot,
+                before.IsGroup && targets.Keys.Any(key => key.StartsWith(Key(before.Path) + '/', StringComparison.Ordinal)))
                 || before.ContentEvidence != layer.ContentEvidence || !SameSmartObject(before.SmartObject, layer.SmartObject)) return false;
         }
         return true;
     }
 
-    private static bool SameBounds(PsdLayerInspection before, PsdLayerInspection after, bool explicitlyHiddenRoot) =>
+    private static bool SameBounds(PsdLayerInspection before, PsdLayerInspection after, bool explicitlyHiddenRoot,
+        bool targetAncestor = false) =>
         before.Bounds == after.Bounds
+        // Replaced descendant geometry changes the computed group union.
+        // All original children retain their path/identity/content checks and
+        // every non-target leaf still requires its exact original bounds.
+        || targetAncestor && before.IsGroup && before.Kind == "group" && after.IsGroup && after.Kind == "group"
         // psd-tools computes group bbox from effectively visible descendants,
         // rather than a stored group transform. Hiding a declared root therefore
         // produces an empty bbox for it and its nested groups. Every original
@@ -107,8 +116,10 @@ public static class RenderOutputEvidenceValidator
         return box.Count == 8 && box.Select((value, i) => double.IsFinite(value) && Math.Abs(value - expected[i]) <= 0.1).All(value => value);
     }
 
-    private static bool SameStructure(PsdLayerInspection a, PsdLayerInspection b, bool superseded, bool hiddenAncestor = false, int insertionAnchor = -1) =>
-        a.LayerId == b.LayerId && a.Kind == b.Kind && a.IsGroup == b.IsGroup
+    private static bool SameStructure(PsdLayerInspection a, PsdLayerInspection b, bool superseded, bool hiddenAncestor = false,
+        int insertionAnchor = -1, bool rasterReplacement = false) =>
+        (rasterReplacement ? a.Kind == "pixel" && b.Kind == "smartobject" && b.LayerId > 0
+            : a.LayerId == b.LayerId && a.Kind == b.Kind) && a.IsGroup == b.IsGroup
         && (superseded ? !b.Visible && !b.EffectiveVisible : a.Visible == b.Visible
             && (hiddenAncestor ? !b.EffectiveVisible : a.EffectiveVisible == b.EffectiveVisible))
         && a.Clipping == b.Clipping && a.Opacity == b.Opacity

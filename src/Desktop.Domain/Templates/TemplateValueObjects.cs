@@ -42,7 +42,8 @@ public enum TemplateGenerationMode
 
 public enum TemplateLayerKind
 {
-    SmartObject = 0
+    SmartObject = 0,
+    Pixel = 1
 }
 
 public enum TemplatePreviewStatus
@@ -229,17 +230,18 @@ public sealed record ExpectedLayerEvidence
         bool vectorMask,
         byte opacity,
         string blendMode,
-        LayerStructureSignature structureSignature)
+        LayerStructureSignature structureSignature,
+        TemplateLayerKind kind = TemplateLayerKind.SmartObject)
     {
         ArgumentNullException.ThrowIfNull(structureSignature);
-        if (layerId <= 0 || !visible || string.IsNullOrWhiteSpace(nameBefore) || nameBefore.Length > 256)
+        if (!Enum.IsDefined(kind) || layerId <= 0 || !visible || string.IsNullOrWhiteSpace(nameBefore) || nameBefore.Length > 256)
         {
             throw new TemplateRuleViolationException("TPL_FRAME_STRUCTURE_EVIDENCE_INCOMPLETE");
         }
 
         return new ExpectedLayerEvidence(
             layerId,
-            TemplateLayerKind.SmartObject,
+            kind,
             // This is exact PSD identity evidence, not a user-facing label.
             nameBefore,
             visible,

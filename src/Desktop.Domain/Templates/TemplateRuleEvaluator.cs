@@ -86,7 +86,7 @@ public static class TemplateRuleEvaluator
         if (matching.Length != 1)
             return Blocked("TPL_RULE_ROUTE_AMBIGUOUS");
         var selected = matching[0];
-        if (facts.OrderedVariantIds.IsEmpty && selected.Recipes.Any(recipe => !recipe.ColorSlots.IsEmpty))
+        if (facts.OrderedVariantIds.IsEmpty && selected.Recipes.Any(recipe => !ActiveRecipe(recipe, revision).ColorSlots.IsEmpty))
             return Blocked("TPL_RULE_COLOR_DATA_MISSING", selected.BranchId);
 
         var secondary = facts.OrderedVariantIds.Where(id => id != facts.PrimaryVariantId).ToImmutableArray();
@@ -94,9 +94,13 @@ public static class TemplateRuleEvaluator
         var instances = ImmutableArray.CreateBuilder<TemplateRulePageInstance>();
         var diagnostics = ImmutableArray.CreateBuilder<TemplateRuleDiagnostic>();
         foreach (var recipe in selected.Recipes)
-            Expand(selected.BranchId, recipe, facts.PrimaryVariantId, ordered, secondary, instances, diagnostics);
+        {
+            var activeRecipe = ActiveRecipe(recipe, revision);
+            if (recipe.FrameBindings.IsDefaultOrEmpty || !activeRecipe.FrameBindings.IsDefaultOrEmpty)
+                Expand(selected.BranchId, activeRecipe, facts.PrimaryVariantId, ordered, secondary, instances, diagnostics);
+        }
 
-        if (diagnostics.Count == 0 && selected.RequireCompleteColorCoverage)
+        if (diagnostics.Count == 0 && instances.Count > 0 && selected.RequireCompleteColorCoverage)
         {
             var used = instances.SelectMany(instance => instance.Colors).Select(slot => slot.VariantId).ToArray();
             if (used.Length != ordered.Length || used.Distinct(StringComparer.Ordinal).Count() != used.Length
@@ -135,8 +139,10 @@ public static class TemplateRuleEvaluator
                 && (recipe.ColorRange == TemplateRuleColorRange.None || allocatedCount == 0))
             Add("TPL_RULE_COLOR_ALLOCATION_INVALID");
 
-        var registered = revision.FrameBindings.Where(frame => frame.PageId == recipe.PageId)
+        var registered = revision.ActiveFrameBindings.Where(frame => frame.PageId == recipe.PageId)
             .Select(frame => frame.FrameId).ToHashSet(StringComparer.Ordinal);
+        var excluded = revision.FrameBindings.Where(revision.IsFrameExcluded).Select(frame => frame.FrameId)
+            .ToHashSet(StringComparer.Ordinal);
         var bound = new HashSet<string>(StringComparer.Ordinal);
         var usedSlots = new HashSet<string>(StringComparer.Ordinal);
         foreach (var binding in recipe.FrameBindings)
@@ -146,7 +152,7 @@ public static class TemplateRuleEvaluator
                 Add("TPL_RULE_BINDINGS_INVALID");
                 continue;
             }
-            if (!registered.Contains(binding.FrameId))
+            if (!registered.Contains(binding.FrameId) && !excluded.Contains(binding.FrameId))
                 Add("TPL_RULE_FRAME_REFERENCE_INVALID", binding.FrameId);
             if (!bound.Add(binding.FrameId))
                 Add("TPL_RULE_FRAME_BINDING_DUPLICATE", binding.FrameId);
@@ -157,8 +163,26 @@ public static class TemplateRuleEvaluator
         if (!slots.SetEquals(usedSlots))
             Add("TPL_RULE_COLOR_SLOT_UNUSED");
         if (page?.ContentType == TemplatePageContentType.NormalComposition
-            && (registered.Count == 0 || !registered.SetEquals(bound)))
+            && (registered.Count == 0 && !revision.RuleWorkspace!.ExcludedCandidates.Any(item => item.PageId == recipe.PageId)
+                || !registered.SetEquals(bound.Where(id => !excluded.Contains(id)))))
             Add("TPL_RULE_FRAME_BINDINGS_INCOMPLETE");
+    }
+
+    public static TemplatePageRecipe ActiveRecipe(TemplatePageRecipe recipe, TemplateRevision revision)
+    {
+        if (recipe.FrameBindings.IsDefault || recipe.ColorSlots.IsDefault
+            || revision.RuleWorkspace?.ExcludedCandidates is not { IsDefault: false, IsEmpty: false })
+            return recipe;
+        var activeFrames = recipe.FrameBindings.Where(binding => !revision.FrameBindings.Any(frame =>
+            frame.FrameId == binding.FrameId && revision.IsFrameExcluded(frame))).ToImmutableArray();
+        if (activeFrames.Length == recipe.FrameBindings.Length)
+            return recipe;
+        var activeSlots = activeFrames.Select(binding => binding.SlotId).ToHashSet(StringComparer.Ordinal);
+        return recipe with
+        {
+            FrameBindings = activeFrames,
+            ColorSlots = [.. recipe.ColorSlots.Where(slot => activeSlots.Contains(slot.SlotId))]
+        };
     }
 
     private static void Expand(string branchId, TemplatePageRecipe recipe, string? primary,

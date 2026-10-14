@@ -562,6 +562,7 @@ public enum AiStyleFilter
     Processing,
     Review,
     Ready,
+    Partial,
     Blocked
 }
 

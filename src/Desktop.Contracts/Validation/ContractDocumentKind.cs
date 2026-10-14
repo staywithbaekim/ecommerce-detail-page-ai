@@ -14,5 +14,7 @@ public enum ContractDocumentKind
     TemplatePackageManifestV2,
     TemplatePackageManifestV3,
     TemplateRuleWorkspace,
-    TemplateRuleAiResult
+    TemplateRuleAiResult,
+    TemplatePackageManifestV4,
+    TemplatePackageManifestV5
 }

@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Desktop.Application.Templates;
 using Desktop.Contracts.Validation;
@@ -47,8 +49,8 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                 var manifestEntry = archive.CreateEntry("manifest.json", CompressionLevel.Optimal);
                 await using (var manifestStream = manifestEntry.Open())
                 {
-                    await JsonSerializer.SerializeAsync(manifestStream, manifest, JsonOptions, cancellationToken)
-                        .ConfigureAwait(false);
+                    var manifestBytes = SerializeManifest(manifest);
+                    await manifestStream.WriteAsync(manifestBytes, cancellationToken).ConfigureAwait(false);
                 }
 
                 foreach (var item in manifest.Entries)
@@ -233,11 +235,14 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         {
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
         }
-        if (manifest.Protocol is not (TemplatePackageProtocol.Version or TemplatePackageProtocol.Version2 or TemplatePackageProtocol.CurrentVersion))
+        if (manifest.Protocol is not (TemplatePackageProtocol.Version or TemplatePackageProtocol.Version2
+            or TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion
+            or TemplatePackageProtocol.CandidateExclusionVersion))
         {
             throw new InvalidDataException("TPL_PACKAGE_VERSION_UNSUPPORTED");
         }
-        if (manifest.Protocol != TemplatePackageProtocol.CurrentVersion && (manifest.RuleWorkspace is not null
+        if (manifest.Protocol is not (TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion
+            or TemplatePackageProtocol.CandidateExclusionVersion) && (manifest.RuleWorkspace is not null
             || manifest.Pages?.Any(page => page.Notes is not null) == true))
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
 
@@ -314,7 +319,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                 if (!frameIds.Add(binding.FrameId)
                     || !string.Equals(binding.PageId, page.PageId, StringComparison.Ordinal)
                     || !string.Equals(binding.StructureSignature, inspection.StructureSignature, StringComparison.OrdinalIgnoreCase)
-                    || layer?.SmartObject is null
+                    || layer is null || !MatchesBindingKind(binding, layer, manifest.Protocol)
                     || !touchedLayers.Add(layer.LayerId)
                     || !string.Equals(binding.LayerName, layer.Name, StringComparison.Ordinal)
                     || binding.Visible != layer.Visible
@@ -323,7 +328,9 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                     || binding.VectorMask != layer.HasVectorMask
                     || binding.Opacity != layer.Opacity
                     || !string.Equals(binding.BlendMode, layer.BlendMode, StringComparison.Ordinal)
-                    || manifest.Protocol != TemplatePackageProtocol.CurrentVersion && !binding.SelectionCriteria.Any(criterion => string.Equals(
+                    || manifest.Protocol is not (TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion
+                        or TemplatePackageProtocol.CandidateExclusionVersion)
+                        && !binding.SelectionCriteria.Any(criterion => string.Equals(
                         criterion.Key,
                         "asset_id",
                         StringComparison.Ordinal)))
@@ -354,6 +361,17 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
             }
         }
     }
+
+    private static bool MatchesBindingKind(TemplatePackageFrameBinding binding,
+        Desktop.Application.Psd.PsdLayerInspection? layer, string protocol) => binding.ExpectedKind switch
+    {
+        null or "smartObject" => layer?.SmartObject is not null,
+        "pixel" => protocol is TemplatePackageProtocol.RasterVersion or TemplatePackageProtocol.CandidateExclusionVersion
+            && layer is { Kind: "pixel", IsGroup: false,
+            SmartObject: null, Visible: true, EffectiveVisible: true, HasMask: false, HasVectorMask: false }
+            && layer.PixelEvidence.HasReplaceableRasterContent,
+        _ => false
+    };
 
     private static bool IsValidInspection(
         Desktop.Application.Psd.PsdInspectionDocument? inspection,
@@ -472,11 +490,13 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         var result = _contracts.Validate(
             manifest.Protocol switch
             {
+                TemplatePackageProtocol.RasterVersion => ContractDocumentKind.TemplatePackageManifestV4,
+                TemplatePackageProtocol.CandidateExclusionVersion => ContractDocumentKind.TemplatePackageManifestV5,
                 TemplatePackageProtocol.CurrentVersion => ContractDocumentKind.TemplatePackageManifestV3,
                 TemplatePackageProtocol.Version2 => ContractDocumentKind.TemplatePackageManifestV2,
                 _ => ContractDocumentKind.TemplatePackageManifest
             },
-            originalJson ?? JsonSerializer.Serialize(manifest, JsonOptions));
+            originalJson ?? Encoding.UTF8.GetString(SerializeManifest(manifest)));
         if (!result.IsValid)
         {
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
@@ -497,6 +517,22 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         }
         catch (Desktop.Domain.Templates.TemplateRuleViolationException error)
         { throw new InvalidDataException("TPL_PACKAGE_INVALID", error); }
+    }
+
+    private static byte[] SerializeManifest(TemplatePackageManifest manifest)
+    {
+        var json = JsonSerializer.Serialize(manifest, JsonOptions);
+        if (manifest.Protocol is not (TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion)
+            || manifest.RuleWorkspace?.ExcludedCandidates is not { IsDefault: false, IsEmpty: true })
+            return Encoding.UTF8.GetBytes(json);
+
+        // Keep the v3/v4 wire shape frozen: the new optional field is omitted until
+        // a package actually opts into the v5 exclusion contract.
+        var root = JsonNode.Parse(json)?.AsObject()
+            ?? throw new InvalidDataException("TPL_PACKAGE_INVALID");
+        if (root["ruleWorkspace"] is JsonObject workspace)
+            workspace.Remove("excludedCandidates");
+        return Encoding.UTF8.GetBytes(root.ToJsonString(JsonOptions));
     }
 
     private sealed class LengthLimitedReadStream(Stream inner, long maximumLength) : Stream

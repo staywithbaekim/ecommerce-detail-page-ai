@@ -8,6 +8,7 @@ namespace Desktop.Application.Templates;
 public static class TemplatePlacementResolver
 {
     public const string Version = "subject-placement/v1";
+    private const decimal CoverageBleedPixels = 2m;
     private const decimal RoundingTolerance = .000000001m;
 
     public static RenderTargetPlacement Resolve(FrameBinding binding, TemplateRenderSource source,
@@ -32,8 +33,15 @@ public static class TemplatePlacementResolver
         decimal left = (decimal)area.Left, top = (decimal)area.Top;
         decimal right = (decimal)area.Right, bottom = (decimal)area.Bottom;
         var frameWidth = right - left; var frameHeight = bottom - top;
+        // For an existing clipped layer, overscan slightly beyond its clipping
+        // window to prevent rounding/interpolation from exposing the old image.
+        // An unclipped layer must remain inside its calibrated safe bounds.
+        var bleed = binding.ExpectedLayer.Clipping ? CoverageBleedPixels : 0m;
+        var coverageLeft = left - bleed; var coverageTop = top - bleed;
+        var coverageRight = right + bleed; var coverageBottom = bottom + bleed;
+        var coverageWidth = coverageRight - coverageLeft; var coverageHeight = coverageBottom - coverageTop;
         var width = (decimal)source.PixelWidth; var height = (decimal)source.PixelHeight;
-        var cover = Math.Max(frameWidth / width, frameHeight / height);
+        var cover = Math.Max(coverageWidth / width, coverageHeight / height);
         var preferred = cover * (decimal)layout.Scale;
         var offsetX = (decimal)layout.OffsetX; var offsetY = (decimal)layout.OffsetY;
         var learned = binding.SelectionRequirement.Criteria.Any(item => item.Key == "reference_only" && item.Value == "true");
@@ -57,26 +65,26 @@ public static class TemplatePlacementResolver
         }
 
         var scale = Math.Max(cover, preferred);
+        var keepSubjectInsideFrame = false;
         if (subject is not null && complete)
         {
-            var maximum = Math.Min(frameWidth / (width * (subject.Right - subject.Left)),
-                frameHeight / (height * (subject.Bottom - subject.Top)));
-            // No solution can simultaneously cover the frame and preserve the complete subject.
-            if ((cover - maximum) * Math.Max(width, height) > RoundingTolerance)
-                throw Invalid("TPL_RENDER_LAYOUT_REVIEW_REQUIRED");
-            scale = Math.Max(cover, Math.Min(scale, maximum));
+            var maximum = Math.Min(coverageWidth / (width * (subject.Right - subject.Left)),
+                coverageHeight / (height * (subject.Bottom - subject.Top)));
+            keepSubjectInsideFrame = (cover - maximum) * Math.Max(width, height) <= RoundingTolerance;
+            if (keepSubjectInsideFrame)
+                scale = Math.Max(cover, Math.Min(scale, maximum));
         }
         var placedWidth = width * scale; var placedHeight = height * scale;
-        var minLeft = right - placedWidth; var maxLeft = left;
-        var minTop = bottom - placedHeight; var maxTop = top;
+        var minLeft = coverageRight - placedWidth; var maxLeft = coverageLeft;
+        var minTop = coverageBottom - placedHeight; var maxTop = coverageTop;
         var desiredLeft = left + frameWidth / 2 - placedWidth * (subject is null ? .5m : (subject.Left + subject.Right) / 2) + offsetX;
         var desiredTop = top + frameHeight / 2 - placedHeight * (subject is null ? .5m : (subject.Top + subject.Bottom) / 2) + offsetY;
-        if (subject is not null && complete)
+        if (subject is not null && keepSubjectInsideFrame)
         {
-            minLeft = Math.Max(minLeft, left - placedWidth * subject.Left);
-            maxLeft = Math.Min(maxLeft, right - placedWidth * subject.Right);
-            minTop = Math.Max(minTop, top - placedHeight * subject.Top);
-            maxTop = Math.Min(maxTop, bottom - placedHeight * subject.Bottom);
+            minLeft = Math.Max(minLeft, coverageLeft - placedWidth * subject.Left);
+            maxLeft = Math.Min(maxLeft, coverageRight - placedWidth * subject.Right);
+            minTop = Math.Max(minTop, coverageTop - placedHeight * subject.Top);
+            maxTop = Math.Min(maxTop, coverageBottom - placedHeight * subject.Bottom);
         }
         if (minLeft - maxLeft > RoundingTolerance || minTop - maxTop > RoundingTolerance)
             throw Invalid("TPL_RENDER_LAYOUT_REVIEW_REQUIRED");

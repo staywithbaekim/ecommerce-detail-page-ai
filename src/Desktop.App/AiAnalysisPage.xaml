@@ -79,6 +79,7 @@
                         <DataTrigger Binding="{Binding Tone}" Value="Processing"><Setter Property="Fill" Value="{StaticResource StatusAnalyzingBrush}" /></DataTrigger>
                         <DataTrigger Binding="{Binding Tone}" Value="Review"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
                         <DataTrigger Binding="{Binding Tone}" Value="Ready"><Setter Property="Fill" Value="{StaticResource StatusCompletedBrush}" /></DataTrigger>
+                        <DataTrigger Binding="{Binding Tone}" Value="Partial"><Setter Property="Fill" Value="{StaticResource StatusPausedBrush}" /></DataTrigger>
                         <DataTrigger Binding="{Binding Tone}" Value="Blocked"><Setter Property="Fill" Value="{StaticResource StatusRecoverableBrush}" /></DataTrigger>
                     </Style.Triggers>
                 </Style>

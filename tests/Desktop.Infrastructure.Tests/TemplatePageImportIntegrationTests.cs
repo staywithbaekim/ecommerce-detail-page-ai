@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
 using Desktop.Domain.Templates;
@@ -9,6 +10,229 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class TemplatePageImportIntegrationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EditorAndAtReferencesSeeUpgradedPixelTargetAndKeepSavedIdentity(bool referencesFirst)
+    {
+        using var appRoot = new TestDirectory();
+        using var sourceRoot = new TestDirectory();
+        var source = await WriteSourceAsync(sourceRoot.Path, "source.psd");
+        var hash = await HashAsync(source);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(appRoot.Path));
+        await store.InitializeAsync();
+        await SaveGroupAsync(store);
+        var legacy = LegacyPixelInspection(hash);
+        await CreateService(appRoot.Path, store, legacy).ImportAsync(Request("command_old", "resource_old", source));
+        var revision = TemplateRevision.CreateDraft("draft_01", "group_01", 1, DateTimeOffset.UtcNow,
+            [TemplatePage.Create("page_01", "draft_01", 0, "照片页", TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct, null, true, "resource_old")]);
+        await store.SaveDraftRevisionAsync(revision, default);
+        var worker = new FakeInspectionPort(PhotoInspection(legacy));
+        using var importer = CreateService(appRoot.Path, store, worker);
+        var calibration = new TemplateCalibrationService(store, store, importer: importer);
+        var editing = new TemplateWorkspaceService(store, store, importer, TimeProvider.System);
+        var session = new TemplateDraftSession("group_01", "Template", "draft_01", 1, new HashSet<string>());
+        if (referencesFirst) _ = await editing.GetRulesAsync(session, default);
+        var view = await calibration.LoadAsync(session, "page_01", default);
+        var frame = Assert.Single(view.Frames);
+        Assert.Equal(TemplateLayerKind.Pixel, frame.LayerKind);
+        var rules = await editing.GetRulesAsync(session, default);
+        var candidate = Assert.Single(rules.Candidates);
+        Assert.True(candidate.CanInterpret);
+        Assert.Equal(TemplateLayerKind.Pixel, candidate.Target.LayerKind);
+        var alias = Assert.Single(rules.Aliases.Where(item => item.FrameId == candidate.FrameId));
+        Assert.Empty((await store.GetRevisionAsync("draft_01", default))!.FrameBindings);
+        await calibration.SetSelectionRequirementAsync(session, "page_01", frame.FrameId, "商品正面图", default);
+        var binding = Assert.Single((await store.GetRevisionAsync("draft_01", default))!.FrameBindings);
+        Assert.Equal(candidate.FrameId, binding.FrameId);
+        Assert.Equal(TemplateLayerKind.Pixel, binding.ExpectedLayer.Kind);
+        var reopened = await new TemplateWorkspaceService(store, store, importer, TimeProvider.System).GetRulesAsync(session, default);
+        Assert.Equal(alias, Assert.Single(reopened.Aliases.Where(item => item.FrameId == binding.FrameId)));
+        Assert.Equal("商品正面图", Assert.Single(reopened.Frames).Description);
+        var savedCandidate = Assert.Single(reopened.Candidates);
+        Assert.Equal(binding.FrameId, savedCandidate.FrameId);
+        Assert.False(savedCandidate.CanInterpret);
+        Assert.Equal(binding.ExpectedLayer.StructureSignature.Value, savedCandidate.Target.StructureSignature);
+        var excluded = await editing.ApplyRulePatchAsync(session, new("exclude", reopened.Version,
+            new([], []) { CandidateVisibility = [new(binding.FrameId, true)] }), default);
+        excluded = await editing.GetRulesAsync(session, default);
+        Assert.Single(excluded.ExcludedCandidates);
+        Assert.Empty((await store.GetRevisionAsync("draft_01", default))!.ActiveFrameBindings);
+        var restored = await editing.ApplyRulePatchAsync(session, new("restore", excluded.Version,
+            new([], []) { CandidateVisibility = [new(binding.FrameId, false)] }), default);
+        restored = await editing.GetRulesAsync(session, default);
+        Assert.Empty(restored.ExcludedCandidates);
+        Assert.Equal(binding.FrameId, Assert.Single((await store.GetRevisionAsync("draft_01", default))!.ActiveFrameBindings).FrameId);
+        Assert.Equal(1, worker.CallCount);
+    }
+
+    [Fact]
+    public async Task CancelledCacheUpgradeDoesNotCallWorkerAndDoesNotBlockRetry()
+    {
+        using var appRoot = new TestDirectory();
+        using var sourceRoot = new TestDirectory();
+        var source = await WriteSourceAsync(sourceRoot.Path, "source.psd");
+        var hash = await HashAsync(source);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(appRoot.Path));
+        await store.InitializeAsync();
+        await SaveGroupAsync(store);
+        var legacy = LegacyPixelInspection(hash);
+        var imported = await CreateService(appRoot.Path, store, legacy).ImportAsync(Request("command_old", "resource_old", source));
+        var worker = new FakeInspectionPort(PhotoInspection(legacy));
+        using var importer = CreateService(appRoot.Path, store, worker);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => importer.EnsureCurrentInspectionAsync(imported.Resource!, cancelled.Token));
+        Assert.Equal(0, worker.CallCount);
+        var updated = await importer.EnsureCurrentInspectionAsync(imported.Resource!, default);
+        Assert.False(updated.Inspection.NeedsRasterImageEvidence);
+        Assert.Equal(1, worker.CallCount);
+    }
+
+    [Fact]
+    public async Task LegacyPixelCacheUpgradesOnceAcrossConcurrentEditorLoadsAndRestart()
+    {
+        using var appRoot = new TestDirectory();
+        using var sourceRoot = new TestDirectory();
+        var source = await WriteSourceAsync(sourceRoot.Path, "source.psd");
+        var hash = await HashAsync(source);
+        var options = new DesktopDataOptions(appRoot.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            await store.InitializeAsync();
+            await SaveGroupAsync(store);
+            var legacy = LegacyPixelInspection(hash);
+            var imported = await CreateService(appRoot.Path, store, legacy)
+                .ImportAsync(Request("command_old", "resource_old", source));
+            var refreshed = PhotoInspection(legacy);
+            var worker = new FakeInspectionPort(refreshed with { Inspection = refreshed.Inspection! with
+            {
+                FileSha256 = refreshed.Inspection.FileSha256.ToUpperInvariant(),
+                StructureSignature = "sha256:" + refreshed.Inspection.StructureSignature.ToUpperInvariant()
+            } });
+            var service = CreateService(appRoot.Path, new SqliteTemplateRepository(store), worker);
+            var upgraded = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
+                service.EnsureCurrentInspectionAsync(imported.Resource!, CancellationToken.None)));
+            Assert.Equal(1, worker.CallCount);
+            Assert.Null(worker.LastRequest!.PreviewRelativePath);
+            Assert.False(worker.LastRequest.IncludeRenderContentEvidence);
+            Assert.All(upgraded, resource =>
+            {
+                Assert.False(resource.Inspection.NeedsRasterImageEvidence);
+                Assert.Equal(imported.Resource!.ResourceId, resource.ResourceId);
+                Assert.Equal(imported.Resource.CreatedAt, resource.CreatedAt);
+                Assert.Equal(imported.Resource.InternalRelativePath, resource.InternalRelativePath);
+                Assert.Equal(legacy.Inspection!.Layers[0].ContentEvidence, resource.Inspection.Layers[0].ContentEvidence);
+            });
+            Assert.Equal(hash, await HashAsync(source));
+            Assert.Equal(hash, await HashAsync(ToOwnedPath(appRoot.Path, imported.Resource!.InternalRelativePath)));
+        }
+        await using var reopened = new SqliteDesktopStore(options);
+        await reopened.InitializeAsync();
+        var cached = await reopened.GetByCommandIdAsync("command_old", CancellationToken.None);
+        var unavailable = new FakeInspectionPort(PsdInspectionResult.Failure(new("unused", "unused", "unused", false)));
+        var repeated = await CreateService(appRoot.Path, reopened, unavailable)
+            .EnsureCurrentInspectionAsync(cached!, CancellationToken.None);
+        Assert.False(repeated.Inspection.NeedsRasterImageEvidence);
+        Assert.Equal(0, unavailable.CallCount);
+    }
+
+    [Theory]
+    [InlineData("old-worker")]
+    [InlineData("changed-file")]
+    [InlineData("changed-layer")]
+    [InlineData("failure")]
+    public async Task CacheUpgradeRejectsIncompleteOrChangedEvidenceWithoutChangingStoredResource(string scenario)
+    {
+        using var appRoot = new TestDirectory();
+        using var sourceRoot = new TestDirectory();
+        var source = await WriteSourceAsync(sourceRoot.Path, "source.psd");
+        var hash = await HashAsync(source);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(appRoot.Path));
+        await store.InitializeAsync();
+        await SaveGroupAsync(store);
+        var legacy = LegacyPixelInspection(hash);
+        var imported = await CreateService(appRoot.Path, store, legacy)
+            .ImportAsync(Request("command_old", "resource_old", source));
+        var fresh = PhotoInspection(legacy);
+        var response = scenario switch
+        {
+            "old-worker" => legacy,
+            "changed-file" => fresh with { Inspection = fresh.Inspection! with { FileSha256 = new string('f', 64) } },
+            "changed-layer" => fresh with { Inspection = fresh.Inspection! with
+                { Layers = [fresh.Inspection.Layers[0] with { LayerId = 999 }] } },
+            _ => PsdInspectionResult.Failure(new("TPL_PSD_TIMEOUT", "Timeout", "Retry", true))
+        };
+        var worker = new FakeInspectionPort(response);
+        var service = CreateService(appRoot.Path, store, worker);
+        var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+            service.EnsureCurrentInspectionAsync(imported.Resource!, CancellationToken.None));
+        Assert.Equal(scenario switch
+        {
+            "old-worker" => "TPL_PSD_WORKER_IMAGE_EVIDENCE_REQUIRED",
+            "failure" => "TPL_PSD_TIMEOUT",
+            _ => "TPL_PSD_INSPECTION_CACHE_MISMATCH"
+        }, error.Message);
+        var stored = await store.GetByResourceIdAsync("resource_old", CancellationToken.None);
+        Assert.Equal(JsonSerializer.Serialize(imported.Resource), JsonSerializer.Serialize(stored));
+        Assert.Equal(1, worker.CallCount);
+        Assert.Equal(hash, await HashAsync(source));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DuplicateAndIdempotentImportsUpgradeLegacyCacheWithoutNewResource(bool completedCommand)
+    {
+        using var appRoot = new TestDirectory();
+        using var sourceRoot = new TestDirectory();
+        var source = await WriteSourceAsync(sourceRoot.Path, "source.psd");
+        var hash = await HashAsync(source);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(appRoot.Path));
+        await store.InitializeAsync();
+        await SaveGroupAsync(store);
+        var legacy = LegacyPixelInspection(hash);
+        await CreateService(appRoot.Path, store, legacy).ImportAsync(Request("command_old", "resource_old", source));
+        var worker = new FakeInspectionPort(PhotoInspection(legacy));
+        var service = CreateService(appRoot.Path, store, worker);
+        var request = completedCommand ? Request("command_old", "resource_old", source)
+            : Request("command_new", "resource_new", source) with
+            { DuplicateDecision = TemplateDuplicateDecision.AutoReuseDraftDuplicates };
+        var result = await service.ImportAsync(request);
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Resource!.Inspection.NeedsRasterImageEvidence);
+        Assert.Equal("resource_old", result.Resource.ResourceId);
+        Assert.Equal(1, worker.CallCount);
+        Assert.Single(await store.FindBySha256Async(hash, CancellationToken.None));
+        var repeated = await service.ImportAsync(request);
+        Assert.True(repeated.Idempotent);
+        Assert.Equal(1, worker.CallCount);
+    }
+
+    private static PsdInspectionResult LegacyPixelInspection(string hash)
+    {
+        var inspection = SuccessInspection(hash).Inspection!;
+        return PsdInspectionResult.Success(inspection with
+        {
+            LayerCount = 1,
+            Layers = [new PsdLayerInspection([0], 42, "photo", "pixel", false, true, true,
+                false, 255, 255, "normal", new(0, 0, 10, 10), false, false, null, null)
+                { ContentEvidence = new(true, new string('c', 64), null, null, null, null) }]
+        });
+    }
+
+    private static PsdInspectionResult PhotoInspection(PsdInspectionResult legacy) =>
+        PsdInspectionResult.Success(legacy.Inspection! with
+        {
+            Layers = legacy.Inspection.Layers.Select(layer => layer with
+            {
+                ContentEvidence = null, // Normal inspection cannot erase stronger cached render evidence.
+                PixelEvidence = new(true, 100, 100, new(0, 0, 10, 10))
+                { RasterImage = new(true, 256, .1) }
+            }).ToArray()
+        });
+
     [Fact]
     public async Task ImportRequestsApplicationOwnedCompositePreviewWithoutChangingSource()
     {
@@ -216,9 +440,16 @@ public sealed class TemplatePageImportIntegrationTests
 
     private sealed class FakeInspectionPort(PsdInspectionResult result) : IPsdInspectionPort
     {
+        public int CallCount { get; private set; }
+        public PsdInspectionRequest? LastRequest { get; private set; }
         public Task<PsdInspectionResult> InspectAsync(
             PsdInspectionRequest request,
-            CancellationToken cancellationToken) => Task.FromResult(result);
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            LastRequest = request;
+            return Task.FromResult(result);
+        }
     }
 
     private sealed class PreviewWritingInspectionPort(

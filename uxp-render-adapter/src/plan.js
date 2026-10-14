@@ -87,6 +87,11 @@ function validateClaim(claim, session) {
   const explicitPlacement = plan.required_capabilities.includes("layout/absolute-placement-v1");
   const calibratedSizeTable = plan.required_capabilities.includes("size-table/calibrated-target-v1");
   const inserting = plan.required_capabilities.includes("size-table/insert-layer-v1");
+  const rasterTargets = plan.targets.some(target => target.expected_layer.kind === "pixel");
+  const coveredRaster = plan.targets.some(target => target.expected_layer.kind === "pixel" && target.superseded_layers.length > 0);
+  if (coveredRaster !== plan.required_capabilities.includes("image-layer/covered-stack-v1")) return fail();
+  if (rasterTargets !== plan.required_capabilities.includes("image-layer/replace-v1")
+    || rasterTargets && (!explicitPlacement || calibratedSizeTable || inserting || plan.document.content_type !== "ordinary_set")) return fail();
   if (explicitPlacement && plan.targets.length === 0 && !inserting) return fail();
   if (inserting) {
     const insertion = plan.size_table.insertion, p = insertion.placement, b = insertion.safe_bounds;

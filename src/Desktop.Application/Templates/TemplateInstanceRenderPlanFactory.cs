@@ -79,7 +79,7 @@ public sealed partial class TemplateInstanceRenderPlanFactory(IRenderPlanValidat
             || asset.Readability != AssetReadability.Readable || !IsSha(asset.Sha256) || asset.Length < 1))
             throw Invalid("TPL_INSTANCE_RENDER_ASSET_INVALID");
 
-        var bindings = request.Revision.FrameBindings
+        var bindings = request.Revision.ActiveFrameBindings
             .Where(binding => binding.PageId == page.PageId)
             .OrderBy(binding => binding.FrameId, StringComparer.Ordinal)
             .ToArray();

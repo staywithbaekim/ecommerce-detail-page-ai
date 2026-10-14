@@ -44,6 +44,7 @@ public sealed record TemplateRulePageState(int Order, string Name, TemplatePageC
 public sealed record TemplateRulePageEdit(string PageId, TemplateRulePageState? Page,
     IReadOnlyList<TemplatePackageFrameBinding> Bindings);
 public sealed record TemplateRuleTargetEdit(string FrameId, TemplatePackageFrameBinding? Binding);
+public sealed record TemplateRuleCandidateVisibilityEdit(string FrameId, bool Excluded);
 public sealed record TemplateRuleEditSource(string Kind, string Text, string RequestId, string ContextDigest,
     string ModelVersion, string PromptVersion);
 public sealed record TemplateRuleEditSet(
@@ -51,7 +52,11 @@ public sealed record TemplateRuleEditSet(
     ImmutableArray<TemplateBranchRuleEdit> Branches,
     IReadOnlyList<TemplateRulePageEdit>? Pages = null,
     IReadOnlyList<TemplateRuleTargetEdit>? Targets = null,
-    TemplateRuleEditSource? Source = null);
+    TemplateRuleEditSource? Source = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<TemplateRuleCandidateVisibilityEdit>? CandidateVisibility { get; init; }
+}
 public sealed record TemplateRulePatch(string CommandId, long ExpectedDraftVersion, TemplateRuleEditSet Changes);
 public sealed record TemplateRuleCommandReceipt(
     string CommandId, string RequestDigest, long ResultVersion,
@@ -64,8 +69,10 @@ public sealed record TemplateRuleDraftView(
     IReadOnlyList<string>? UndoCommandIds = null)
 {
     public IReadOnlyList<TemplateRuleCandidateView> Candidates { get; init; } = [];
+    public IReadOnlyList<TemplateRuleCandidateView> ExcludedCandidates { get; init; } = [];
 }
-public sealed record TemplateRuleCandidateView(string PageId, string FrameId, TemplateFrameProjection Target, bool CanInterpret);
+public sealed record TemplateRuleCandidateView(string PageId, string FrameId, TemplateFrameProjection Target,
+    bool CanInterpret, bool IsExcluded = false);
 public sealed record TemplateRuleFrameOverview(string PageId, string FrameId, string Description);
 public sealed record TemplateRuleConfirmation(long DraftVersion, string RuleDigest);
 public sealed record TemplateRuleReference(string BranchId, string RecipeId, string PageId, string? FrameId);

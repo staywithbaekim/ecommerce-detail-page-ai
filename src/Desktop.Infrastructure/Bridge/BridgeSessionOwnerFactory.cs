@@ -78,7 +78,8 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
     }
 
     /// <summary>Production startup has priority over a diagnostic check, never over another render or pairing.</summary>
-    public async Task<BridgeSessionOwner> StartTaskOwnerAsync(string taskId, CancellationToken cancellationToken, bool instanceContract = false)
+    public async Task<BridgeSessionOwner> StartTaskOwnerAsync(string taskId, CancellationToken cancellationToken,
+        bool instanceContract = false, bool imageLayerContract = false, bool coveredStackContract = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -110,7 +111,7 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
                 acquired = true;
             }
             operation.Token.ThrowIfCancellationRequested();
-            var owner = await CreateSelectedTaskOwnerAsync(taskId, instanceContract, operation.Token).ConfigureAwait(false);
+            var owner = await CreateSelectedTaskOwnerAsync(taskId, instanceContract, operation.Token, imageLayerContract, coveredStackContract).ConfigureAwait(false);
             try
             {
                 await owner.StartAsync(operation.Token).ConfigureAwait(false);
@@ -238,13 +239,14 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
         finally { CryptographicOperations.ZeroMemory(secret); }
     }
 
-    private async Task<BridgeSessionOwner> CreateSelectedTaskOwnerAsync(string taskId, bool instanceContract, CancellationToken token)
+    private async Task<BridgeSessionOwner> CreateSelectedTaskOwnerAsync(string taskId, bool instanceContract,
+        CancellationToken token, bool imageLayerContract = false, bool coveredStackContract = false)
     {
         var selectedHost = hostSelection is null ? null : await hostSelection.AcquireAsync(token).ConfigureAwait(false);
         try
         {
             var secret = secrets.Read() ?? throw new InvalidOperationException("BRIDGE_PAIRING_REQUIRED");
-            try { return Create(secret, taskId, null, selectedHost, instanceContract); }
+            try { return Create(secret, taskId, null, selectedHost, instanceContract, imageLayerContract, coveredStackContract); }
             finally { CryptographicOperations.ZeroMemory(secret); }
         }
         catch { selectedHost?.Dispose(); throw; }
@@ -298,18 +300,20 @@ public sealed class BridgeSessionOwnerFactory(IBridgePairingSecretStore secrets,
     }
 
     private BridgeSessionOwner Create(byte[] secret, string taskId, DateTimeOffset? expires, PhotoshopSelectedHostLease? selectedHost = null,
-        bool instanceContract = false)
+        bool instanceContract = false, bool imageLayerContract = false, bool coveredStackContract = false)
     {
         var key = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(taskId)));
-        var capabilities = RequiredCapabilities(instanceContract);
+        var capabilities = RequiredCapabilities(instanceContract, imageLayerContract, coveredStackContract);
         return new(secret, new(taskId, "0.1.0", SupportedPhotoshopBuild,
             expires is null ? capabilities : capabilities.Append(ProtectedPairingCapability).ToArray(), expires),
             new FileBridgeExecutionJournalStore(paths, $"render/tasks/{key}/bridge-executions-v1.json"), timeProvider,
             selectedHost, selectedHost);
     }
 
-    private static string[] RequiredCapabilities(bool instanceContract) =>
-        instanceContract ? [.. Capabilities, RenderPlanInstanceIdentity.Capability] : Capabilities;
+    private static string[] RequiredCapabilities(bool instanceContract, bool imageLayerContract = false, bool coveredStackContract = false) =>
+        Capabilities.Concat(instanceContract ? [RenderPlanInstanceIdentity.Capability] : Array.Empty<string>())
+            .Concat(imageLayerContract || coveredStackContract ? [RenderTemplateEvidenceValidator.RasterReplacementCapability] : Array.Empty<string>())
+            .Concat(coveredStackContract ? [RenderTemplateEvidenceValidator.CoveredRasterStackCapability] : Array.Empty<string>()).ToArray();
 
     internal void RecordSessionFaults(string taskId, BridgeLoopbackHost.TransportFault? transport,
         BridgeExecutionBroker.BindingFault? binding)

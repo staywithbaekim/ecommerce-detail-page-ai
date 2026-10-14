@@ -252,6 +252,24 @@ public sealed class TemplateRuleEditingIntegrationTests
         Assert.NotEqual(original, TemplateRuleCodec.BusinessDigest(revision.UpdateFrameBinding("frame_a", SelectionRequirement.Create("new"))));
     }
 
+    [Fact]
+    public async Task TemplateRepositoryAdapterPreservesRuleCommandStoreForWorkspace()
+    {
+        using var directory = new TestDirectory();
+        await using var store = new SqliteDesktopStore(new(directory.Path));
+        await SeedAsync(store);
+        var repository = new SqliteTemplateRepository(store);
+        var service = new TemplateWorkspaceService(repository, repository, null!, TimeProvider.System);
+
+        var initial = await service.GetRulesAsync(Session, CancellationToken.None);
+        var saved = await service.ApplyRulePatchAsync(Session, Patch("adapter", initial.Version, "frame_a", "通过仓储适配器保存"),
+            CancellationToken.None);
+
+        Assert.Equal(initial.Version + 1, saved.Version);
+        Assert.Equal("通过仓储适配器保存", saved.Frames.Single(frame => frame.FrameId == "frame_a").Description);
+        Assert.Contains("adapter", await repository.GetUndoableRuleCommandsAsync("revision", CancellationToken.None));
+    }
+
     private static Task AssertCode(string code, Func<Task> action) => AssertCodeCore(code, action);
     private static async Task AssertCodeCore(string code, Func<Task> action)
     {

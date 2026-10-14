@@ -42,6 +42,24 @@ public sealed class TemplateInstanceRenderBatchPlannerTests
         Assert.False(File.Exists(json.RootElement.GetProperty("output").GetProperty("jpg").GetProperty("file_name").GetString()));
     }
 
+    [Fact]
+    public void ExcludedBindingIsPreservedButOnlyActiveTargetsEnterTheRenderPlan()
+    {
+        var excluded = Planner().Build(Fixture(recipes: 1, colors: 1, twoFrames: true, excludedFrame: "frame"));
+        Assert.True(excluded.CanContinue, string.Join(", ", excluded.Diagnostics.Select(item => item.Code)));
+        var excludedPlan = Assert.Single(excluded.Plans);
+        using (var document = JsonDocument.Parse(excludedPlan.RenderPlanJson))
+        {
+            Assert.Equal(["another_frame"], document.RootElement.GetProperty("targets")
+                .EnumerateArray().Select(target => target.GetProperty("frame_id").GetString()));
+        }
+
+        var restored = Planner().Build(Fixture(recipes: 1, colors: 1, twoFrames: true));
+        Assert.True(restored.CanContinue);
+        using var restoredDocument = JsonDocument.Parse(Assert.Single(restored.Plans).RenderPlanJson);
+        Assert.Equal(2, restoredDocument.RootElement.GetProperty("targets").GetArrayLength());
+    }
+
     [Theory]
     [InlineData(2, 1, 2)]
     [InlineData(1, 3, 3)]
@@ -641,7 +659,8 @@ public sealed class TemplateInstanceRenderBatchPlannerTests
         string snapshotId = "snapshot", string pageId = "page_z", string recipeId = "recipe_z",
         string pageName = "page", string resourceId = "template", string assetPrefix = "asset", long factsVersion = 1,
         bool missingColor = false, bool emptyExpansion = false, bool twoFrames = false,
-        bool missingAll = false, bool missingBackOnly = false, bool wrongFrozenColor = false, bool dynamicSize = false)
+        bool missingAll = false, bool missingBackOnly = false, bool wrongFrozenColor = false, bool dynamicSize = false,
+        string? excludedFrame = null)
     {
         var page = TemplatePage.Create(pageId, revisionId, 0, pageName,
             dynamicSize ? TemplatePageContentType.DynamicSizeTable : TemplatePageContentType.NormalComposition,
@@ -663,8 +682,16 @@ public sealed class TemplateInstanceRenderBatchPlannerTests
             recipe = recipe with { FrameBindings = [.. recipe.FrameBindings, new("another_frame", "slot")] };
         }
         var rules = new TemplateRuleSet(1, [new("branch", new(1), recipes == 1 ? [recipe] : [recipe, recipe with { RecipeId = "recipe_a" }])]);
+        var workspace = new TemplateRuleWorkspace(1, rules, []);
+        if (excludedFrame is not null)
+        {
+            var excluded = bindings.Single(binding => binding.FrameId == excludedFrame);
+            workspace = workspace.SetCandidateExcluded(pageId, new string('c', 64),
+                excluded.ExpectedLayer.StructureSignature.Value, excluded.ExpectedLayer.LayerId,
+                excluded.LayerPath.Segments.Select(segment => segment - 1).ToArray(), true);
+        }
         var draft = TemplateRevision.CreateDraft(revisionId, "group", 1, DateTimeOffset.UnixEpoch,
-            [page], bindings, new(1, rules, []));
+            [page], bindings, workspace);
         var revision = TemplateRevision.Restore(revisionId, "group", 1, TemplateRevisionState.Committed,
             "templates/revision.json", TemplateRuleCodec.BusinessDigest(draft), DateTimeOffset.UnixEpoch,
             draft.Pages, draft.FrameBindings, draft.RuleWorkspace);
@@ -672,10 +699,11 @@ public sealed class TemplateInstanceRenderBatchPlannerTests
         var assets = variants.Select(color => SourceAssetMetadata.CreateReadable(assetPrefix + color, style,
             "nonexistent/" + assetPrefix + color + ".jpg", "source.jpg", 100, new string('b', 64),
             1000, 1200, SourceImageFormat.Jpeg, "image/jpeg")).ToImmutableArray();
+        var activeBindings = revision.ActiveFrameBindings;
         var facts = new TemplateInstanceInputFacts(factsVersion, new(variants, variants[0], true), assets,
             [.. variants.Select((color, i) => new TemplateInstanceVariantAssets(color, [assets[i].AssetId]))],
             [.. variants.Where(color => !missingAll && (!missingColor || color != "color_1" || missingBackOnly))
-                .SelectMany(color => bindings.Where(frame => !missingBackOnly || color != "color_1" || frame.FrameId != "another_frame")
+                .SelectMany(color => activeBindings.Where(frame => !missingBackOnly || color != "color_1" || frame.FrameId != "another_frame")
                     .Select(frame => new TemplateInstanceFrameSelection(frame.FrameId, color,
                         assetPrefix + (wrongFrozenColor && color == "color_1" ? "color_0" : color))))], []);
         var projectionRequest = new TemplateInstanceProjectionRequest(new(batch, style, snapshotId, revisionId, revision.RuleDigest!), revision, facts);

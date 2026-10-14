@@ -42,11 +42,13 @@ public partial class TemplatePageRuleCard : UserControl
     }
     private async void Purpose_Click(object sender, RoutedEventArgs args)
     { if (Board is { } board) await board.EditGroupAsync(); }
-    private async void StopMenu_Click(object sender, RoutedEventArgs args)
+    private async void ToggleExclude_Click(object sender, RoutedEventArgs args)
     {
-        var menu = ((MenuItem)sender).Parent as ContextMenu;
-        if (Board is { } board && Page is { IsReadOnly: false } page && menu?.PlacementTarget is FrameworkElement { DataContext: TemplateRuleFrameViewModel frame })
-            await board.RunAsync(() => board.Model!.StopReplacingAsync(page, frame));
+        if (Board is not { } board || Page is not { IsReadOnly: false } page
+            || ((FrameworkElement)sender).DataContext is not TemplateRuleFrameViewModel frame) return;
+        await board.RunAsync(() => frame.IsExcluded
+            ? board.Model!.RestoreReplacingAsync(page, frame)
+            : board.Model!.StopReplacingAsync(page, frame));
     }
     private async void Remove_Click(object sender, RoutedEventArgs args)
     { if (Page is { IsReadOnly: false } page && Board is { } board) await board.RemoveAsync(page); }

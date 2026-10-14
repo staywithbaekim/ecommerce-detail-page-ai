@@ -70,6 +70,13 @@ function requireExecutable(plan) {
   if (!validInstanceIdentity(plan)) return fail();
   const supported = ["psd-layer-path/psd-bottom-to-top", "smart-object/replace", "output/jpeg-srgb-icc", "layout/absolute-placement-v1", "output/verification-psd-v1", "size-table/calibrated-target-v1", "size-table/insert-layer-v1", "output/variant-identity-v1"];
   supported.push(instanceCapability);
+  supported.push("image-layer/replace-v1");
+  supported.push("image-layer/covered-stack-v1");
+  const coveredRaster = plan.targets.some(target => target.expected_layer.kind === "pixel" && target.superseded_layers.length > 0);
+  if (coveredRaster !== plan.required_capabilities.includes("image-layer/covered-stack-v1")) return fail();
+  const raster = plan.targets.some(target => target.expected_layer.kind === "pixel");
+  if (raster !== plan.required_capabilities.includes("image-layer/replace-v1")
+    || raster && plan.document.content_type !== "ordinary_set") return fail();
   const size = plan.document.content_type === "dynamic_size_table";
   const insertion = plan.required_capabilities.includes("size-table/insert-layer-v1");
   if (insertion) {
@@ -94,6 +101,7 @@ class PhotoshopPageExecutor {
     this.diagnostic = null;
     this.failure = null;
     this.supersededLayerIds = new Map();
+    this.replacementLayerIds = new Map();
   }
 
   inspect() {
@@ -214,7 +222,7 @@ class PhotoshopPageExecutor {
     }
     for (const target of plan.targets) {
       const expected = target.expected_layer;
-      const { layer, descriptor } = await inspectReference(target, "smartObject", expected.name_before,
+      const { layer, descriptor } = await inspectReference(target, expected.kind, expected.name_before,
         expected.visible, expected.clipping, expected.layer_id);
       targetLayerIds.set(target.layer_path.join("/"), layer.id);
       if ((descriptor.hasUserMask === true) !== expected.user_mask
@@ -223,13 +231,16 @@ class PhotoshopPageExecutor {
         || normalized(layer.blendMode) !== normalized(expected.blend_mode === "norm" ? "normal" : expected.blend_mode)
         || descriptor.smartObject?.linked === true) return fail();
       const more = descriptor.smartObjectMore;
-      if (!more || !identityWarp(more) || typeof more.ID !== "string") return fail();
+      const raster = expected.kind === "pixel";
+      if (raster ? expected.user_mask || expected.vector_mask || more || descriptor.smartObject
+        : !more || !identityWarp(more) || typeof more.ID !== "string") return fail();
       // The preflight descriptor still describes the template placeholder. Its
       // embedded source dimensions are allowed to differ from the selected
       // replacement resource; the replacement is the point at which the plan's
       // source dimensions become authoritative. Keep the preflight structural
       // geometry check, then enforce source dimensions after replacement.
-      if (plan.document.content_type === "ordinary_set") ordinaryRotation(descriptor);
+      if (raster) { /* Pixel geometry is prepared inside the owned replacement modal. */ }
+      else if (plan.document.content_type === "ordinary_set") ordinaryRotation(descriptor);
       else axisAlignedBox(descriptor);
       for (const old of target.superseded_layers) {
         const oldId = old.expected_layer_id;
@@ -285,7 +296,7 @@ class PhotoshopPageExecutor {
         mismatched_flags: ["visible", "clipping", "user_mask", "vector_mask", "opacity"].filter(key => record?.[key] !== expected[key]),
         blend_matches: record?.blend_mode === normalized(expected.blend_mode === "norm" ? "normal" : expected.blend_mode) };
       this.stage = "target_identity";
-      if (!record || seen.has(record.id) || record.kind !== "smartobject" || !record.effective
+      if (!record || seen.has(record.id) || record.kind !== normalized(expected.kind) || !record.effective
         || record.id !== expected.layer_id || record.name !== hostName) return fail();
       this.stage = "target_flags";
       if (["visible", "clipping", "user_mask", "vector_mask", "opacity"].some(key => record[key] !== expected[key])) return fail();
@@ -293,29 +304,33 @@ class PhotoshopPageExecutor {
       if (record.blend_mode !== normalized(expected.blend_mode === "norm" ? "normal" : expected.blend_mode)) return fail();
       this.stage = "target_geometry";
       const more = record.descriptor.smartObjectMore;
-      const numericQuad = value => Array.isArray(value) && value.length === 8 && value.every(Number.isFinite) ? value : null;
-      const warpBounds = more?.warp?.bounds, mesh = more?.warp?.customEnvelopeWarp?.meshPoints;
-      this.diagnostic.geometry = { more_present: !!more, transform: numericQuad(more?.transform),
-        non_affine: numericQuad(more?.nonAffineTransform), linked: record.descriptor.smartObject?.linked === true,
-        warp_absent: !more?.warp?.warpStyle?._value, warp_none: more?.warp?.warpStyle?._value === "warpNone",
-        warp_style: /^warp[a-z]{0,30}$/i.test(more?.warp?.warpStyle?._value || "") ? more.warp.warpStyle._value : "unknown",
-        warp_value: Number.isFinite(more?.warp?.warpValue) ? more.warp.warpValue : null,
-        warp_perspective: Number.isFinite(more?.warp?.warpPerspective) ? more.warp.warpPerspective : null,
-        warp_perspective_other: Number.isFinite(more?.warp?.warpPerspectiveOther) ? more.warp.warpPerspectiveOther : null,
-        warp_order: [more?.warp?.uOrder, more?.warp?.vOrder].map(n => Number.isFinite(n) ? n : null),
-        warp_bounds: [warpBounds?.left, warpBounds?.top, warpBounds?.right, warpBounds?.bottom].map(n => numeric(n) ?? null),
-        source_size: [numeric(more?.size?.width) ?? null, numeric(more?.size?.height) ?? null],
-        identity_warp: identityWarp(more),
-        mesh: Array.isArray(mesh?.horizontal?.list) && Array.isArray(mesh?.vertical?.list)
-          && mesh.horizontal.list.length === 16 && mesh.vertical.list.length === 16
-          ? mesh.horizontal.list.map((n, i) => [Number.isFinite(n) ? n : null,
-            Number.isFinite(mesh.vertical.list[i]) ? mesh.vertical.list[i] : null]) : null };
+      if (expected.kind === "pixel") {
+        if (expected.user_mask || expected.vector_mask || more || record.descriptor.smartObject) return fail();
+      } else {
+        const numericQuad = value => Array.isArray(value) && value.length === 8 && value.every(Number.isFinite) ? value : null;
+        const warpBounds = more?.warp?.bounds, mesh = more?.warp?.customEnvelopeWarp?.meshPoints;
+        this.diagnostic.geometry = { more_present: !!more, transform: numericQuad(more?.transform),
+          non_affine: numericQuad(more?.nonAffineTransform), linked: record.descriptor.smartObject?.linked === true,
+          warp_absent: !more?.warp?.warpStyle?._value, warp_none: more?.warp?.warpStyle?._value === "warpNone",
+          warp_style: /^warp[a-z]{0,30}$/i.test(more?.warp?.warpStyle?._value || "") ? more.warp.warpStyle._value : "unknown",
+          warp_value: Number.isFinite(more?.warp?.warpValue) ? more.warp.warpValue : null,
+          warp_perspective: Number.isFinite(more?.warp?.warpPerspective) ? more.warp.warpPerspective : null,
+          warp_perspective_other: Number.isFinite(more?.warp?.warpPerspectiveOther) ? more.warp.warpPerspectiveOther : null,
+          warp_order: [more?.warp?.uOrder, more?.warp?.vOrder].map(n => Number.isFinite(n) ? n : null),
+          warp_bounds: [warpBounds?.left, warpBounds?.top, warpBounds?.right, warpBounds?.bottom].map(n => numeric(n) ?? null),
+          source_size: [numeric(more?.size?.width) ?? null, numeric(more?.size?.height) ?? null],
+          identity_warp: identityWarp(more),
+          mesh: Array.isArray(mesh?.horizontal?.list) && Array.isArray(mesh?.vertical?.list)
+            && mesh.horizontal.list.length === 16 && mesh.vertical.list.length === 16
+            ? mesh.horizontal.list.map((n, i) => [Number.isFinite(n) ? n : null,
+              Number.isFinite(mesh.vertical.list[i]) ? mesh.vertical.list[i] : null]) : null };
+        if (plan.document.content_type === "ordinary_set") ordinaryRotation(record.descriptor);
+        else axisAlignedBox(record.descriptor);
+        this.stage = "target_embedded_identity";
+        const placedId = record.descriptor.smartObjectMore?.ID;
+        if (typeof placedId !== "string" || records.filter(item => item.descriptor.smartObjectMore?.ID === placedId).length !== 1) return fail();
+      }
       seen.add(record.id);
-      if (plan.document.content_type === "ordinary_set") ordinaryRotation(record.descriptor);
-      else axisAlignedBox(record.descriptor);
-      this.stage = "target_embedded_identity";
-      const placedId = record.descriptor.smartObjectMore?.ID;
-      if (typeof placedId !== "string" || records.filter(item => item.descriptor.smartObjectMore?.ID === placedId).length !== 1) return fail();
       this.stage = "superseded_preflight";
       for (const old of target.superseded_layers) {
         const item = records.find(record => record.path === old.layer_path.join("/"));
@@ -335,12 +350,20 @@ class PhotoshopPageExecutor {
     const addedSummary = insertion ? after.filter(item => !before.some(old => old.id === item.id))
       .map(item => ({ layer_id: item.id, path: item.path, kind: item.kind })) : [];
     const targets = new Set(plan.targets.map(item => item.layer_path.join("/")));
+    const rasterTargets = new Set(plan.targets.filter(item => item.expected_layer.kind === "pixel")
+      .map(item => item.layer_path.join("/")));
     const superseded = new Set(plan.targets.flatMap(item => item.superseded_layers.map(old => old.layer_path.join("/"))));
     for (let i = 0; i < before.length; i++) {
       const a = before[i], b = insertion ? after.find(item => item.id === a.id) : after[i], target = targets.has(a.path);
       this.diagnostic = { layer_id: a.id, target_present: !!b, added_layers: addedSummary };
       if (!b) return fail();
       const keys = ["path", "id", "kind", "clipping", "user_mask", "vector_mask", "opacity", "blend_mode"];
+      if (rasterTargets.has(a.path)) {
+        if (a.kind !== "pixel" || b.kind !== "smartobject"
+          || b.id !== this.replacementLayerIds.get(a.path)) return fail();
+        keys.splice(keys.indexOf("id"), 1);
+        keys.splice(keys.indexOf("kind"), 1);
+      }
       const hidden = insertion?.hidden_layers.some(item => a.path === item.layer_path.join("/"));
       const hiddenChild = insertion?.hidden_layers.some(item => a.path.startsWith(item.layer_path.join("/") + "/"));
       if (insertion) {
@@ -362,7 +385,13 @@ class PhotoshopPageExecutor {
       this.diagnostic.child_ids_before = before.filter(item => item.path.startsWith(a.path + "/")).map(item => item.id);
       this.diagnostic.child_ids_after = after.filter(item => item.path.startsWith(b.path + "/")).map(item => item.id);
       this.diagnostic.smart_descriptor_matches = JSON.stringify(a.descriptor.smartObjectMore) === JSON.stringify(b.descriptor.smartObjectMore);
-      if (keys.some(key => a[key] !== b[key]) || !target && (a.bounds.some((n, j) => Math.abs(n - b.bounds[j]) > 0.01)
+      // Group bounds are derived from their children. Replacing a declared
+      // descendant can change that union without moving the group. Every
+      // descendant still passes its own exact path/identity/flags/leaf-bounds
+      // checks below; unrelated groups and leaves retain the bounds guard.
+      const targetAncestor = a.kind === "group" && b.kind === "group"
+        && [...targets].some(path => path.startsWith(a.path + "/"));
+      if (keys.some(key => a[key] !== b[key]) || !target && (!targetAncestor && a.bounds.some((n, j) => Math.abs(n - b.bounds[j]) > 0.01)
         || JSON.stringify(a.descriptor.smartObjectMore) !== JSON.stringify(b.descriptor.smartObjectMore))) return fail();
     }
     if (insertion) {
@@ -455,6 +484,7 @@ class PhotoshopPageExecutor {
     const measuredPulse = () => measure("photoshop_pulse", pulse);
     this.failure = null;
     this.supersededLayerIds = new Map();
+    this.replacementLayerIds = new Map();
     this.stage = "plan_preflight";
     requireExecutable(plan);
     if (this.documentId !== null || this.ps.app.documents.length || isHostModal(this.ps.core)) return fail("BRIDGE_HOST_BLOCKED");
@@ -524,6 +554,27 @@ class PhotoshopPageExecutor {
             await measure("photoshop_replace", async () => {
               this.stage = "replacement_target";
               let layer = resolveLayer(this.current(), target.layer_path);
+              if (layer.id !== target.expected_layer.layer_id) return fail();
+              if (target.expected_layer.kind === "pixel") {
+                this.stage = "prepare_pixel_target";
+                // Only the selected target in the application-owned document is
+                // converted. No source PSD, user step or placeholder identity is changed.
+                const converted = await this.ps.action.batchPlay([
+                  { _obj: "select", _target: [{ _ref: "layer", _id: layer.id }], makeVisible: false,
+                    _options: { dialogOptions: "dontDisplay" } },
+                  { _obj: "newPlacedLayer", _options: { dialogOptions: "dontDisplay" } }
+                ], { synchronousExecution: true });
+                if (converted.length !== 2 || converted.some(reply => reply._obj === "error")) return fail();
+                layer = resolveLayer(this.current(), target.layer_path);
+                if (normalized(layer.kind) !== "smartobject") return fail();
+                const convertedDescriptor = await this.descriptor(layer), expected = target.expected_layer;
+                if ((convertedDescriptor.group === true) !== expected.clipping
+                  || (convertedDescriptor.hasUserMask === true) !== expected.user_mask
+                  || (convertedDescriptor.hasVectorMask === true) !== expected.vector_mask
+                  || Math.round(numeric(layer.opacity) * 255 / 100) !== expected.opacity
+                  || normalized(layer.blendMode) !== normalized(expected.blend_mode === "norm" ? "normal" : expected.blend_mode)) return fail();
+              }
+              this.replacementLayerIds.set(target.layer_path.join("/"), layer.id);
               this.stage = "replacement_resource";
               const source = prepared.leases.get(target.asset_resource_id)?.getEntry();
               if (!source) return fail("BRIDGE_RESOURCE_BINDING_INVALID");
@@ -537,7 +588,7 @@ class PhotoshopPageExecutor {
               ], { synchronousExecution: true });
               if (replies.length !== 2 || replies.some(reply => reply._obj === "error")) return fail();
               layer = resolveLayer(this.current(), target.layer_path);
-              if (layer.id !== target.expected_layer.layer_id) return fail();
+              if (layer.id !== this.replacementLayerIds.get(target.layer_path.join("/"))) return fail();
               const p = target.layout.placement;
               if (plan.document.content_type === "ordinary_set") {
                 const angle = ordinaryRotation(await this.descriptor(layer), p);

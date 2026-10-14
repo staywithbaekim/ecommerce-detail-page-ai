@@ -7,8 +7,35 @@ public sealed class TemplatePageImportService(
     ITemplateSourceFilePort sourceFiles,
     IPsdInspectionPort inspectionPort,
     ITemplateResourceRepository resources,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider) : IDisposable
 {
+    private readonly SemaphoreSlim _inspectionUpgradeGate = new(1, 1);
+
+    public void Dispose() => _inspectionUpgradeGate.Dispose();
+
+    // Import/editor only: production must consume saved evidence and bindings.
+    public async Task<ImportedTemplateResource> EnsureCurrentInspectionAsync(
+        ImportedTemplateResource resource, CancellationToken cancellationToken)
+    {
+        if (!resource.Inspection.NeedsRasterImageEvidence) return resource;
+        await _inspectionUpgradeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = await resources.GetByResourceIdAsync(resource.ResourceId, cancellationToken)
+                .ConfigureAwait(false) ?? throw new InvalidOperationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");
+            if (!current.Inspection.NeedsRasterImageEvidence) return current;
+            var result = await inspectionPort.InspectAsync(new(
+                $"inspection_upgrade_{Guid.NewGuid():N}", current.InternalRelativePath), cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.IsSuccess) throw new InvalidOperationException(result.Error!.Code);
+            if (result.Inspection!.NeedsRasterImageEvidence)
+                throw new InvalidOperationException("TPL_PSD_WORKER_IMAGE_EVIDENCE_REQUIRED");
+            return await resources.RefreshInspectionCacheAsync(current, result.Inspection, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally { _inspectionUpgradeGate.Release(); }
+    }
+
     public async Task<TemplatePageImportResult> ImportAsync(
         TemplatePageImportRequest request,
         CancellationToken cancellationToken = default)
@@ -45,6 +72,12 @@ public sealed class TemplatePageImportService(
                         && string.Equals(completed.DraftId, request.DraftId, StringComparison.Ordinal),
                     _ => true
                 };
+            if (isReusedExisting || isImported)
+            {
+                try { completed = await EnsureCurrentInspectionAsync(completed, cancellationToken).ConfigureAwait(false); }
+                catch (Exception exception) when (exception is InvalidOperationException or IOException or NotSupportedException)
+                { return Failure(Error(exception.Message, retryable: true, "Retry with the current template inspection worker.")); }
+            }
             return isReusedExisting || isImported
                 ? Success(
                     isReusedExisting
@@ -138,6 +171,7 @@ public sealed class TemplatePageImportService(
 
                     try
                     {
+                        draftDuplicate = await EnsureCurrentInspectionAsync(draftDuplicate, cancellationToken).ConfigureAwait(false);
                         var recorded = await resources.RecordExistingSelectionAsync(
                             request.CommandId,
                             draftDuplicate,
@@ -148,7 +182,7 @@ public sealed class TemplatePageImportService(
                             idempotent: false,
                             duplicates);
                     }
-                    catch (Exception exception) when (exception is InvalidOperationException or IOException)
+                    catch (Exception exception) when (exception is InvalidOperationException or IOException or NotSupportedException)
                     {
                         return Failure(Error(
                             "TPL_REVISION_COMMIT_FAILED",
@@ -192,6 +226,7 @@ public sealed class TemplatePageImportService(
 
                 try
                 {
+                    selected = await EnsureCurrentInspectionAsync(selected, cancellationToken).ConfigureAwait(false);
                     var recorded = await resources.RecordExistingSelectionAsync(
                         request.CommandId,
                         selected,
@@ -202,7 +237,7 @@ public sealed class TemplatePageImportService(
                         idempotent: false,
                         duplicates);
                 }
-                catch (Exception exception) when (exception is InvalidOperationException or IOException)
+                catch (Exception exception) when (exception is InvalidOperationException or IOException or NotSupportedException)
                 {
                     return Failure(Error(
                         "TPL_REVISION_COMMIT_FAILED",

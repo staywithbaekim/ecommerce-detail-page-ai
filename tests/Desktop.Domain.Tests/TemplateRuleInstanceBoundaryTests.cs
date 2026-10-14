@@ -82,6 +82,26 @@ public sealed class TemplateRuleInstanceBoundaryTests
         Assert.Equal(["z", "a", "z", "a"], result.Instances.Select(instance => Assert.Single(instance.Colors).VariantId));
     }
 
+    [Fact]
+    public void BatchRuleContextFreezesOnlyActiveFrameIdsWhileRevisionRetainsExcludedBinding()
+    {
+        var revision = Revision(Rules());
+        var binding = Assert.Single(revision.FrameBindings);
+        var workspace = revision.RuleWorkspace!.SetCandidateExcluded("p", new string('b', 64),
+            binding.ExpectedLayer.StructureSignature.Value, binding.ExpectedLayer.LayerId,
+            binding.LayerPath.Segments.Select(segment => segment - 1).ToArray(), true);
+        revision = TemplateRevision.Restore(revision.RevisionId, revision.GroupId, revision.RevisionNo,
+            revision.State, revision.ManifestRef, revision.RuleDigest, revision.CreatedAt,
+            revision.Pages, revision.FrameBindings, workspace);
+
+        var context = BatchRuleTemplateContext.Create("snapshot", "batch", revision, ["p"],
+            "sha256:" + new string('c', 64), DateTimeOffset.UnixEpoch);
+
+        Assert.Empty(Assert.Single(context.Pages).FrameIds);
+        Assert.Same(binding, Assert.Single(revision.FrameBindings));
+        Assert.Empty(revision.ActiveFrameBindings);
+    }
+
     private static TemplateRuleSet Rules() => new(1, [new("branch", new(1),
         [new("secondary", "p", TemplateRuleRepeat.ColorChunks, TemplateRuleColorRange.Secondary,
             [new("current", TemplateRuleColorSource.Allocated)], [new("frame", "current")])])]);

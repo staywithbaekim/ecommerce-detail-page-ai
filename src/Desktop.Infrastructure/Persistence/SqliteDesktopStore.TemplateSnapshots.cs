@@ -187,7 +187,11 @@ public sealed partial class SqliteDesktopStore
         bool VectorMask,
         byte Opacity,
         string BlendMode,
-        string StructureSignature);
+        string StructureSignature)
+    {
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public Desktop.Domain.Templates.TemplateLayerKind? Kind { get; init; }
+    }
 
     private sealed record SupersededLayerDocument(
         int[] LayerPath,

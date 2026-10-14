@@ -46,7 +46,8 @@ public static class TemplateRuleCodec
     public static void ValidateWorkspace(TemplateRuleWorkspace workspace)
     {
         ArgumentNullException.ThrowIfNull(workspace);
-        if (workspace.Version < 0 || workspace.Aliases.IsDefault || workspace.Aliases.Length > 10_000)
+        if (workspace.Version < 0 || workspace.Aliases.IsDefault || workspace.Aliases.Length > 10_000
+            || workspace.ExcludedCandidates.IsDefault || workspace.ExcludedCandidates.Length > 10_000)
             throw new TemplateRuleViolationException("TPL_RULE_WORKSPACE_INVALID");
         var targets = new HashSet<(string, string?)>();
         var numbers = new HashSet<(string?, int)>();
@@ -64,6 +65,19 @@ public static class TemplateRuleCodec
         if (workspace.Aliases.Any(alias => alias.FrameId is not null
             && !targets.Contains((alias.PageId, null))))
             throw new TemplateRuleViolationException("TPL_RULE_ALIAS_INVALID");
+        var exclusions = new HashSet<(string PageId, int LayerId, string Path)>();
+        foreach (var exclusion in workspace.ExcludedCandidates)
+        {
+            if (exclusion is null || exclusion.LayerId <= 0 || exclusion.LayerPath.IsDefault
+                || exclusion.LayerPath.IsEmpty || exclusion.LayerPath.Any(segment => segment < 0))
+                throw new TemplateRuleViolationException("TPL_RULE_WORKSPACE_INVALID");
+            TemplateValueRules.Identifier(exclusion.PageId, "TPL_RULE_WORKSPACE_INVALID");
+            if (exclusion.TemplateSha256 is null || exclusion.TemplateSha256.Length != 64 || !exclusion.TemplateSha256.All(Uri.IsHexDigit))
+                throw new TemplateRuleViolationException("TPL_RULE_WORKSPACE_INVALID");
+            TemplateValueRules.Digest(exclusion.StructureSignature, "TPL_RULE_WORKSPACE_INVALID");
+            if (!exclusions.Add((exclusion.PageId, exclusion.LayerId, string.Join('.', exclusion.LayerPath))))
+                throw new TemplateRuleViolationException("TPL_RULE_WORKSPACE_INVALID");
+        }
         if (workspace.Rules is { } rules)
             ValidateRuleShape(rules);
         _ = Serialize(workspace);
@@ -105,17 +119,35 @@ public static class TemplateRuleCodec
         }
     }
 
-    public static string BusinessDigest(TemplateRevision revision) => Hash(Serialize(new
+    public static string BusinessDigest(TemplateRevision revision)
     {
-        schema = "template-rules/v1",
-        pages = revision.Pages.OrderBy(page => page.Order).Select(page => new
+        var pages = revision.Pages.OrderBy(page => page.Order).Select(page => new
         {
             page.PageId, page.Order, page.Name, page.ContentType, page.GenerationMode,
             page.VariantCapacity, page.Enabled, page.TemplateResourceId, page.Notes, page.SizeTableCalibration
-        }),
-        frames = revision.FrameBindings.OrderBy(frame => frame.FrameId, StringComparer.Ordinal),
-        rules = revision.RuleWorkspace?.Rules
-    }));
+        }).ToArray();
+        var frames = revision.FrameBindings.OrderBy(frame => frame.FrameId, StringComparer.Ordinal).ToArray();
+        var exclusions = revision.RuleWorkspace?.ExcludedCandidates ?? [];
+        // Keep the established digest byte-for-byte stable for every existing
+        // revision. The opt-out behavior gets an explicit digest schema when
+        // first used, so it becomes part of commit and batch-snapshot identity.
+        return exclusions.IsEmpty
+            ? Hash(Serialize(new
+            {
+                schema = "template-rules/v1",
+                pages,
+                frames,
+                rules = revision.RuleWorkspace?.Rules
+            }))
+            : Hash(Serialize(new
+            {
+                schema = "template-rules/v2",
+                pages,
+                frames,
+                rules = revision.RuleWorkspace?.Rules,
+                excludedCandidates = exclusions
+            }));
+    }
 
     public static string Hash(string text) => "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
@@ -126,6 +158,19 @@ public static class TemplateRuleCodec
         // Tombstones also get fresh identities; never reuse a deleted alias on import.
         var pageMap = pages.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         var frameMap = frames.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        foreach (var candidate in workspace.ExcludedCandidates)
+        {
+            var stable = ReferenceLearningService.StableFrameId(candidate.PageId, candidate.LayerId, candidate.LayerPath);
+            var legacy = "frame_" + Hash(candidate.PageId + ":frame_"
+                + candidate.LayerId.ToString(System.Globalization.CultureInfo.InvariantCulture))[7..];
+            var identity = workspace.Aliases.Any(alias => alias.PageId == candidate.PageId && alias.FrameId == legacy)
+                ? legacy : stable;
+            // Bound targets retain the frame mapping supplied by the importer.
+            // Unbound exclusions need the discoverable identity for their new page.
+            if (workspace.Aliases.Any(alias => alias.PageId == candidate.PageId && alias.FrameId == identity))
+                frameMap.TryAdd(identity, ReferenceLearningService.StableFrameId(
+                    pageMap[candidate.PageId], candidate.LayerId, candidate.LayerPath));
+        }
         foreach (var alias in workspace.Aliases)
         {
             pageMap.TryAdd(alias.PageId, "page_" + Guid.NewGuid().ToString("N"));
@@ -136,6 +181,8 @@ public static class TemplateRuleCodec
             Version = 0,
             Aliases = [.. workspace.Aliases.Select(alias => alias with
             { PageId = pageMap[alias.PageId], FrameId = alias.FrameId is null ? null : frameMap[alias.FrameId] })],
+            ExcludedCandidates = [.. workspace.ExcludedCandidates.Select(candidate => candidate with
+            { PageId = pageMap[candidate.PageId] })],
             Rules = workspace.Rules is not { } rules ? null : rules with
             {
                 Branches = [.. rules.Branches.Select(branch => branch with
@@ -164,6 +211,28 @@ public static class TemplateRuleCodec
                 revision = revision.AddFrameBinding(TemplatePackageService.ToDomain(frame, page.PageId, frame.FrameId));
         }
         revision = revision.WithRuleWorkspace(workspace);
+        foreach (var exclusion in workspace.ExcludedCandidates)
+        {
+            var page = (manifest.Pages ?? []).SingleOrDefault(candidate => candidate.PageId == exclusion.PageId)
+                ?? throw new TemplateRuleViolationException("TPL_RULE_PACKAGE_INVALID");
+            var resource = page.Inspection
+                ?? throw new TemplateRuleViolationException("TPL_RULE_PACKAGE_INVALID");
+            if (!string.Equals(exclusion.TemplateSha256, resource.FileSha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(exclusion.StructureSignature, resource.StructureSignature,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new TemplateRuleViolationException("TPL_RULE_PACKAGE_INVALID");
+            var target = TemplateCalibrationService.InspectFrames(page.PageId, resource)
+                .SingleOrDefault(candidate => candidate.LayerId == exclusion.LayerId
+                    && candidate.LayerPath.SequenceEqual(exclusion.LayerPath));
+            var binding = revision.FrameBindings.SingleOrDefault(frame => frame.PageId == exclusion.PageId
+                && frame.ExpectedLayer.LayerId == exclusion.LayerId
+                && frame.LayerPath.Segments.SequenceEqual(exclusion.LayerPath.Select(segment => segment + 1)));
+            if (target is null || !TemplateCalibrationService.CanSetRule(target,
+                    resource.Canvas.Width, resource.Canvas.Height)
+                || !workspace.Aliases.Any(alias => alias.PageId == exclusion.PageId
+                    && alias.FrameId == (binding?.FrameId ?? TemplateCalibrationService.CandidateBindingIdentity(revision, target))))
+                throw new TemplateRuleViolationException("TPL_RULE_PACKAGE_INVALID");
+        }
         if (workspace.Reconcile(revision).Aliases.Length != workspace.Aliases.Length
             || workspace.Rules is { } rules && !TemplateRuleEvaluator.Validate(rules, revision).IsEmpty
             || !string.Equals(BusinessDigest(revision), manifest.RuleDigest, StringComparison.Ordinal))

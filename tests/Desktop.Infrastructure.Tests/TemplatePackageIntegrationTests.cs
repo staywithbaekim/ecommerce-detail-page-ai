@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Desktop.Application.Files;
 using Desktop.Application.Psd;
 using Desktop.Application.Templates;
@@ -12,6 +14,183 @@ namespace Desktop.Infrastructure.Tests;
 
 public sealed class TemplatePackageIntegrationTests
 {
+    private static readonly JsonSerializerOptions PackageJsonOptions = new(JsonSerializerDefaults.Web)
+    { Converters = { new JsonStringEnumConverter() } };
+
+    [Fact]
+    public async Task V4RasterRuleRoundtripsWithoutSmartObjectsAndCannotBeDowngradedToV3()
+    {
+        using var directory = new TestDirectory();
+        var bytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 1, 2, 3, 4 };
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var source = Path.Combine(directory.Path, "fixture.psd");
+        await File.WriteAllBytesAsync(source, bytes);
+        var inspection = Inspection(hash, bytes.Length);
+        var pixel = inspection.Layers[0] with { Path = [1], Kind = "pixel", SmartObject = null,
+            PixelEvidence = new(true, 100000, 90000, new(10, 20, 700, 1000))
+                { RasterImage = new(true, 1000, .25) } };
+        inspection = inspection with { SmartObjectCount = 0, Layers = [pixel] };
+        var manifest = new TemplatePackageManifest(TemplatePackageProtocol.RasterVersion, "raster", 1,
+            "revision", "sha256:" + new string('c', 64), [new("resource", "resources/source.psd", bytes.Length, hash)],
+            [new("page_01", 0, "normal", TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct, null, true, "resource", inspection,
+                [PackageBinding() with { PageId = "page_01", ExpectedKind = "pixel" }])]);
+        var port = new ZipTemplatePackagePort();
+        var input = Path.Combine(directory.Path, "v4.tplpkg");
+        var sources = new Dictionary<string, string> { ["resource"] = source };
+        await port.ExportAsync(manifest, sources, input, default);
+        await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(
+            manifest with { Protocol = TemplatePackageProtocol.CurrentVersion }, sources,
+            Path.Combine(directory.Path, "invalid-v3.tplpkg"), default));
+        var root = Path.Combine(directory.Path, "isolated");
+        await using var store = new SqliteDesktopStore(new(root));
+        await store.InitializeAsync();
+        var paths = new LocalAppPathPolicy(root);
+        var files = new AtomicFileStore(paths);
+        var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var workspace = Workspace(store, files, new JsonManifestStore(files), time);
+        var packages = new TemplatePackageService(store, store, port, files, paths, workspace, time);
+        var imported = await packages.ImportAsNewGroupAsync(input, null, default);
+        Assert.Equal(TemplateLayerKind.Pixel,
+            Assert.Single((await store.GetRevisionAsync(imported.RevisionId, default))!.FrameBindings).ExpectedLayer.Kind);
+        var output = Path.Combine(directory.Path, "exported-v4.tplpkg");
+        await packages.ExportCurrentAsync(imported.GroupId, output, default);
+        var validated = (await port.ValidateAsync(output, default)).Manifest!;
+        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, validated.Protocol);
+        Assert.Equal("pixel", Assert.Single(validated.Pages![0].Bindings!).ExpectedKind);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(source));
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, false, true)]
+    public async Task V5ExclusionPackageRoundtripsWithoutDroppingTheRestoreRecord(bool bound, bool pixel, bool legacyAlias)
+    {
+        using var directory = new TestDirectory();
+        var bytes = new byte[] { 0x38, 0x42, 0x50, 0x53, 1, 2, 3, 4 };
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var sourcePath = Path.Combine(directory.Path, "source.psd");
+        await File.WriteAllBytesAsync(sourcePath, bytes);
+        const string pageId = "page_01";
+        var inspection = Inspection(hash, bytes.Length);
+        var targetLayer = pixel ? inspection.Layers[0] with
+        {
+            Kind = "pixel", SmartObject = null,
+            PixelEvidence = new(true, 100000, 90000, new(10, 20, 700, 1000))
+                { RasterImage = new(true, 1000, .25) }
+        } : inspection.Layers[0];
+        var otherLayer = inspection.Layers[0] with { Path = [3], LayerId = 258, Name = "other_frame" };
+        inspection = inspection with { Layers = [targetLayer, otherLayer], LayerCount = 2, SmartObjectCount = pixel ? 1 : 2 };
+        var targetPath = inspection.Layers[0].Path;
+        var frameId = legacyAlias ? "frame_" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(pageId + ":frame_257")))
+            : StableFrameId(pageId, inspection.Layers[0].LayerId, targetPath);
+        var boundLayer = bound ? targetLayer : otherLayer;
+        var packageBinding = PackageBinding() with
+        {
+            FrameId = bound ? frameId : "other_binding", PageId = pageId,
+            LayerPath = boundLayer.Path.Select(segment => segment + 1).ToArray(),
+            LayerId = boundLayer.LayerId, LayerName = boundLayer.Name,
+            ExpectedKind = bound && pixel ? "pixel" : null
+        };
+        var workspace = new TemplateRuleWorkspace(1, null,
+            [new(pageId, null, 1), new(pageId, frameId, 1)])
+            .SetCandidateExcluded(pageId, hash, inspection.StructureSignature,
+                inspection.Layers[0].LayerId, targetPath, true);
+        if (!bound) workspace = workspace.ReserveFrames([(pageId, packageBinding.FrameId)]);
+        var page = TemplatePage.Create(pageId, "revision", 0, "normal",
+            TemplatePageContentType.NormalComposition, TemplateGenerationMode.OncePerProduct,
+            null, true, "resource");
+        var binding = FrameBinding.Create(packageBinding.FrameId, pageId, LayerPath.Create(packageBinding.LayerPath),
+            ExpectedLayerEvidence.Create(boundLayer.LayerId, boundLayer.Name, true,
+                false, false, false, 100, "normal", LayerStructureSignature.Create(inspection.StructureSignature),
+                bound && pixel ? TemplateLayerKind.Pixel : TemplateLayerKind.SmartObject), [],
+            SelectionRequirement.Create(packageBinding.SelectionDescription,
+                [.. packageBinding.SelectionCriteria.Select(item => SelectionCriterion.Create(item.Key, item.Value))]),
+            LayoutIntent.Create(packageBinding.Intent, packageBinding.Scale, packageBinding.OffsetX,
+                packageBinding.OffsetY, TemplateRect.Create(packageBinding.SafeLeft, packageBinding.SafeTop,
+                    packageBinding.SafeRight, packageBinding.SafeBottom)));
+        var draft = TemplateRevision.CreateDraft("revision", "group", 1, DateTimeOffset.UnixEpoch,
+            [page], [binding], workspace);
+        var manifest = new TemplatePackageManifest(TemplatePackageProtocol.CandidateExclusionVersion,
+            "exclusion", 1, "revision", TemplateRuleCodec.BusinessDigest(draft),
+            [new("resource", "resources/source.psd", bytes.Length, hash)],
+            [new(pageId, 0, "normal", TemplatePageContentTypeOption.NormalComposition,
+                TemplateGenerationModeOption.OncePerProduct, null, true, "resource", inspection, [packageBinding])],
+            workspace);
+        var port = new ZipTemplatePackagePort();
+        var packagePath = Path.Combine(directory.Path, "v5.tplpkg");
+        var contracts = new JsonSchemaContractValidator();
+        var v5Check = contracts.ValidateWithDiagnostic(ContractDocumentKind.TemplatePackageManifestV5,
+            JsonSerializer.Serialize(manifest, PackageJsonOptions));
+        Assert.True(v5Check.Validation.IsValid, $"v5 {v5Check.FirstFailureInstancePath} {v5Check.FirstFailureKeyword}");
+        foreach (var protocol in new[] { TemplatePackageProtocol.CurrentVersion, TemplatePackageProtocol.RasterVersion })
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(manifest with { Protocol = protocol },
+                new Dictionary<string, string> { ["resource"] = sourcePath },
+                Path.Combine(directory.Path, "invalid-" + protocol[^2..] + ".tplpkg"), default));
+            if (!pixel)
+            {
+                var oldWorkspace = workspace with { ExcludedCandidates = [] };
+                var oldPackage = Path.Combine(directory.Path, protocol[^2..] + ".tplpkg");
+                await port.ExportAsync(manifest with
+                {
+                    Protocol = protocol, RuleWorkspace = oldWorkspace,
+                    RuleDigest = TemplateRuleCodec.BusinessDigest(draft.WithRuleWorkspace(oldWorkspace))
+                }, new Dictionary<string, string> { ["resource"] = sourcePath }, oldPackage, default);
+                Assert.Empty((await port.ValidateAsync(oldPackage, default)).Manifest!.RuleWorkspace!.ExcludedCandidates);
+                using var archive = System.IO.Compression.ZipFile.OpenRead(oldPackage);
+                using var reader = new StreamReader(archive.GetEntry("manifest.json")!.Open());
+                Assert.DoesNotContain("excludedCandidates", await reader.ReadToEndAsync(), StringComparison.Ordinal);
+            }
+        }
+
+        await port.ExportAsync(manifest, new Dictionary<string, string> { ["resource"] = sourcePath }, packagePath, default);
+        var restored = (await port.ValidateAsync(packagePath, default)).Manifest!;
+
+        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, restored.Protocol);
+        Assert.Equal(TemplateRuleCodec.Serialize(workspace.ExcludedCandidates),
+            TemplateRuleCodec.Serialize(restored.RuleWorkspace!.ExcludedCandidates));
+
+        var root = Path.Combine(directory.Path, "isolated");
+        await using var store = new SqliteDesktopStore(new(root));
+        await store.InitializeAsync();
+        var paths = new LocalAppPathPolicy(root);
+        var files = new AtomicFileStore(paths);
+        var time = new FixedTimeProvider(DateTimeOffset.UnixEpoch);
+        var editor = Workspace(store, files, new JsonManifestStore(files), time);
+        var packages = new TemplatePackageService(store, store, port, files, paths, editor, time);
+        var imported = await packages.ImportAsNewGroupAsync(packagePath, null, default);
+        var revision = (await store.GetRevisionAsync(imported.RevisionId, default))!;
+        var importedPage = Assert.Single(revision.Pages);
+        var importedBinding = Assert.Single(revision.FrameBindings);
+        var exclusion = Assert.Single(revision.RuleWorkspace!.ExcludedCandidates);
+        Assert.NotEqual(pageId, importedPage.PageId);
+        Assert.NotEqual(frameId, importedBinding.FrameId);
+        Assert.Equal(importedPage.PageId, exclusion.PageId);
+        Assert.Equal(bound, revision.IsFrameExcluded(importedBinding));
+        Assert.Equal(bound ? 0 : 1, revision.ActiveFrameBindings.Length);
+        var exportedPath = Path.Combine(directory.Path, "exported-v5.tplpkg");
+        await packages.ExportCurrentAsync(imported.GroupId, exportedPath, default);
+        var exported = (await port.ValidateAsync(exportedPath, default)).Manifest!;
+        Assert.Equal(TemplateRuleCodec.Serialize(revision.RuleWorkspace.ExcludedCandidates),
+            TemplateRuleCodec.Serialize(exported.RuleWorkspace!.ExcludedCandidates));
+
+        var session = await editor.BeginFullEditAsync(imported.GroupId, default);
+        var view = await editor.GetRulesAsync(session, default);
+        var excluded = Assert.Single(view.ExcludedCandidates);
+        var resumed = await editor.ApplyRulePatchAsync(session, new("restore", view.Version,
+            new([], []) { CandidateVisibility = [new(excluded.FrameId, false)] }), default);
+        Assert.Empty(resumed.ExcludedCandidates);
+        Assert.Empty((await store.GetRevisionAsync(session.DraftRevisionId, default))!.RuleWorkspace!.ExcludedCandidates);
+        Assert.Single((await store.GetRevisionAsync(session.DraftRevisionId, default))!.ActiveFrameBindings);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(sourcePath));
+    }
+
     [Fact]
     public async Task V3RulesAliasesAndRuleOnlyFramesRoundtripWithFreshIdsAndManifestClosure()
     {
@@ -48,11 +227,12 @@ public sealed class TemplatePackageIntegrationTests
         var committed = await editor.ConfirmRulesAsync(session, new(view.Version, view.RuleDigest), default);
         var revision = (await store.GetRevisionAsync(committed.RevisionId, default))!;
         Assert.Contains("rules_" + revision.RevisionId, System.Text.Encoding.UTF8.GetString((await files.ReadAsync(revision.ManifestRef!, default))!), StringComparison.Ordinal);
-        var v3 = Path.Combine(directory.Path, "v3.tplpkg"); await packages.ExportCurrentAsync(committed.GroupId, v3, default);
-        var validated = (await port.ValidateAsync(v3, default)).Manifest!;
-        Assert.Equal("template-package/v3", validated.Protocol);
+        var v5 = Path.Combine(directory.Path, "v5.tplpkg"); await packages.ExportCurrentAsync(committed.GroupId, v5, default);
+        var validated = (await port.ValidateAsync(v5, default)).Manifest!;
+        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, validated.Protocol);
         Assert.NotNull(validated.RuleWorkspace);
-        var copy = await packages.ImportAsNewGroupAsync(v3, "new identity", default);
+        Assert.Empty(validated.RuleWorkspace.ExcludedCandidates);
+        var copy = await packages.ImportAsNewGroupAsync(v5, "new identity", default);
         var copied = (await store.GetRevisionAsync(copy.RevisionId, default))!;
         Assert.NotEqual(revision.Pages[0].PageId, copied.Pages[0].PageId);
         Assert.NotEqual(frame.FrameId, copied.FrameBindings[0].FrameId);
@@ -97,7 +277,7 @@ public sealed class TemplatePackageIntegrationTests
         var newPackage = Path.Combine(directory.Path, "v2.tplpkg");
         await service.ExportCurrentAsync(group.GroupId, newPackage, default);
         var migrated = (await port.ValidateAsync(newPackage, default)).Manifest!;
-        Assert.Equal(TemplatePackageProtocol.CurrentVersion, migrated.Protocol);
+        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, migrated.Protocol);
         Assert.Equal(1, Assert.Single(migrated.Pages![0].Inspection!.Layers[0].Path));
         Assert.Equal(2, Assert.Single(migrated.Pages[0].Bindings![0].LayerPath));
         await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(migrated with
@@ -310,7 +490,7 @@ public sealed class TemplatePackageIntegrationTests
         {
             var packageJson = await reader.ReadToEndAsync();
             Assert.DoesNotContain("contentEvidence", packageJson, StringComparison.Ordinal);
-            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV3, packageJson).IsValid);
+            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV5, packageJson).IsValid);
         }
 
         await using var target = new SqliteDesktopStore(targetOptions);
@@ -480,6 +660,14 @@ public sealed class TemplatePackageIntegrationTests
             false,
             null,
             new PsdSmartObjectInspection("u1", "asset.psb", "embedded", "psb", "psb", length, false, []))]);
+
+    private static string StableFrameId(string pageId, int layerId, IReadOnlyList<int> path)
+    {
+        var identity = string.Join("\n", pageId, layerId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            string.Join('.', path));
+        return "learn_frame_" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(identity)))[..24];
+    }
 
     private static TemplateRevision Commit(TemplateRevision revision)
     {

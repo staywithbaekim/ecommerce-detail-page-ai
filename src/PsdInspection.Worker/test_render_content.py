@@ -7,11 +7,34 @@ from psd_tools.psd import engine_data as e
 from psd_tools.psd import adjustments as a
 from psd_tools.constants import EffectOSType, Tag
 from psd_tools.psd.color import Color
-from psd_tools.psd.effects_layer import BevelInfo, EffectsLayer
+from psd_tools.psd.effects_layer import BevelInfo, EffectsLayer, SolidFillInfo
 from psd_tools.psd.layer_and_mask import MaskData
 from psd_tools.terminology import Unit
 
-from worker import adjustment_hash, empty_mask_hash, effect_descriptor_value, effects_hash, text_style_hash, shape_content_hash
+from worker import adjustment_hash, empty_mask_hash, effect_descriptor_value, effects_hash, text_style_hash, shape_content_hash, raster_image_evidence
+
+
+class RasterImageEvidenceTests(unittest.TestCase):
+    def layer(self, pixels):
+        from PIL import Image
+        return SimpleNamespace(kind="pixel", is_visible=lambda: True, has_pixels=lambda: True,
+            topil=lambda: Image.fromarray(pixels))
+
+    def test_flat_background_and_smooth_gradient_are_not_photographic(self):
+        import numpy as np
+        for pixels in (np.full((96, 96, 3), 180, dtype=np.uint8),
+            np.tile(np.arange(96, dtype=np.uint8)[None, :, None], (96, 1, 3))):
+            evidence = raster_image_evidence(self.layer(pixels))
+            self.assertTrue(evidence["available"])
+            self.assertTrue(evidence["color_count"] < 128 or evidence["detail_pixel_ratio"] < .02)
+
+    def test_textured_pixels_are_detected_without_a_filename_or_smart_object(self):
+        import numpy as np
+        pixels = np.random.default_rng(8237).integers(0, 256, (96, 96, 3), dtype=np.uint8)
+        evidence = raster_image_evidence(self.layer(pixels))
+        self.assertTrue(evidence["available"])
+        self.assertGreaterEqual(evidence["color_count"], 128)
+        self.assertGreaterEqual(evidence["detail_pixel_ratio"], .02)
 
 
 def effects():
@@ -27,6 +50,38 @@ def effects():
 
 
 class RenderEffectEvidenceTests(unittest.TestCase):
+    def test_rgb16_solid_cache_rounding_requires_exact_modern_color(self):
+        before = solid_layer()
+        after = copy.deepcopy(before)
+        for color in (after.tagged_blocks[Tag.EFFECTS_LAYER][EffectOSType.SOLID_FILL].color,
+                      after.tagged_blocks[Tag.EFFECTS_LAYER][EffectOSType.SOLID_FILL].native_color):
+            color.values[1:3] = [28446, 28446]
+        self.assertEqual(effects_hash(before), effects_hash(after))
+        self.assertEqual(before.tagged_blocks[Tag.EFFECTS_LAYER][EffectOSType.SOLID_FILL].color.values[1], 28444)
+
+    def test_solid_color_changes_and_unproven_caches_remain_exact(self):
+        for mutation in ("modern", "legacy_only", "version", "space", "native", "large", "alpha", "type", "conflict", "enabled", "opacity"):
+            with self.subTest(mutation=mutation):
+                before = solid_layer()
+                after = copy.deepcopy(before)
+                legacy = after.tagged_blocks[Tag.EFFECTS_LAYER][EffectOSType.SOLID_FILL]
+                modern = after.tagged_blocks[Tag.OBJECT_BASED_EFFECTS_LAYER_INFO][b"SoFi"]
+                if mutation == "modern": modern[b"Clr "][b"Grn "].value += .001
+                if mutation == "legacy_only": del after.tagged_blocks[Tag.OBJECT_BASED_EFFECTS_LAYER_INFO]
+                if mutation == "version": legacy.version = 1
+                if mutation == "space": legacy.color.id = 1
+                if mutation == "native": legacy.native_color.values[1] += 10
+                if mutation == "large": legacy.color.values[1] = 28447
+                if mutation == "alpha": legacy.color.values[3] = 1
+                if mutation == "type": modern[b"Clr "][b"Grn "] = d.Integer(110)
+                if mutation == "conflict":
+                    block = copy.deepcopy(after.tagged_blocks[Tag.OBJECT_BASED_EFFECTS_LAYER_INFO])
+                    block[b"SoFi"][b"Clr "][b"Grn "].value += 1
+                    after.tagged_blocks[Tag.OBJECT_BASED_EFFECTS_LAYER_INFO_V0] = block
+                if mutation == "enabled": modern[b"enab"].value = False
+                if mutation == "opacity": legacy.opacity -= 1
+                self.assertNotEqual(effects_hash(before), effects_hash(after))
+
     def test_disabled_linear_contour_save_alias_preserves_curve(self):
         before = outer_glow()
         after = copy.deepcopy(before)
@@ -136,6 +191,19 @@ def outer_glow():
                 b"Hrzn": d.Double(value), b"Vrtc": d.Double(value)}) for value in (0.0, 255.0)])})})
 
 
+def solid_layer():
+    class Blocks(dict):
+        get_data = dict.__getitem__
+    return SimpleNamespace(tagged_blocks=Blocks({
+        Tag.EFFECTS_LAYER: EffectsLayer(items={EffectOSType.SOLID_FILL: SolidFillInfo(
+            color=Color(values=[28784, 28444, 28444, 0]), native_color=Color(values=[28784, 28444, 28444, 0]),
+            enabled=1, opacity=255)}),
+        Tag.OBJECT_BASED_EFFECTS_LAYER_INFO: d.DescriptorBlock2(items={b"SoFi": d.Descriptor(classID=b"SoFi", items={
+            b"enab": d.Bool(True), b"present": d.Bool(True),
+            b"Clr ": d.Descriptor(classID=b"RGBC", items={b"Rd  ": d.Double(112.000000923872),
+                b"Grn ": d.Double(110.68093210458755), b"Bl  ": d.Double(110.68093210458755)})})})}))
+
+
 def bevel_layer():
     class Blocks(dict):
         get_data = dict.__getitem__
@@ -165,6 +233,17 @@ def text_layer():
 
 
 class RenderTextStyleTests(unittest.TestCase):
+    def test_font_substitution_is_evidence_not_an_ignored_save_default(self):
+        before = text_layer()
+        after = copy.deepcopy(before)
+        after._data.text_data[b"substitutesUsed"] = d.Bool(False)
+        self.assertEqual(text_style_hash(before), text_style_hash(after))
+        after._data.text_data[b"substitutesUsed"].value = True
+        self.assertNotEqual(text_style_hash(before), text_style_hash(after))
+        self.assertNotIn(b"substitutesUsed", before._data.text_data)
+        after._data.text_data[b"substitutesUsed"] = d.Integer(1)
+        with self.assertRaises(ValueError): text_style_hash(after)
+
     def test_save_default_and_computed_bounds_do_not_change_editable_style(self):
         before = text_layer()
         after = copy.deepcopy(before)
@@ -233,6 +312,10 @@ class RenderAdjustmentTests(unittest.TestCase):
             ("exposure", Tag.EXPOSURE, a.Exposure(1, 0.0, 0.0, 1.0), "exposure", 1.0),
             ("exposure", Tag.EXPOSURE, a.Exposure(1, 0.0, 0.0, 1.0), "offset", 0.2),
             ("exposure", Tag.EXPOSURE, a.Exposure(1, 0.0, 0.0, 1.0), "gamma", 1.2),
+            ("colorbalance", Tag.COLOR_BALANCE, a.ColorBalance(), "shadows", (1, 0, 0)),
+            ("colorbalance", Tag.COLOR_BALANCE, a.ColorBalance(), "midtones", (0, 2, 0)),
+            ("colorbalance", Tag.COLOR_BALANCE, a.ColorBalance(), "highlights", (0, 0, -3)),
+            ("colorbalance", Tag.COLOR_BALANCE, a.ColorBalance(), "luminosity", True),
         ):
             with self.subTest(kind=kind, field=field):
                 class Blocks(dict):
@@ -244,7 +327,7 @@ class RenderAdjustmentTests(unittest.TestCase):
                 self.assertNotEqual(before, adjustment_hash(layer))
 
     def test_unsupported_or_missing_adjustment_is_rejected(self):
-        for kind in ("curves", "exposure", "unknown"):
+        for kind in ("curves", "exposure", "colorbalance", "unknown"):
             with self.assertRaises(ValueError):
                 adjustment_hash(SimpleNamespace(kind=kind, tagged_blocks={}))
 

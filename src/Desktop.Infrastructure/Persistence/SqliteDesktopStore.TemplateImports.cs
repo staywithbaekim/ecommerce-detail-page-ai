@@ -7,6 +7,42 @@ namespace Desktop.Infrastructure.Persistence;
 
 public sealed partial class SqliteDesktopStore : ITemplateResourceRepository
 {
+    public async Task<ImportedTemplateResource> RefreshInspectionCacheAsync(
+        ImportedTemplateResource expected, PsdInspectionDocument inspected, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        ArgumentNullException.ThrowIfNull(inspected);
+        var enriched = expected.Inspection.WithRasterImageEvidenceFrom(inspected);
+        try
+        {
+            return await _writer.ExecuteAsync(async (connection, token) =>
+            {
+                await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+                var stored = await ReadResourceAsync(connection, transaction, "r.resource_id = $value",
+                    expected.ResourceId, joinCommands: false, token).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");
+                if (!ResourceMatches(stored, expected))
+                {
+                    // A racing refresh may already have closed exactly the same cache.
+                    if (!ResourceMatches(stored, expected with { Inspection = enriched }))
+                        throw new InvalidOperationException("TPL_PSD_INSPECTION_CACHE_CONFLICT");
+                    await transaction.CommitAsync(token).ConfigureAwait(false);
+                    return stored;
+                }
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "UPDATE template_resources SET inspection_json = $inspection WHERE resource_id = $id;";
+                command.Parameters.AddWithValue("$id", expected.ResourceId);
+                command.Parameters.AddWithValue("$inspection", JsonSerializer.Serialize(enriched, TemplateJsonOptions));
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return stored with { Inspection = enriched };
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception)
+        { throw new IOException("TPL_TEMPLATE_RESOURCE_WRITE_FAILED", exception); }
+    }
+
     public async Task<ImportedTemplateResource?> GetByResourceIdAsync(
         string resourceId,
         CancellationToken cancellationToken)

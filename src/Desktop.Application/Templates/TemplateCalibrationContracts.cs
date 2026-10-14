@@ -1,4 +1,5 @@
 using Desktop.Application.Psd;
+using Desktop.Domain.Templates;
 
 namespace Desktop.Application.Templates;
 
@@ -31,6 +32,12 @@ public sealed record TemplateFrameProjection(
     bool IsPreviewSupported,
     bool IsRegistered)
 {
+    public TemplateLayerKind LayerKind { get; init; } = TemplateLayerKind.SmartObject;
+    // Derived from the imported clipping stack, never supplied by AI or names.
+    public IReadOnlyList<SupersededLayerEvidence> SupersededLayers { get; init; } = [];
+
+    public string TemplateSha256 { get; init; } = string.Empty;
+
     public bool IsSelected { get; init; }
 
     public bool HasPersistedBinding { get; init; }

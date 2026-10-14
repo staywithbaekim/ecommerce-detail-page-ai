@@ -308,7 +308,7 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
     [InlineData(AiTargetMatchEvidence.SafeSimilar, "0.89", "0.889", AiPageUiStatus.ReviewRequired)]
     [InlineData(AiTargetMatchEvidence.MaterialDifference, "0.80", "0.30", AiPageUiStatus.ReviewRequired)]
     [InlineData(AiTargetMatchEvidence.Unsafe, "0.99", "0.10", AiPageUiStatus.BusinessError)]
-    [InlineData(AiTargetMatchEvidence.Exact, "0.59", "0.10", AiPageUiStatus.BusinessError)]
+    [InlineData(AiTargetMatchEvidence.Exact, "0.59", "0.10", AiPageUiStatus.ReviewRequired)]
     public async Task LearnedRequirementUsesFitClassConfidenceAndSemanticRisk(
         string fitClass,
         string topConfidenceText,

@@ -151,7 +151,7 @@ public sealed class AiRenderPlanFactory(
         var revisionPages = request.TemplateRevision.Pages.ToDictionary(
             page => page.PageId,
             StringComparer.Ordinal);
-        var bindingsByPage = request.TemplateRevision.FrameBindings
+        var bindingsByPage = request.TemplateRevision.ActiveFrameBindings
             .GroupBy(binding => binding.PageId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
         if (request.Batch.Assets.Select(asset => asset.AssetId)
@@ -507,7 +507,7 @@ public sealed class AiRenderPlanFactory(
         }
 
         var revisionPages = revision.Pages.ToDictionary(page => page.PageId, StringComparer.Ordinal);
-        var bindingsByPage = revision.FrameBindings
+        var bindingsByPage = revision.ActiveFrameBindings
             .GroupBy(binding => binding.PageId, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,

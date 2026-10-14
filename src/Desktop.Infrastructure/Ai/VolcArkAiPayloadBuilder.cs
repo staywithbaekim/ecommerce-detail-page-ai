@@ -56,7 +56,7 @@ internal static class VolcArkAiPayloadBuilder
                 + "。analysis_kind=product_joint_understanding 时把全部图片视为同一目标款候选整组，按每个开放式 selection_requirement 独立排序；同一 asset_id 可以出现在多个图片框的排名中。每个 requirement_matches 的 evidence_codes 必须且只能包含一个匹配类别：精确符合用 exact，不影响用途的安全相近替代用 safe_similar，存在实质差异用 material_difference，错款、错变体、无关素材或不安全候选用 unsafe。不要根据文件名推断语义；没有安全候选时不得编造匹配。analysis_kind=selected_asset_geometry 时只分析请求中的已确认单图并返回其主体几何；analysis_kind=size_table_extraction 时只从清晰可读的尺码来源提取原文行列，缺失、低清或冲突时返回 warning 且 size_table_candidate=null，禁止猜值"
                 + "。每个 image_alias 标签只对应紧随其后的那一张图片。结果中的 request_id、model_config_version、requirement_id、coverage_requirement_ids、missing_requirement_ids、asset_id、asset_ids 和 source_asset_id 必须原样使用本请求给出的短别名；不得猜测、改写或输出源系统真实标识"
                 + "。除 requirement_matches 外，请把真实商品配色分成 variant_groups：只按商品本身颜色分组，不要按背景色、光线或后期色调分组；dimension 固定填 color，value 填你观察到的颜色名称。每组返回 coverage_requirement_ids、missing_requirement_ids、is_complete、evidence_codes；完整性按所需视角/姿态/部位是否覆盖判断，不能按照片数量判断。只有一个颜色完整时将其 is_primary_suggestion=true；多个颜色完整时只能建议一个主色并填写 primary_suggestion_evidence，后续生成会保持该主色一致；所有颜色都不完整时建议覆盖最多的一组并明确缺项。variant_role 用 primary 或 secondary 表达相对角色，不能把红、蓝、黄等示例颜色写死为产品规则。"
-                + "。按以下品类中立图片框需求选择素材并给出证据，不要输出 Markdown 或隐藏推理："
+                + "。匹配时优先满足商品视角、朝向、姿势和部位等核心用途。真人模特/假模特默认只是次级呈现形式，互为可接受候选；即使选图描述含“真人模特”，也不得仅因假模特形式判为 material_difference 或 unsafe，除非用户明确要求“必须真人模特/不要假模特”等排他条件。只要求“正面图”时，真人模特正面和假模特正面都符合候选。对同一款/颜色内的候选按整体符合度排序，返回最合适候选；exact/safe_similar 的低置信度表示建议检查，不表示没有可用图。只有错款、错颜色、无关内容或明确违反用户排他要求才判 unsafe；只有明确要求的关键属性确实不符才判 material_difference。不要输出 Markdown 或隐藏推理："
                 + requirementSummary
         });
 

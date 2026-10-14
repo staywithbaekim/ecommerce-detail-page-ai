@@ -134,7 +134,7 @@ public static class TemplateInstanceProjector
         }
         if (!variants.SetEquals(facts.Colors.OrderedVariantIds)) throw Invalid("TPL_INSTANCE_VARIANTS_INVALID");
 
-        var frames = revision.FrameBindings.Select(frame => frame.FrameId).ToHashSet(StringComparer.Ordinal);
+        var frames = revision.ActiveFrameBindings.Select(frame => frame.FrameId).ToHashSet(StringComparer.Ordinal);
         var selections = new HashSet<(string, string)>();
         foreach (var selection in facts.Selections)
         {

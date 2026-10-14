@@ -214,7 +214,7 @@ public sealed class AiRenderPlanFactoryTests
     }
 
     [Fact]
-    public async Task InfeasibleCompleteSubjectIsReviewRequiredWithoutPlanOrPhotoshopSubmission()
+    public async Task InfeasibleCompleteSubjectStillProducesCoverPlanCenteredOnSubject()
     {
         var fixture = Fixture();
         var availability = new TestAvailability(true);
@@ -222,11 +222,15 @@ public sealed class AiRenderPlanFactoryTests
         var result = await Factory(availability).PrepareAsync(new(fixture.Batch, fixture.Revision,
             [fixture.Resource], [new("style_01", [selection])], fixture.Now), default);
         var page = Assert.Single(result.Pages);
-        Assert.Equal(AiRenderPreparationStatus.UserActionRequired, result.Status);
-        Assert.Equal(AiRenderPagePreparationStatus.BusinessBlocked, page.Status);
-        Assert.Equal("TPL_RENDER_LAYOUT_REVIEW_REQUIRED", page.ReasonCode);
-        Assert.False(page.HasPlan);
-        Assert.Equal(0, availability.Calls);
+        Assert.Equal(AiRenderPreparationStatus.ReadyToRender, result.Status);
+        Assert.Equal(AiRenderPagePreparationStatus.ReadyToRender, page.Status);
+        Assert.Equal("AI_RENDER_PLAN_VALID", page.ReasonCode);
+        Assert.True(page.HasPlan);
+        Assert.Equal(1, availability.Calls);
+        using var plan = JsonDocument.Parse(page.RenderPlanJson!);
+        var placement = plan.RootElement.GetProperty("targets")[0].GetProperty("layout").GetProperty("placement");
+        Assert.Equal(395m - 1252m * 1000m / 1200m / 2m, placement.GetProperty("left").GetDecimal());
+        Assert.Equal(1252m * 1000m / 1200m, placement.GetProperty("width").GetDecimal());
     }
 
     [Fact]
@@ -316,8 +320,8 @@ public sealed class AiRenderPlanFactoryTests
         Assert.True(primary.HasPlan);
         if (geometryCase == "infeasible")
         {
-            Assert.False(secondary.HasPlan);
-            Assert.Equal("TPL_RENDER_LAYOUT_REVIEW_REQUIRED", secondary.ReasonCode);
+            Assert.True(secondary.HasPlan);
+            Assert.Equal("AI_RENDER_PLAN_VALID", secondary.ReasonCode);
             return;
         }
         Assert.True(secondary.HasPlan);

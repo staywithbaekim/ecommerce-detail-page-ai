@@ -84,6 +84,7 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
 
     [Theory]
     [InlineData("healthy")]
+    [InlineData("low_confidence")]
     [InlineData("business_red")]
     [InlineData("all_red")]
     [InlineData("empty")]
@@ -452,7 +453,10 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
         var assets = request.Assets.OrderBy(asset => asset.AssetId, StringComparer.Ordinal).ToArray();
         var result = Result(request, matches: request.Requirements.SelectMany(requirement => assets.Select((asset, index) =>
             new AiRequirementMatchV1(requirement.RequirementId, asset.AssetId, index + 1,
-                0.96m, scenario == "all_red" || scenario == "business_red" && index == 1 ? ["unsafe"] : ["front_view", "clear_subject"]))).ToArray(),
+                scenario == "low_confidence" ? 0.55m : 0.96m,
+                scenario == "all_red" || scenario == "business_red" && index == 1
+                    ? ["unsafe"]
+                    : scenario == "low_confidence" ? [AiTargetMatchEvidence.SafeSimilar] : ["front_view", "clear_subject"]))).ToArray(),
             geometry: assets.Select(asset => new AiSubjectGeometryV1(asset.AssetId, 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)).ToArray());
         return result with { VariantGroups = assets.Select((asset, index) => new AiVariantGroupV1("color_" + index, "color",
             index == 0 ? "红" : "蓝", [asset.AssetId], index == 0)).ToArray() };

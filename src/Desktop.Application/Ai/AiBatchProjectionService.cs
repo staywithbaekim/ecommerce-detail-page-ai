@@ -204,7 +204,7 @@ public sealed class AiBatchProjectionService
         IReadOnlyList<AiStyleAnalysisResultInput> styleResults,
         CancellationToken cancellationToken)
     {
-        var pageBindings = context.TemplateRevision.FrameBindings
+        var pageBindings = context.TemplateRevision.ActiveFrameBindings
             .Where(binding => string.Equals(binding.PageId, page.PageId, StringComparison.Ordinal))
             .OrderBy(binding => binding.FrameId, StringComparer.Ordinal)
             .ToArray();
@@ -758,7 +758,7 @@ public sealed class AiBatchProjectionService
         IReadOnlyList<AiStyleAnalysisResultInput> styleResults,
         IReadOnlyDictionary<string, AiLockedSelection> lockedByRequirement)
     {
-        var pageBindings = context.TemplateRevision.FrameBindings
+        var pageBindings = context.TemplateRevision.ActiveFrameBindings
             .Where(binding => string.Equals(binding.PageId, page.PageId, StringComparison.Ordinal))
             .OrderBy(binding => binding.FrameId, StringComparer.Ordinal)
             .ToArray();

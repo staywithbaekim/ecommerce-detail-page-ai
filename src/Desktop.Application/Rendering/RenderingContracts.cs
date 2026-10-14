@@ -70,6 +70,14 @@ public sealed class RenderPlanValidator(IJsonContractValidator validator) : IRen
             var calibratedSizeTable = root.GetProperty("required_capabilities").EnumerateArray()
                 .Any(item => item.GetString() == RenderPlanPlacementMigration.SizeTableCapability);
             var sizeInsertion = RenderPlanPlacementMigration.HasSizeInsertion(root);
+            var rasterCapability = root.GetProperty("required_capabilities").EnumerateArray()
+                .Any(item => item.GetString() == RenderTemplateEvidenceValidator.RasterReplacementCapability);
+            var hasRasterTargets = root.GetProperty("targets").EnumerateArray()
+                .Any(target => target.GetProperty("expected_layer").GetProperty("kind").GetString() == "pixel");
+            if (rasterCapability != hasRasterTargets || hasRasterTargets
+                && (!explicitPlacement || calibratedSizeTable || sizeInsertion
+                    || root.GetProperty("document").GetProperty("content_type").GetString() != "ordinary_set"))
+                return Failure("RENDER_PLAN_IMAGE_LAYER_INVALID");
             if (explicitPlacement && !RenderPlanPlacementMigration.IsExplicit(root)) return Failure("RENDER_PLAN_PLACEMENT_INVALID");
             foreach (var target in root.GetProperty("targets").EnumerateArray())
             {
