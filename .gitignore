@@ -18,6 +18,12 @@ uxp-validation-*.zip
 buyershow_v14_dev/
 
 # Local credentials and machine-specific settings.
+/.codex/config.toml
+# Customer-specific evidence stays local, including in a fresh checkout.
+/docs/验证/TPL-02-v5模板包排除记录往返修复-20261012.md
+/docs/验证/TPL-02-五份真实PSD受控联验-20261012.md
+/docs/验证/TPL-02-像素图片位首链路与缓存升级-20261011.md
+/docs/验证/TPL-02-真实PSD图片框识别诊断-20261011.md
 .env
 .env.*
 !.env.example
