@@ -210,7 +210,9 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
     {
         RefreshTemplatesCommand = new AsyncRelayCommand(LoadTemplateLibraryAsync, () => !TemplateBusy);
         NewTemplateCommand = new RelayCommand(BeginNewTemplate);
-        OpenTemplateCommand = new AsyncRelayCommand<TemplateLibraryCardViewModel>(OpenTemplateAsync);
+        OpenTemplateCommand = new AsyncRelayCommand<TemplateLibraryCardViewModel>(
+            OpenTemplateAsync,
+            HandleTemplateCommandException);
         RenameTemplateCommand = new AsyncRelayCommand<TemplateLibraryCardViewModel>(
             RenameTemplateAsync,
             HandleTemplateCommandException);

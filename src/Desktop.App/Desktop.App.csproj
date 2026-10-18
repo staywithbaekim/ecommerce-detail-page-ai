@@ -21,4 +21,19 @@
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
+  <Target Name="BuildPsdInspectionWorker" AfterTargets="Build" BeforeTargets="PrepareForPublish"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\tools\build-psd-inspection-worker.ps1&quot; -OutputDirectory &quot;$(TargetDir).&quot; -BuildDirectory &quot;$(MSBuildProjectDirectory)\obj\psd-inspection-worker\$(Configuration)&quot;" />
+  </Target>
+
+  <Target Name="CopyPsdInspectionWorkerToPublishDirectory" AfterTargets="Publish"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'">
+    <ItemGroup>
+      <PsdInspectionWorkerFile Include="$(TargetDir)psd-inspection-worker\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PsdInspectionWorkerFile)"
+          DestinationFiles="@(PsdInspectionWorkerFile->'$(PublishDir)psd-inspection-worker\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

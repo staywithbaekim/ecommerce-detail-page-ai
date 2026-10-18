@@ -7,7 +7,7 @@ if (-not (Test-Path -LiteralPath $projectPython -PathType Leaf)) {
     throw 'Project Python 3.10.11 environment is missing. Restore the configured environment; do not fall back to another Python.'
 }
 
-$version = & $projectPython -E -s -c 'import sys; print(".".join(map(str, sys.version_info[:3])))'
+$version = & $projectPython -E -s -c 'import sys; print(chr(46).join(map(str, sys.version_info[:3])))'
 if ($LASTEXITCODE -ne 0 -or $version -ne '3.10.11') {
     throw "Expected project Python 3.10.11; version-check process exit code: $LASTEXITCODE; version received: $([bool]$version)."
 }
