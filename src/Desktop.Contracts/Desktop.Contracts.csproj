@@ -15,6 +15,7 @@
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-package-v3.schema.json"><Link>Schemas\template-package-v3.schema.json</Link></EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-package-v4.schema.json"><Link>Schemas\template-package-v4.schema.json</Link></EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-package-v5.schema.json"><Link>Schemas\template-package-v5.schema.json</Link></EmbeddedResource>
+    <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-package-v6.schema.json"><Link>Schemas\template-package-v6.schema.json</Link></EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\template-rules-v1.schema.json"><Link>Schemas\template-rules-v1.schema.json</Link></EmbeddedResource>
     <EmbeddedResource Include="..\..\docs\技术方案\schemas\render-plan-v1.schema.json">
       <Link>Schemas\render-plan-v1.schema.json</Link>

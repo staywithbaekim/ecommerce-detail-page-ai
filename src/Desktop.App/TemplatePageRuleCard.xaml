@@ -19,7 +19,18 @@
      <Border Width="1" Height="14" Background="{StaticResource WorkbenchLineBrush}" Margin="6,0"/>
      <Button Content="移除" Click="Remove_Click" ToolTip="从草稿移除此页，不修改源 PSD"/>
     </StackPanel>
-    <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding DisplayName}" ToolTip="{Binding Name}"/>
+    <StackPanel VerticalAlignment="Center">
+     <TextBlock FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Text="{Binding DisplayName}" ToolTip="{Binding Name}"/>
+     <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+      <TextBlock Text="{Binding TypeRecognitionText}" Style="{StaticResource WorkbenchCaptionStyle}" VerticalAlignment="Center"/>
+      <TextBlock Text="当前类型" Style="{StaticResource WorkbenchCaptionStyle}" Margin="12,0,5,0" VerticalAlignment="Center"/>
+      <ComboBox x:Name="PageTypeSelector" Width="100" Height="26" Padding="4,1"
+                ItemsSource="{Binding PageTypeOptions}" SelectedItem="{Binding ContentTypeLabel, Mode=OneWay}"
+                IsEnabled="{Binding CanChangePageType}" SelectionChanged="PageType_SelectionChanged"
+                ToolTip="切换当前 PSD 的页面类型；普通页校准与尺码页校准分别保留"
+                AutomationProperties.Name="切换页面类型"/>
+     </StackPanel>
+    </StackPanel>
    </DockPanel>
    <Grid Grid.Row="1" Margin="12,0,12,12">
     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="RulesColumn" Width="220"/></Grid.ColumnDefinitions>
@@ -34,6 +45,13 @@
         <TextBlock Text="{Binding Purpose}" Style="{StaticResource WorkbenchBodyStyle}"/>
        </Button>
        <Border Height="1" Background="{StaticResource WorkbenchLineBrush}" Margin="8,14,8,14"/>
+       <StackPanel Visibility="{Binding IsSizeTable, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="8,0,8,14">
+        <TextBlock Text="尺码表区域与样式" Style="{StaticResource WorkbenchSectionStyle}"/>
+        <TextBlock Text="{Binding SizeCalibrationStatus}" Style="{StaticResource WorkbenchCaptionStyle}" Margin="0,8,0,10"
+                   AutomationProperties.AutomationId="SizeCalibrationStatus"/>
+        <Button Content="设置区域与样式" Click="SizeCalibration_Click" IsEnabled="{Binding CanCalibrateSizeTable}"
+                AutomationProperties.AutomationId="CalibrateSizeTable" HorizontalAlignment="Left"/>
+       </StackPanel>
        <TextBlock Text="逐框选图规则" Style="{StaticResource WorkbenchSectionStyle}" Margin="8,0,0,10"/>
        <TextBlock Text="{Binding EmptyFrameMessage}" Margin="8,0,8,8">
         <TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource WorkbenchCaptionStyle}"><Style.Triggers><Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers></Style></TextBlock.Style>

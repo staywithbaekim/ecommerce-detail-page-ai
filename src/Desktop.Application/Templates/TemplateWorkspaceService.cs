@@ -25,6 +25,8 @@ public sealed partial class TemplateWorkspaceService(
         if (revision.GroupId != session.GroupId) throw new TemplateRuleViolationException("TPL_REVISION_NOT_FOUND");
         var page = revision.Pages.SingleOrDefault(item => item.PageId == pageId)
             ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        if (page.ContentType != TemplatePageContentType.DynamicSizeTable)
+            throw new TemplateRuleViolationException("SIZE_TABLE_CALIBRATION_INVALID");
         var resource = await resources.GetByResourceIdAsync(page.TemplateResourceId, cancellationToken).ConfigureAwait(false)
             ?? throw new TemplateRuleViolationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");
         if (!calibration.Matches(resource.Inspection))
@@ -181,7 +183,9 @@ public sealed partial class TemplateWorkspaceService(
         page.Notes,
         page.CanvasX,
         page.CanvasY,
-        TemplateSizeCalibration.FromDomain(page.SizeTableCalibration));
+        TemplateSizeCalibration.FromDomain(page.SizeTableCalibration),
+        page.TypeRecognition == TemplatePageTypeRecognition.SizeTablePage
+            ? TemplatePageTypeRecognitionOption.SizeTablePage : TemplatePageTypeRecognitionOption.OrdinaryPage);
 
     private static string? GetPreviewSource(ImportedTemplateResource resource, IPathPolicy? paths)
     {
@@ -197,7 +201,8 @@ public sealed partial class TemplateWorkspaceService(
     private static TemplatePageContentType ToDomain(TemplatePageContentTypeOption value) => value switch
     {
         TemplatePageContentTypeOption.DynamicSizeTable => TemplatePageContentType.DynamicSizeTable,
-        _ => TemplatePageContentType.NormalComposition
+        TemplatePageContentTypeOption.NormalComposition => TemplatePageContentType.NormalComposition,
+        _ => throw new TemplateRuleViolationException("TPL_PAGE_CONTENT_TYPE_INVALID")
     };
 
     private static TemplateGenerationMode ToDomain(TemplateGenerationModeOption value) => value switch

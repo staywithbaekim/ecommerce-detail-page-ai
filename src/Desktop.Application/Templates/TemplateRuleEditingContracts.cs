@@ -40,7 +40,8 @@ internal sealed class TemplateBranchRuleEditJsonConverter : JsonConverter<Templa
 }
 public sealed record TemplateRulePageState(int Order, string Name, TemplatePageContentType ContentType,
     TemplateGenerationMode GenerationMode, int? VariantCapacity, bool Enabled, string ResourceId,
-    string? Notes, double CanvasX, double CanvasY, SizeTableTemplateCalibration? SizeTableCalibration);
+    string? Notes, double CanvasX, double CanvasY, SizeTableTemplateCalibration? SizeTableCalibration,
+    TemplatePageTypeRecognition TypeRecognition = TemplatePageTypeRecognition.OrdinaryPage);
 public sealed record TemplateRulePageEdit(string PageId, TemplateRulePageState? Page,
     IReadOnlyList<TemplatePackageFrameBinding> Bindings);
 public sealed record TemplateRuleTargetEdit(string FrameId, TemplatePackageFrameBinding? Binding);

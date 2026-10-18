@@ -540,7 +540,7 @@ public sealed partial class WpfShellTests
                 window.Show(); FlushLayout(window);
                 Assert.Empty(page.Frames); // Structural smart-object candidates are not product evidence.
                 Assert.NotNull(target);
-                Assert.Empty(Descendants<ComboBox>(card));
+                Assert.Single(Descendants<ComboBox>(card), combo => combo.Name == "PageTypeSelector");
                 Assert.Empty(Descendants<Expander>(card));
                 Assert.Contains(Descendants<TextBlock>(card), text => text.Text == "本页用途");
                 Assert.Contains(Descendants<TextBlock>(card), text => text.Text == "逐框选图规则");
@@ -576,6 +576,57 @@ public sealed partial class WpfShellTests
             Assert.True(model.Pages[0].IsSizeTable);
             Assert.Equal("尺码页", model.Pages[0].Name);
             Assert.Empty(model.Pages[0].Frames);
+        });
+    }
+
+    [Fact]
+    public void SizeCardShowsCalibrationStateAndSwitchRestoresOrdinaryFrameRules()
+    {
+        RunInSta(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext());
+            using var fixture = new RuleUiFixture(sizeLayer: true);
+            using var writes = new SemaphoreSlim(1);
+            using var model = new TemplateRuleWorkbenchViewModel(fixture.Workspace, fixture.Calibration, fixture.Session, writes);
+            PumpRuleTask(model.RefreshAsync());
+            var page = model.Pages[0];
+            var target = page.Candidates.Single(candidate => candidate.LayerId == 7);
+            PumpRuleTask(model.RegisterAsync(page, target, "本款主色正面"));
+            var frameId = Assert.Single(page.Frames).FrameId;
+            PumpRuleTask(model.SetPageTypeAsync(page, TemplatePageContentTypeOption.DynamicSizeTable));
+            Assert.True(page.IsSizeTable);
+            Assert.Empty(page.EditableFrames);
+            Assert.Contains("尚未设置", page.SizeCalibrationStatus, StringComparison.Ordinal);
+            Assert.Contains("普通页", page.TypeRecognitionText, StringComparison.Ordinal);
+            var draft = fixture.Workspace.GetDraftAsync(fixture.Session, default).GetAwaiter().GetResult();
+            var source = draft.Pages.Single(item => item.Page.PageId == page.PageId);
+            var group = source.Resource.Inspection.Layers.Single(layer => layer.LayerId == 9);
+            var reference = new TemplateSizeLayer(group.Path[0] + 1, group.LayerId, group.Kind, group.Name, "sha256:" + new string('b', 64));
+            var calibration = new TemplateSizeCalibration("size-table-template/v1", source.Resource.Sha256, "动态尺码表",
+                reference, [reference], new(0, 1400, 200, 1900),
+                new("Microsoft YaHei UI", 24, 1000, 56, 24, 12, "#FFFFFFFF", "#FFF2F4F7", "#FF101828", "#FF98A2B3"));
+            PumpRuleTask(fixture.Workspace.CalibrateSizeTableAsync(fixture.Session, page.PageId, calibration, default));
+            PumpRuleTask(model.RefreshAsync(flush: false));
+            var card = new TemplatePageRuleCard { DataContext = page };
+            var window = new Window { Width = 800, Height = 700, Content = card };
+            try
+            {
+                window.Show(); FlushLayout(window);
+                Assert.True(page.CanCalibrateSizeTable);
+                Assert.Contains("已保存", page.SizeCalibrationStatus, StringComparison.Ordinal);
+                var button = Assert.Single(Descendants<Button>(card), item => System.Windows.Automation.AutomationProperties.GetAutomationId(item) == "CalibrateSizeTable");
+                Assert.True(button.IsVisible);
+                Assert.True(button.IsEnabled);
+                PumpRuleTask(model.SetPageTypeAsync(page, TemplatePageContentTypeOption.NormalComposition));
+                FlushLayout(window);
+                Assert.False(button.IsVisible);
+                Assert.Equal(frameId, Assert.Single(page.Frames).FrameId);
+                Assert.Equal("本款主色正面", page.Frames[0].Description);
+                PumpRuleTask(model.SetPageTypeAsync(page, TemplatePageContentTypeOption.DynamicSizeTable));
+                Assert.Contains("已保存", page.SizeCalibrationStatus, StringComparison.Ordinal);
+                Assert.Empty(page.Frames);
+            }
+            finally { window.Close(); }
         });
     }
 
@@ -778,7 +829,7 @@ public sealed partial class WpfShellTests
         public TemplateCalibrationService Calibration { get; }
         public TemplateDraftSession Session { get; } = new("group", "UI fixture", "revision", 1, new HashSet<string>());
         public string Root => _root;
-        public RuleUiFixture(bool twoCandidates = false, bool pixelEvidence = false)
+        public RuleUiFixture(bool twoCandidates = false, bool pixelEvidence = false, bool sizeLayer = false)
         {
             Store = new(new(_root)); Store.InitializeAsync().GetAwaiter().GetResult();
             var paths = new LocalAppPathPolicy(_root); var files = new AtomicFileStore(paths);
@@ -793,6 +844,11 @@ public sealed partial class WpfShellTests
                 SmartObject = layer.SmartObject! with { TransformBox = [0, 1400, 200, 1400, 200, 1600, 0, 1600] } };
             var inspection = new PsdInspectionDocument(hash, 4, new(200, 2000, 8, "RGB"), twoCandidates ? 2 : 1, twoCandidates ? 2 : 1, 0, 0, 0, signature,
                 new(1, 1, 2), 1024, new(200, 2000, "RGB", hash, 4), twoCandidates ? [layer, second] : [layer]);
+            if (sizeLayer) inspection = inspection with
+            {
+                LayerCount = inspection.LayerCount + 1,
+                Layers = [.. inspection.Layers, layer with { Path = [2], LayerId = 9, Name = "尺码表", Kind = "group", IsGroup = true, SmartObject = null }]
+            };
             var path = "templates/groups/group/drafts/revision/staging/resource/template.psd";
             Store.SaveGroupAsync(TemplateGroup.Create("group", "UI fixture", DateTimeOffset.UnixEpoch), default).GetAwaiter().GetResult();
             Store.SaveDraftRevisionAsync(TemplateRevision.CreateDraft("revision", "group", 1, DateTimeOffset.UnixEpoch), default).GetAwaiter().GetResult();

@@ -337,26 +337,33 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
         return Task.CompletedTask;
     }
 
-    public async Task ConfigureSizeTableAsync(Window owner)
+    public Task ConfigureSizeTableAsync(Window owner) => SelectedTemplatePage is { } selected
+        ? ConfigureSizeTableAsync(owner, selected.PageId) : Task.CompletedTask;
+
+    public async Task ConfigureSizeTableAsync(Window owner, string pageId)
     {
         if (_templateWorkspace is not ISizeTableTemplateCalibrationService calibrationService
-            || _templateDraft is null || SelectedTemplatePage is not { IsReadOnly: false } selected
-            || !IsSelectedDynamicSizeTable) return;
-        await _templateDraftWrite.WaitAsync().ConfigureAwait(true);
+            || _templateDraft is not { } session || !session.CanEditPage(pageId)) return;
+        await FlushRuleWorkbenchAsync().ConfigureAwait(true);
         try
         {
-            var session = _templateDraft;
             var draft = await _templateWorkspace.GetDraftAsync(session, CancellationToken.None).ConfigureAwait(true);
-            var page = draft.Pages.Single(item => item.Page.PageId == selected.PageId);
+            var page = draft.Pages.SingleOrDefault(item => item.Page.PageId == pageId);
+            if (page is not { IsAffected: true, Page.ContentType: TemplatePageContentTypeOption.DynamicSizeTable }) return;
             var dialog = new SizeTableCalibrationDialog(page) { Owner = owner };
             if (dialog.ShowDialog() != true || dialog.Calibration is null) return;
-            await calibrationService.CalibrateSizeTableAsync(session, selected.PageId, dialog.Calibration, CancellationToken.None).ConfigureAwait(true);
+            await _templateDraftWrite.WaitAsync().ConfigureAwait(true);
+            try
+            {
+                if (_templateDraft?.DraftRevisionId != session.DraftRevisionId) return;
+                await calibrationService.CalibrateSizeTableAsync(session, pageId, dialog.Calibration, CancellationToken.None).ConfigureAwait(true);
+            }
+            finally { _templateDraftWrite.Release(); }
             await LoadDraftPagesAsync(populateImportedFiles: false).ConfigureAwait(true);
             TemplateStatusMessage = "尺码表区域与样式已保存到草稿；保存模板组后用于新批次。";
-            SelectedTemplatePage = TemplatePages.Single(item => item.PageId == selected.PageId);
+            SelectedTemplatePage = TemplatePages.Single(item => item.PageId == pageId);
         }
         catch (InvalidOperationException error) { TemplateStatusMessage = ToUserMessage(error.Message); }
-        finally { _templateDraftWrite.Release(); }
     }
 
     private async Task SelectCalibrationAssetAsync()

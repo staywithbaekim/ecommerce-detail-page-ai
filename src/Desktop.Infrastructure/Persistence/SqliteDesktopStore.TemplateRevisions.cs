@@ -490,10 +490,12 @@ public sealed partial class SqliteDesktopStore
             pageCommand.CommandText = """
                 INSERT INTO template_pages(
                     revision_id, page_id, order_index, name, content_type, generation_mode,
-                    variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y, size_table_calibration_json)
+                    variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y,
+                    size_table_calibration_json, type_recognition)
                 VALUES(
                     $revision_id, $page_id, $order_index, $name, $content_type, $generation_mode,
-                    $variant_capacity, $enabled, $template_resource_id, $notes, $canvas_x, $canvas_y, $size_table_calibration_json);
+                    $variant_capacity, $enabled, $template_resource_id, $notes, $canvas_x, $canvas_y,
+                    $size_table_calibration_json, $type_recognition);
                 """;
             AddPageParameters(pageCommand, page);
             await pageCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -543,6 +545,7 @@ public sealed partial class SqliteDesktopStore
         command.Parameters.AddWithValue("$canvas_y", page.CanvasY);
         command.Parameters.AddWithValue("$size_table_calibration_json", page.SizeTableCalibration is null
             ? DBNull.Value : JsonSerializer.Serialize(page.SizeTableCalibration));
+        command.Parameters.AddWithValue("$type_recognition", page.TypeRecognition.ToString());
     }
 
     private static async Task EnsureCommittedRevisionMatchesAsync(
@@ -581,7 +584,8 @@ public sealed partial class SqliteDesktopStore
             pageCommand.Transaction = transaction;
             pageCommand.CommandText = """
                 SELECT page_id, order_index, name, content_type, generation_mode,
-                       variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y, size_table_calibration_json
+                       variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y,
+                       size_table_calibration_json, type_recognition
                 FROM template_pages
                 WHERE revision_id = $revision_id
                 ORDER BY order_index;
@@ -651,7 +655,8 @@ public sealed partial class SqliteDesktopStore
         && Math.Abs(reader.GetDouble(9) - page.CanvasX) < 0.0001
         && Math.Abs(reader.GetDouble(10) - page.CanvasY) < 0.0001
         && string.Equals(reader.IsDBNull(11) ? null : reader.GetString(11), page.SizeTableCalibration is null
-            ? null : JsonSerializer.Serialize(page.SizeTableCalibration), StringComparison.Ordinal);
+            ? null : JsonSerializer.Serialize(page.SizeTableCalibration), StringComparison.Ordinal)
+        && string.Equals(reader.GetString(12), page.TypeRecognition.ToString(), StringComparison.Ordinal);
 
     private static async Task<ImmutableArray<TemplatePage>> LoadPagesAsync(
         SqliteConnection connection,
@@ -662,7 +667,8 @@ public sealed partial class SqliteDesktopStore
         command.Transaction = transaction;
         command.CommandText = """
             SELECT page_id, order_index, name, content_type, generation_mode,
-                   variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y, size_table_calibration_json
+                   variant_capacity, enabled, template_resource_id, notes, canvas_x, canvas_y,
+                   size_table_calibration_json, type_recognition
             FROM template_pages
             WHERE revision_id = $revision_id
             ORDER BY order_index;
@@ -686,7 +692,8 @@ public sealed partial class SqliteDesktopStore
                 reader.GetDouble(9),
                 reader.GetDouble(10),
                 reader.IsDBNull(11) ? null : JsonSerializer.Deserialize<SizeTableTemplateCalibration>(reader.GetString(11))
-                    ?? throw new InvalidDataException("SIZE_TABLE_CALIBRATION_INVALID")));
+                    ?? throw new InvalidDataException("SIZE_TABLE_CALIBRATION_INVALID"),
+                Enum.Parse<TemplatePageTypeRecognition>(reader.GetString(12), false)));
         }
 
         return pages.ToImmutable();

@@ -133,6 +133,10 @@ public static class TemplateRuleEvaluator
                 Add("TPL_RULE_COLOR_SLOT_INVALID");
         }
         var allocatedCount = recipe.ColorSlots.Count(slot => slot?.Source == TemplateRuleColorSource.Allocated);
+        if (page?.ContentType == TemplatePageContentType.DynamicSizeTable
+            && (!recipe.FrameBindings.IsEmpty || !recipe.ColorSlots.IsEmpty
+                || recipe.Repeat != TemplateRuleRepeat.Once || recipe.ColorRange != TemplateRuleColorRange.None))
+            Add("TPL_RULE_SIZE_PAGE_FRAME_BINDINGS_FORBIDDEN");
         if (recipe.Repeat == TemplateRuleRepeat.Once
                 && (recipe.ColorRange != TemplateRuleColorRange.None || allocatedCount != 0)
             || recipe.Repeat == TemplateRuleRepeat.ColorChunks

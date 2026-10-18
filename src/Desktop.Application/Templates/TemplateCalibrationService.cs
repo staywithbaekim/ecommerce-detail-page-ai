@@ -26,6 +26,8 @@ public sealed class TemplateCalibrationService(
             ?? throw new InvalidOperationException("TPL_REVISION_NOT_FOUND");
         var page = revision.Pages.SingleOrDefault(item => string.Equals(item.PageId, pageId, StringComparison.Ordinal))
             ?? throw new InvalidOperationException("TPL_PAGE_NOT_FOUND");
+        if (page.ContentType != TemplatePageContentType.NormalComposition)
+            throw new InvalidOperationException("TPL_PAGE_TYPE_NOT_NORMAL");
         var resource = await resources.GetByResourceIdAsync(page.TemplateResourceId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("TPL_TEMPLATE_RESOURCE_NOT_FOUND");

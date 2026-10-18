@@ -23,6 +23,12 @@ public enum TemplatePageContentTypeOption
     DynamicSizeTable
 }
 
+public enum TemplatePageTypeRecognitionOption
+{
+    OrdinaryPage = 0,
+    SizeTablePage
+}
+
 public enum TemplateGenerationModeOption
 {
     OncePerProduct = 0,
@@ -42,7 +48,8 @@ public sealed record TemplatePageProjection(
     string Notes = "",
     double CanvasX = 0,
     double CanvasY = 0,
-    TemplateSizeCalibration? SizeTableCalibration = null);
+    TemplateSizeCalibration? SizeTableCalibration = null,
+    TemplatePageTypeRecognitionOption TypeRecognition = TemplatePageTypeRecognitionOption.OrdinaryPage);
 
 public interface ISizeTableTemplateCalibrationService
 {

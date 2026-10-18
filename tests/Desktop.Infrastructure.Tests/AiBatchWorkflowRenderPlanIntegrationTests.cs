@@ -881,6 +881,94 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
     }
 
     [Fact]
+    public async Task ExplicitlySelectedExistingSizeImageFlowsIntoTheNewEditorTable()
+    {
+        using var directory = new TestDirectory();
+        var now = new DateTimeOffset(2026, 10, 18, 9, 0, 0, TimeSpan.Zero);
+        var fixture = Fixture(directory.Path, now, includeSecondAsset: true, includeDynamicSizePage: true);
+        await using var store = new SqliteDesktopStore(new DesktopDataOptions(directory.Path));
+        await store.InitializeAsync();
+        await SeedAsync(store, fixture, "import_existing_size_source");
+
+        var files = new AtomicFileStore(new LocalAppPathPolicy(directory.Path));
+        var results = new FileAiAnalysisResultStore(files, new JsonSchemaContractValidator());
+        var expectedColumns = new[] { "尺码", "胸围", "袖长" };
+        var expectedRows = new[]
+        {
+            new[] { "M", "96", "/" },
+            new[] { "L", "102", "62.5" }
+        };
+        var provider = new ScenarioProvider(request => request.AnalysisKind switch
+        {
+            AiAnalysisKind.ProductJointUnderstanding => Result(
+                request,
+                matches: [new("frame_render_integration", "asset_second", 1, 0.96m, ["front_view"])],
+                geometry: [new("asset_second", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)],
+                sizeTable: new("asset_front", 0.99m, expectedColumns, expectedRows)),
+            AiAnalysisKind.SelectedAssetGeometry => Result(request,
+                geometry: [new("asset_front", 0.1m, 0.1m, 0.9m, 0.9m, 0.96m)]),
+            AiAnalysisKind.SizeTableExtraction => CreateSelectedSourceResult(request),
+            _ => Result(request)
+        });
+        var validator = new RenderPlanValidator(new JsonSchemaContractValidator());
+        var plans = new AiRenderPlanFactory(new TemplateRenderPlanBuilder(validator),
+            new UnavailablePhotoshopAvailabilityPort(), new SizeTableRenderPlanBuilder(validator), store);
+        using var sizeTables = new SizeTableFileRepository(files);
+        using var checkpoints = new AiAnalysisCheckpointCoordinator(store,
+            new AiAnalysisStateManifestStore(files), TimeProvider.System);
+        using var workflow = Workflow(store, results, provider, store, plans, sizeTables,
+            new WpfSizeTableRasterizer(files), checkpointPort: checkpoints);
+
+        await workflow.GrantUploadConsentAsync(default);
+        _ = await workflow.StartAsync(fixture.Batch.BatchId, default);
+        var recognized = await WaitForProjectionAsync(workflow, fixture.Batch.BatchId, projection =>
+            projection.Styles.SelectMany(style => style.Pages).Any(page => page.PageId == "page_render_size"
+                && page.Status == AiPageUiStatus.Ready));
+        var recognizedPage = Assert.Single(recognized.Styles).Pages.Single(page => page.PageId == "page_render_size");
+        Assert.Equal(AiSizeTableSourceStatus.AutoSelected, recognizedPage.SizeTableSource!.Status);
+        var recognizedSource = Assert.Single(recognizedPage.SizeTableSource.Candidates, candidate => candidate.IsDetected);
+        Assert.Equal("asset_front", recognizedSource.AssetId);
+        Assert.True(recognizedSource.IsSizeTableCandidate);
+        Assert.True(recognizedSource.IsSelected);
+        Assert.Contains(fixture.Batch.Styles.Single().AssetIds, id => id == recognizedSource.AssetId);
+        Assert.Equal(1, provider.Calls);
+
+        var selected = await workflow.SelectSizeTableSourceAsync(
+            fixture.Batch.BatchId, "style_render_integration", recognizedSource.AssetId, default);
+        Assert.Equal("asset_front", selected.Styles.Single().Pages.Single(page => page.PageId == "page_render_size")
+            .SizeTableSource!.SelectedAssetId);
+        var settled = await WaitForProjectionAsync(workflow, fixture.Batch.BatchId, projection =>
+            provider.Calls >= 2
+            && projection.Status is AiBatchUiStatus.Ready or AiBatchUiStatus.ReviewRequired or AiBatchUiStatus.NotGeneratable
+            && projection.Styles.SelectMany(style => style.Pages).Any(page => page.PageId == "page_render_size"
+                && page.Status == AiPageUiStatus.Ready
+                && page.SizeTableSource!.Status == AiSizeTableSourceStatus.AutoSelected));
+        var providerCallsAfterSelection = provider.Calls;
+        Assert.True(providerCallsAfterSelection >= 2);
+        Assert.Equal("asset_front", Assert.Single(settled.Styles).Pages.Single(page => page.PageId == "page_render_size")
+            .SizeTableSource!.SelectedAssetId);
+
+        _ = await workflow.PrepareRenderingAsync(fixture.Batch.BatchId, default);
+        var editor = new SizeTableEditingWorkflow(sizeTables, TimeProvider.System);
+        var loaded = await editor.LoadAsync(fixture.Batch.BatchId, "style_render_integration", "page_render_size", default);
+        Assert.Equal(SizeTableEditorLoadStatus.Loaded, loaded.Status);
+        Assert.Equal("asset_front", loaded.Document!.SourceAssetId);
+        Assert.Equal("sha256:" + new string('b', 64), loaded.Document.SourceContentDigest);
+        Assert.Equal(SizeTableEditorStatus.Valid, loaded.Document.Status);
+        Assert.Equal(expectedColumns, loaded.Document.Columns.Select(column => column.SourceText).ToArray());
+        Assert.Equal(expectedRows, loaded.Document.Rows.Select(row => row.Cells.ToArray()).ToArray());
+        Assert.Equal(providerCallsAfterSelection, provider.Calls); // Rendering reuses persisted recognition; it does not enqueue another AI request.
+
+        AiAnalysisResultV1 CreateSelectedSourceResult(AiAnalysisRequestV1 request)
+        {
+            var selectedAsset = Assert.Single(request.Assets);
+            Assert.Equal("asset_front", selectedAsset.AssetId);
+            Assert.Contains(request.Requirements, requirement => requirement.RequirementId == "size_table_page_render_size");
+            return Result(request, sizeTable: new("asset_front", 0.99m, expectedColumns, expectedRows));
+        }
+    }
+
+    [Fact]
     public async Task MissingAndSizeWarningsRemainOnTheirRelevantPages()
     {
         using var directory = new TestDirectory();
@@ -926,6 +1014,11 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.Equal(AiPageUiStatus.BusinessError, pages["page_render_size"].Status);
         Assert.Contains(pages["page_render_size"].WarningTexts, text => text.Contains("尺码来源", StringComparison.Ordinal));
         Assert.DoesNotContain(pages["page_render_size"].WarningTexts, text => text.Contains("商品素材", StringComparison.Ordinal));
+        var missingSources = pages["page_render_size"].SizeTableSource
+            ?? throw new InvalidOperationException("TEST_SIZE_SOURCE_PROJECTION_MISSING");
+        Assert.Equal(AiSizeTableSourceStatus.NeedsSelection, missingSources.Status);
+        Assert.Null(missingSources.SelectedAssetId);
+        Assert.All(missingSources.Candidates, candidate => Assert.False(candidate.IsDetected));
     }
 
     [Fact]
@@ -990,6 +1083,17 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
         Assert.Equal(AiPageUiStatus.Ready, conflictPages["page_render_integration"].Status);
         Assert.Equal(AiPageUiStatus.BusinessError, conflictPages["page_render_size"].Status);
         Assert.Contains(conflictPages["page_render_size"].WarningTexts, text => text.Contains("唯一来源", StringComparison.Ordinal));
+        var conflictedSources = conflictPages["page_render_size"].SizeTableSource!;
+        Assert.Equal(AiSizeTableSourceStatus.NeedsSelection, conflictedSources.Status);
+        Assert.Null(conflictedSources.SelectedAssetId);
+        var detectedConflictSources = conflictedSources.Candidates
+            .Where(candidate => candidate.IsDetected)
+            .Select(candidate => candidate.AssetId)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(2, detectedConflictSources.Length);
+        Assert.Equal("asset_front", detectedConflictSources[0]);
+        Assert.Equal("asset_second", detectedConflictSources[1]);
     }
 
     [Theory]
@@ -1417,7 +1521,7 @@ public sealed partial class AiBatchWorkflowRenderPlanIntegrationTests
                 secondPage.PageId,
                 LayerPath.Create([3]),
                 ExpectedLayerEvidence.Create(
-                    257,
+                    258,
                     "registered_frame_second",
                     true,
                     false,

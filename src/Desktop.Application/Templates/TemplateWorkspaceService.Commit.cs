@@ -220,7 +220,8 @@ public sealed partial class TemplateWorkspaceService
                     page.GenerationMode,
                     page.VariantCapacity,
                     page.Enabled,
-                    resourceMap[page.TemplateResourceId], page.Notes, page.CanvasX, page.CanvasY, page.SizeTableCalibration));
+                    resourceMap[page.TemplateResourceId], page.Notes, page.CanvasX, page.CanvasY,
+                    page.SizeTableCalibration, page.TypeRecognition));
             }
 
             var frameMap = sourceRevision.FrameBindings.ToDictionary(binding => binding.FrameId,

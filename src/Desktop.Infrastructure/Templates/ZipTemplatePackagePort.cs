@@ -237,12 +237,12 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         }
         if (manifest.Protocol is not (TemplatePackageProtocol.Version or TemplatePackageProtocol.Version2
             or TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion
-            or TemplatePackageProtocol.CandidateExclusionVersion))
+            or TemplatePackageProtocol.CandidateExclusionVersion or TemplatePackageProtocol.PageTypeVersion))
         {
             throw new InvalidDataException("TPL_PACKAGE_VERSION_UNSUPPORTED");
         }
         if (manifest.Protocol is not (TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion
-            or TemplatePackageProtocol.CandidateExclusionVersion) && (manifest.RuleWorkspace is not null
+            or TemplatePackageProtocol.CandidateExclusionVersion or TemplatePackageProtocol.PageTypeVersion) && (manifest.RuleWorkspace is not null
             || manifest.Pages?.Any(page => page.Notes is not null) == true))
             throw new InvalidDataException("TPL_PACKAGE_INVALID");
 
@@ -300,8 +300,12 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                     layer.Path.Any(segment => segment < 1)
                     || layer.ClippingBase is { } basis && basis.Path.Any(segment => segment < 1))
                 || page.SizeTableCalibration is { } calibration
-                    && (page.ContentType != TemplatePageContentTypeOption.DynamicSizeTable
+                    && (manifest.Protocol != TemplatePackageProtocol.PageTypeVersion
+                            && page.ContentType != TemplatePageContentTypeOption.DynamicSizeTable
                         || inspection is null || !Desktop.Application.SizeTables.SizeTableCalibrationResolver.Matches(calibration, inspection))
+                || manifest.Protocol != TemplatePackageProtocol.PageTypeVersion && page.TypeRecognition is not null
+                || manifest.Protocol == TemplatePackageProtocol.PageTypeVersion
+                    && (page.TypeRecognition is null || !Enum.IsDefined(page.TypeRecognition.Value))
                 || (page.Enabled
                     && page.ContentType == TemplatePageContentTypeOption.NormalComposition
                     && (page.Bindings is null || page.Bindings.Count == 0)))
@@ -329,7 +333,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
                     || binding.Opacity != layer.Opacity
                     || !string.Equals(binding.BlendMode, layer.BlendMode, StringComparison.Ordinal)
                     || manifest.Protocol is not (TemplatePackageProtocol.CurrentVersion or TemplatePackageProtocol.RasterVersion
-                        or TemplatePackageProtocol.CandidateExclusionVersion)
+                        or TemplatePackageProtocol.CandidateExclusionVersion or TemplatePackageProtocol.PageTypeVersion)
                         && !binding.SelectionCriteria.Any(criterion => string.Equals(
                         criterion.Key,
                         "asset_id",
@@ -366,7 +370,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
         Desktop.Application.Psd.PsdLayerInspection? layer, string protocol) => binding.ExpectedKind switch
     {
         null or "smartObject" => layer?.SmartObject is not null,
-        "pixel" => protocol is TemplatePackageProtocol.RasterVersion or TemplatePackageProtocol.CandidateExclusionVersion
+        "pixel" => protocol is TemplatePackageProtocol.RasterVersion or TemplatePackageProtocol.CandidateExclusionVersion or TemplatePackageProtocol.PageTypeVersion
             && layer is { Kind: "pixel", IsGroup: false,
             SmartObject: null, Visible: true, EffectiveVisible: true, HasMask: false, HasVectorMask: false }
             && layer.PixelEvidence.HasReplaceableRasterContent,
@@ -492,6 +496,7 @@ public sealed class ZipTemplatePackagePort(IJsonContractValidator? contracts = n
             {
                 TemplatePackageProtocol.RasterVersion => ContractDocumentKind.TemplatePackageManifestV4,
                 TemplatePackageProtocol.CandidateExclusionVersion => ContractDocumentKind.TemplatePackageManifestV5,
+                TemplatePackageProtocol.PageTypeVersion => ContractDocumentKind.TemplatePackageManifestV6,
                 TemplatePackageProtocol.CurrentVersion => ContractDocumentKind.TemplatePackageManifestV3,
                 TemplatePackageProtocol.Version2 => ContractDocumentKind.TemplatePackageManifestV2,
                 _ => ContractDocumentKind.TemplatePackageManifest

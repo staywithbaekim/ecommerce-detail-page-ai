@@ -56,7 +56,7 @@ public sealed class TemplatePackageIntegrationTests
         var output = Path.Combine(directory.Path, "exported-v4.tplpkg");
         await packages.ExportCurrentAsync(imported.GroupId, output, default);
         var validated = (await port.ValidateAsync(output, default)).Manifest!;
-        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, validated.Protocol);
+        Assert.Equal(TemplatePackageProtocol.PageTypeVersion, validated.Protocol);
         Assert.Equal("pixel", Assert.Single(validated.Pages![0].Bindings!).ExpectedKind);
         Assert.Equal(bytes, await File.ReadAllBytesAsync(source));
     }
@@ -229,7 +229,7 @@ public sealed class TemplatePackageIntegrationTests
         Assert.Contains("rules_" + revision.RevisionId, System.Text.Encoding.UTF8.GetString((await files.ReadAsync(revision.ManifestRef!, default))!), StringComparison.Ordinal);
         var v5 = Path.Combine(directory.Path, "v5.tplpkg"); await packages.ExportCurrentAsync(committed.GroupId, v5, default);
         var validated = (await port.ValidateAsync(v5, default)).Manifest!;
-        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, validated.Protocol);
+        Assert.Equal(TemplatePackageProtocol.PageTypeVersion, validated.Protocol);
         Assert.NotNull(validated.RuleWorkspace);
         Assert.Empty(validated.RuleWorkspace.ExcludedCandidates);
         var copy = await packages.ImportAsNewGroupAsync(v5, "new identity", default);
@@ -277,7 +277,7 @@ public sealed class TemplatePackageIntegrationTests
         var newPackage = Path.Combine(directory.Path, "v2.tplpkg");
         await service.ExportCurrentAsync(group.GroupId, newPackage, default);
         var migrated = (await port.ValidateAsync(newPackage, default)).Manifest!;
-        Assert.Equal(TemplatePackageProtocol.CandidateExclusionVersion, migrated.Protocol);
+        Assert.Equal(TemplatePackageProtocol.PageTypeVersion, migrated.Protocol);
         Assert.Equal(1, Assert.Single(migrated.Pages![0].Inspection!.Layers[0].Path));
         Assert.Equal(2, Assert.Single(migrated.Pages[0].Bindings![0].LayerPath));
         await Assert.ThrowsAsync<InvalidDataException>(() => port.ExportAsync(migrated with
@@ -490,7 +490,7 @@ public sealed class TemplatePackageIntegrationTests
         {
             var packageJson = await reader.ReadToEndAsync();
             Assert.DoesNotContain("contentEvidence", packageJson, StringComparison.Ordinal);
-            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV5, packageJson).IsValid);
+            Assert.True(new JsonSchemaContractValidator().Validate(ContractDocumentKind.TemplatePackageManifestV6, packageJson).IsValid);
         }
 
         await using var target = new SqliteDesktopStore(targetOptions);

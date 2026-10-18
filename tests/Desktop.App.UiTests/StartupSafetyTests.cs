@@ -188,7 +188,7 @@ public sealed class StartupSafetyTests
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(28L, await command.ExecuteScalarAsync());
+        Assert.Equal(29L, await command.ExecuteScalarAsync());
         command.CommandText = "SELECT count(*) FROM app_instance WHERE instance_id='startup-sentinel' AND safe_exit=1";
         Assert.Equal(1L, await command.ExecuteScalarAsync());
     }

@@ -62,6 +62,7 @@ public sealed class TemplateRuleWorkbenchViewModel : INotifyPropertyChanged, IDi
         "TPL_RULE_BINDINGS_INVALID" => "框的颜色关系未闭合，请在本页用途中补齐框映射",
         "TPL_RULE_COLOR_ALLOCATION_INVALID" => "重复方式与分配颜色不一致，请检查每次使用的颜色",
         "TPL_RULE_RECIPES_INVALID" or "TPL_RULE_BRANCHES_INVALID" => "缺少使用条件或模板，请补充后再确认",
+        "TPL_RULE_SIZE_PAGE_FRAME_BINDINGS_FORBIDDEN" => "尺码页不能配置普通图片框规则；请清除本页配方中的图片框关系",
         _ => "这条规则尚不可执行，请检查对应条件、次数及框引用；草稿已保留"
     };
     public IEnumerable<TemplateRuleReferenceChoice> ReferenceChoices => Draft?.Aliases.Select(alias =>
@@ -103,6 +104,26 @@ public sealed class TemplateRuleWorkbenchViewModel : INotifyPropertyChanged, IDi
         _segment = Math.Min(_segment, Math.Max(0, (Pages.Count - 1) / 6));
         PublishSegment();
         NotifyDraft();
+    }
+
+    public async Task SetPageTypeAsync(TemplateRulePageViewModel page, TemplatePageContentTypeOption contentType)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (page.IsReadOnly) throw new InvalidOperationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
+        if (page.ContentType == contentType) return;
+
+        await FlushAsync().ConfigureAwait(true);
+        await _writes.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            await _workspace.ConfigurePageAsync(Session, page.PageId, page.Name, contentType,
+                page.GenerationMode, page.VariantCapacity, page.Enabled, CancellationToken.None).ConfigureAwait(true);
+            Status = contentType == TemplatePageContentTypeOption.DynamicSizeTable
+                ? "已切换为尺码页；尺码校准单独保留，普通图片框校准不会被删除。"
+                : "已切换为普通页；普通图片框规则与校准已恢复，尺码页校准仍单独保留。";
+        }
+        finally { _writes.Release(); }
+        await RefreshAsync(flush: false).ConfigureAwait(true);
     }
 
     private async void QueueSave()
@@ -398,6 +419,10 @@ public sealed record TemplateRuleReferenceChoice(string PageId, string? FrameId,
 public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
 {
     private TemplateRuleFrameViewModel? _selected;
+    private TemplatePageContentTypeOption _contentType;
+    private TemplatePageTypeRecognitionOption _typeRecognition;
+    private bool _hasSizeCalibration;
+    public static IReadOnlyList<string> PageTypeOptions { get; } = ["普通页", "尺码页"];
     public TemplateRulePageViewModel(TemplateDraftPage page, string label)
     {
         PageId = page.Page.PageId; Label = label;
@@ -409,7 +434,20 @@ public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
     public string DisplayName => Label + "  " + Name;
     public string Label { get; internal set; }
     public bool IsReadOnly { get; private set; }
+    public bool CanChangePageType => !IsReadOnly;
     public bool IsSizeTable { get; private set; }
+    public bool CanCalibrateSizeTable => IsSizeTable && !IsReadOnly;
+    public string SizeCalibrationStatus => _hasSizeCalibration
+        ? "区域与样式已保存；生成时使用本款审核后的尺码数据。"
+        : "尚未设置区域与样式。可先保存模板，正式生成前需完成校准。";
+    public TemplatePageContentTypeOption ContentType => _contentType;
+    public string ContentTypeLabel => _contentType == TemplatePageContentTypeOption.DynamicSizeTable ? "尺码页" : "普通页";
+    public string TypeRecognitionText => "自动识别结果：" + (_typeRecognition switch
+    {
+        TemplatePageTypeRecognitionOption.SizeTablePage => "尺码页",
+        TemplatePageTypeRecognitionOption.OrdinaryPage => "普通页",
+        _ => "普通页"
+    });
     public string? PreviewSource { get; private set; }
     public int CanvasWidth { get; private set; }
     public int CanvasHeight { get; private set; }
@@ -417,7 +455,7 @@ public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
     public bool Enabled { get; private set; }
     public int? VariantCapacity { get; private set; }
     public string Purpose { get; private set; } = "每款使用一次";
-    public string EmptyFrameMessage => IsSizeTable ? "按本款素材中的尺码图换数据；与商品照片共用输入，不另选目录。"
+    public string EmptyFrameMessage => IsSizeTable ? "尺码图与商品照片共用输入，由商品素材分析识别来源；本页只使用尺码表校准。"
         : EditableFrames.Count > 0 ? "" : "未找到有效图片位。隐藏、被覆盖和无效残留不会显示为框；复杂合并内容仍需受支持的替换结构。参考款学习可选。";
     internal void SetPurpose(string value)
     {
@@ -443,33 +481,47 @@ public sealed class TemplateRulePageViewModel : INotifyPropertyChanged
         var nameChanged = !string.Equals(Name, page.Page.Name, StringComparison.Ordinal);
         var readOnlyChanged = IsReadOnly != !page.IsAffected;
         var sizeTableChanged = IsSizeTable != (page.Page.ContentType == TemplatePageContentTypeOption.DynamicSizeTable);
+        var contentTypeChanged = _contentType != page.Page.ContentType;
+        var recognitionChanged = _typeRecognition != page.Page.TypeRecognition;
         var previewChanged = !string.Equals(PreviewSource, page.PreviewSourceReference, StringComparison.Ordinal);
         var widthChanged = CanvasWidth != page.Resource.Inspection.Canvas.Width;
         var heightChanged = CanvasHeight != page.Resource.Inspection.Canvas.Height;
 
         Name = page.Page.Name;
         IsReadOnly = !page.IsAffected;
+        _contentType = page.Page.ContentType;
+        _typeRecognition = page.Page.TypeRecognition;
         IsSizeTable = page.Page.ContentType == TemplatePageContentTypeOption.DynamicSizeTable;
+        _hasSizeCalibration = page.Page.SizeTableCalibration?.Matches(page.Resource.Inspection) == true;
         PreviewSource = page.PreviewSourceReference;
         CanvasWidth = page.Resource.Inspection.Canvas.Width;
         CanvasHeight = page.Resource.Inspection.Canvas.Height;
         GenerationMode = page.Page.GenerationMode; Enabled = page.Page.Enabled; VariantCapacity = page.Page.VariantCapacity;
 
-        if (sizeTableChanged && IsSizeTable)
+        if (contentTypeChanged && page.Page.ContentType == TemplatePageContentTypeOption.DynamicSizeTable)
         {
             Frames.Clear();
             EditableFrames.Clear();
+            Candidates = [];
             SelectedFrame = null;
         }
 
         if (!notify) return;
         if (nameChanged) PropertyChanged?.Invoke(this, new(nameof(Name)));
         if (readOnlyChanged) PropertyChanged?.Invoke(this, new(nameof(IsReadOnly)));
+        if (readOnlyChanged) PropertyChanged?.Invoke(this, new(nameof(CanChangePageType)));
         if (sizeTableChanged) PropertyChanged?.Invoke(this, new(nameof(IsSizeTable)));
+        PropertyChanged?.Invoke(this, new(nameof(CanCalibrateSizeTable)));
+        PropertyChanged?.Invoke(this, new(nameof(SizeCalibrationStatus)));
+        if (contentTypeChanged) PropertyChanged?.Invoke(this, new(nameof(ContentType)));
+        if (contentTypeChanged) PropertyChanged?.Invoke(this, new(nameof(ContentTypeLabel)));
+        if (recognitionChanged) PropertyChanged?.Invoke(this, new(nameof(TypeRecognitionText)));
         if (previewChanged) PropertyChanged?.Invoke(this, new(nameof(PreviewSource)));
         if (widthChanged) PropertyChanged?.Invoke(this, new(nameof(CanvasWidth)));
         if (heightChanged) PropertyChanged?.Invoke(this, new(nameof(CanvasHeight)));
         if (sizeTableChanged) PropertyChanged?.Invoke(this, new(nameof(Frames)));
+        if (contentTypeChanged) PropertyChanged?.Invoke(this, new(nameof(EditableFrames)));
+        if (contentTypeChanged) PropertyChanged?.Invoke(this, new(nameof(Candidates)));
         PropertyChanged?.Invoke(this, new(nameof(EmptyFrameMessage)));
     }
     internal void SetFrames(TemplateCalibrationDraftView view, TemplateRuleDraftView draft, Action changed)

@@ -315,6 +315,13 @@ public sealed class TemplateRuleEvaluatorTests
     [InlineData(true, (TemplatePageContentType)99)]
     public void DisabledOrUnsupportedPageCannotBeSilentlyActivatedByARule(bool enabled, TemplatePageContentType contentType)
     {
+        if (!Enum.IsDefined(contentType))
+        {
+            var error = Assert.Throws<TemplateRuleViolationException>(() => TemplatePage.Create("p", "revision", 0, "invalid", contentType,
+                TemplateGenerationMode.OncePerProduct, null, enabled, "resource_p"));
+            Assert.Equal("TPL_PAGE_CONTENT_TYPE_INVALID", error.Code);
+            return;
+        }
         var source = Revision(("p", 1));
         var page = TemplatePage.Create("p", "revision", 0, "invalid", contentType,
             TemplateGenerationMode.OncePerProduct, null, enabled, "resource_p");

@@ -115,6 +115,10 @@ public partial class TemplateRuleWorkbenchControl : UserControl
         if (Model is not { } model) return;
         await RunAsync(() => model.RemovePageAsync(page));
     }
+    public Task ChangePageTypeAsync(TemplateRulePageViewModel page, TemplatePageContentTypeOption contentType) =>
+        Coordinator is { } coordinator ? RunAsync(() => coordinator.SetTemplatePageTypeAsync(page, contentType)) : Task.CompletedTask;
+    public Task ConfigureSizeTableAsync(string pageId, Window owner) => Coordinator is { } coordinator
+        ? RunAsync(() => coordinator.ConfigureSizeTableAsync(owner, pageId)) : Task.CompletedTask;
     private void Locate_Click(object sender, RoutedEventArgs args) { if (((FrameworkElement)sender).DataContext is TemplateRuleReferenceChoice reference) Locate(reference); }
     private void Locate(TemplateRuleReferenceChoice reference)
     {

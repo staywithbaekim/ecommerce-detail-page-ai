@@ -673,6 +673,10 @@ public sealed class TemplateInstanceRenderBatchPlannerTests
         var recipe = new TemplatePageRecipe(recipeId, pageId, TemplateRuleRepeat.ColorChunks,
             emptyExpansion ? TemplateRuleColorRange.Secondary : TemplateRuleColorRange.All,
             [new("slot", TemplateRuleColorSource.Allocated)], [new("frame", "slot")]);
+        if (dynamicSize) recipe = recipe with
+        {
+            Repeat = TemplateRuleRepeat.Once, ColorRange = TemplateRuleColorRange.None, ColorSlots = [], FrameBindings = []
+        };
         var bindings = new[] { binding };
         if (twoFrames)
         {

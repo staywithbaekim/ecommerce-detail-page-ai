@@ -32,6 +32,7 @@ internal static class LegacyMigrationFixture
                 DROP TABLE template_rule_workspaces;
                 ALTER TABLE batch_template_snapshots DROP COLUMN context_version;
                 ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest;
+                ALTER TABLE template_pages DROP COLUMN type_recognition;
                 DELETE FROM schema_migrations WHERE version>21;
                 """;
         }

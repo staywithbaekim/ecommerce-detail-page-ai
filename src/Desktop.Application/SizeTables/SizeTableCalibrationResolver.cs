@@ -44,6 +44,8 @@ public static class SizeTableCalibrationResolver
 
     public static SizeTableInsertionTarget Resolve(TemplatePage page, SizeTableRasterizedResource raster)
     {
+        if (page.ContentType != TemplatePageContentType.DynamicSizeTable)
+            throw new InvalidOperationException("SIZE_TABLE_RENDER_TARGET_REQUIRED");
         var calibration = page.SizeTableCalibration ?? throw new InvalidOperationException("SIZE_TABLE_RENDER_TARGET_REQUIRED");
         calibration.Validate();
         if (raster.PixelWidth <= 0 || raster.PixelHeight <= 0) throw new InvalidOperationException("SIZE_TABLE_CALIBRATION_INVALID");

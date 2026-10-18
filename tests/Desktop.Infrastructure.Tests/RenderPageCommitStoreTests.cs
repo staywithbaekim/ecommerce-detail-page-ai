@@ -176,6 +176,7 @@ public sealed class RenderPageCommitStoreTests
             DROP TABLE template_instance_production_facts; DROP TABLE template_instance_manual_selections;
             ALTER TABLE batch_template_snapshots DROP COLUMN context_version;
             ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest;
+            ALTER TABLE template_pages DROP COLUMN type_recognition;
             DELETE FROM schema_migrations WHERE version>=15;
             """);
         await using var upgraded = new SqliteDesktopStore(options);

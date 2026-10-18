@@ -211,7 +211,10 @@ public sealed class TemplateInstanceRenderBatchPlanner(IRenderPlanValidator vali
         if (facts.Selections.Any(selection => !activeFrameIds.Contains(selection.FrameId))
             || facts.Overrides.Any(overrideSelection => !activeFrameIds.Contains(overrideSelection.FrameId)))
             throw Invalid("TPL_INSTANCE_SELECTION_INVALID");
-        var bindings = revision.ActiveFrameBindings.Where(item => item.PageId == instance.SourcePageId).ToArray();
+        // Switching to a size page retains ordinary calibration for a later
+        // switch back; those bindings are not part of the size instance.
+        var bindings = revision.ActiveFrameBindings.Where(item => item.PageId == instance.SourcePageId
+            && page.ContentType == TemplatePageContentType.NormalComposition).ToArray();
         if (instance.Frames.Length != bindings.Length
             || page.ContentType == TemplatePageContentType.NormalComposition && bindings.Length == 0
             || instance.Frames.Select(frame => frame.FrameId).Distinct(StringComparer.Ordinal).Count() != instance.Frames.Length

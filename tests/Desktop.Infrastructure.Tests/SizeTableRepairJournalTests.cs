@@ -230,7 +230,7 @@ public sealed class SizeTableRepairJournalTests
         Assert.Equal(hash, await Scalar(options, "SELECT group_concat(payload_sha256,'|') FROM render_batch_journals ORDER BY revision;"));
         Assert.Equal(payload, JsonSerializer.Serialize(await migrated.LoadEventsAsync("batch_test", default)));
         Assert.Equal(1, (await migrated.LoadRenderBatchAsync("batch_test", default))!.Version);
-        Assert.Equal(28L, await Scalar(options, "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(29L, await Scalar(options, "SELECT MAX(version) FROM schema_migrations;"));
     }
 
     private static RenderBatchCoordinator Coordinator(SqliteDesktopStore store, Session session, Preparer preparer) =>

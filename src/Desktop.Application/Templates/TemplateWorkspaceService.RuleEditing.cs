@@ -170,7 +170,8 @@ public sealed partial class TemplateWorkspaceService
                 var page = updated.Pages.SingleOrDefault(page => page.PageId == edit.PageId)
                     ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
                 inversePages.Add(new(page.PageId, new(page.Order, page.Name, page.ContentType, page.GenerationMode,
-                    page.VariantCapacity, page.Enabled, page.TemplateResourceId, page.Notes, page.CanvasX, page.CanvasY, page.SizeTableCalibration),
+                    page.VariantCapacity, page.Enabled, page.TemplateResourceId, page.Notes, page.CanvasX, page.CanvasY,
+                    page.SizeTableCalibration, page.TypeRecognition),
                     updated.FrameBindings.Where(frame => frame.PageId == page.PageId).Select(TemplatePackageService.ToPackageBinding).ToArray()));
                 updated = updated.RemovePage(edit.PageId);
             }
@@ -182,7 +183,7 @@ public sealed partial class TemplateWorkspaceService
                 order.Insert(Math.Min(page.Order, order.Count), edit.PageId);
                 updated = updated.AddPage(TemplatePage.Create(edit.PageId, updated.RevisionId, updated.Pages.Length,
                     page.Name, page.ContentType, page.GenerationMode, page.VariantCapacity, page.Enabled, page.ResourceId,
-                    page.Notes, page.CanvasX, page.CanvasY, page.SizeTableCalibration)).ReorderPages(order);
+                    page.Notes, page.CanvasX, page.CanvasY, page.SizeTableCalibration, page.TypeRecognition)).ReorderPages(order);
                 foreach (var frame in edit.Bindings)
                     updated = updated.AddFrameBinding(TemplatePackageService.ToDomain(frame, edit.PageId, frame.FrameId));
                 inversePages.Add(new(edit.PageId, null, []));
@@ -227,6 +228,8 @@ public sealed partial class TemplateWorkspaceService
                 ?? throw new TemplateRuleViolationException("TPL_RULE_FRAME_REFERENCE_INVALID");
             if (updated.IsFrameExcluded(frame)) throw new TemplateRuleViolationException("TPL_RULE_REFERENCE_INACTIVE");
             if (!session.CanEditPage(frame.PageId)) throw new TemplateRuleViolationException("TPL_INCREMENT_ORIGINAL_PAGE_READ_ONLY");
+            if (updated.Pages.Single(page => page.PageId == frame.PageId).ContentType != TemplatePageContentType.NormalComposition)
+                throw new TemplateRuleViolationException("TPL_RULE_SIZE_PAGE_FRAME_BINDINGS_FORBIDDEN");
             inverseFrames.Add(new(frame.FrameId, frame.SelectionRequirement.Description));
             updated = updated.UpdateFrameBinding(frame.FrameId, SelectionRequirement.Create(edit.Description, frame.SelectionRequirement.Criteria));
         }

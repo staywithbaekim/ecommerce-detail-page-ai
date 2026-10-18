@@ -100,7 +100,8 @@ public sealed record TemplatePage
         string notes,
         double canvasX,
         double canvasY,
-        SizeTableTemplateCalibration? sizeTableCalibration)
+        SizeTableTemplateCalibration? sizeTableCalibration,
+        TemplatePageTypeRecognition typeRecognition)
     {
         PageId = pageId;
         RevisionId = revisionId;
@@ -115,6 +116,7 @@ public sealed record TemplatePage
         CanvasX = canvasX;
         CanvasY = canvasY;
         SizeTableCalibration = sizeTableCalibration;
+        TypeRecognition = typeRecognition;
     }
 
     public string PageId { get; }
@@ -145,6 +147,8 @@ public sealed record TemplatePage
 
     public SizeTableTemplateCalibration? SizeTableCalibration { get; }
 
+    public TemplatePageTypeRecognition TypeRecognition { get; }
+
     public static TemplatePage Create(
         string pageId,
         string revisionId,
@@ -158,7 +162,8 @@ public sealed record TemplatePage
         string? notes = null,
         double canvasX = 0,
         double canvasY = 0,
-        SizeTableTemplateCalibration? sizeTableCalibration = null)
+        SizeTableTemplateCalibration? sizeTableCalibration = null,
+        TemplatePageTypeRecognition? typeRecognition = null)
     {
         if (order < 0)
         {
@@ -177,12 +182,14 @@ public sealed record TemplatePage
             throw new TemplateRuleViolationException("TPL_PAGE_VARIANT_CAPACITY_FORBIDDEN");
         }
 
-        if (sizeTableCalibration is not null)
-        {
-            if (contentType != TemplatePageContentType.DynamicSizeTable)
-                throw new TemplateRuleViolationException("SIZE_TABLE_CALIBRATION_INVALID");
-            sizeTableCalibration.Validate();
-        }
+        if (!Enum.IsDefined(contentType))
+            throw new TemplateRuleViolationException("TPL_PAGE_CONTENT_TYPE_INVALID");
+        if (sizeTableCalibration is not null) sizeTableCalibration.Validate();
+        var recognition = typeRecognition ?? (contentType == TemplatePageContentType.DynamicSizeTable
+            ? TemplatePageTypeRecognition.SizeTablePage
+            : TemplatePageTypeRecognition.OrdinaryPage);
+        if (!Enum.IsDefined(recognition))
+            throw new TemplateRuleViolationException("TPL_PAGE_TYPE_RECOGNITION_INVALID");
         return new TemplatePage(
             TemplateValueRules.Identifier(pageId, "TPL_PAGE_ID_INVALID"),
             TemplateValueRules.Identifier(revisionId, "TPL_REVISION_ID_INVALID"),
@@ -196,7 +203,8 @@ public sealed record TemplatePage
             TemplateValueRules.OptionalText(notes, 2_000, "TPL_PAGE_NOTES_INVALID") ?? string.Empty,
             double.IsFinite(canvasX) ? canvasX : throw new TemplateRuleViolationException("TPL_PAGE_CANVAS_POSITION_INVALID"),
             double.IsFinite(canvasY) ? canvasY : throw new TemplateRuleViolationException("TPL_PAGE_CANVAS_POSITION_INVALID"),
-            sizeTableCalibration);
+            sizeTableCalibration,
+            recognition);
     }
 
     public TemplatePage InheritTo(string revisionId, int? order = null) => Create(
@@ -212,11 +220,14 @@ public sealed record TemplatePage
         Notes,
         CanvasX,
         CanvasY,
-        SizeTableCalibration);
+        SizeTableCalibration,
+        TypeRecognition);
 
     public TemplatePage WithSizeTableCalibration(SizeTableTemplateCalibration calibration) => Create(
         PageId, RevisionId, Order, Name, ContentType, GenerationMode, VariantCapacity, Enabled,
-        TemplateResourceId, Notes, CanvasX, CanvasY, calibration);
+        TemplateResourceId, Notes, CanvasX, CanvasY,
+        calibration,
+        TypeRecognition);
 
     public TemplatePage Reconfigure(
         int order,
@@ -227,7 +238,8 @@ public sealed record TemplatePage
         bool enabled,
         string? notes = null,
         double? canvasX = null,
-        double? canvasY = null) => Create(
+        double? canvasY = null,
+        TemplatePageTypeRecognition? typeRecognition = null) => Create(
             PageId,
             RevisionId,
             order,
@@ -240,7 +252,8 @@ public sealed record TemplatePage
             notes ?? Notes,
             canvasX ?? CanvasX,
             canvasY ?? CanvasY,
-            contentType == TemplatePageContentType.DynamicSizeTable ? SizeTableCalibration : null);
+            SizeTableCalibration,
+            typeRecognition ?? TypeRecognition);
 }
 
 public sealed record FrameBinding
@@ -616,6 +629,8 @@ public sealed record TemplateRevision
         EnsureDraftEditable();
         var page = Pages.SingleOrDefault(item => item.PageId == pageId)
             ?? throw new TemplateRuleViolationException("TPL_PAGE_NOT_FOUND");
+        if (page.ContentType != TemplatePageContentType.DynamicSizeTable)
+            throw new TemplateRuleViolationException("SIZE_TABLE_CALIBRATION_INVALID");
         return CreateValidated(RevisionId, GroupId, RevisionNo, State, ManifestRef, RuleDigest,
             CreatedAt, Pages.Replace(page, page.WithSizeTableCalibration(calibration)), FrameBindings, RuleWorkspace);
     }
@@ -1076,6 +1091,7 @@ public sealed record BatchTemplateSnapshot : IBatchTemplateContext
         }
 
         var bindingsByPage = revision.ActiveFrameBindings
+            .Where(binding => revisionPages[binding.PageId].ContentType == TemplatePageContentType.NormalComposition)
             .GroupBy(binding => binding.PageId, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,

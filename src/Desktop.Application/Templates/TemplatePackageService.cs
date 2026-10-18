@@ -63,7 +63,7 @@ public sealed class TemplatePackageService(
 
         await packages.ExportAsync(
             new TemplatePackageManifest(
-                TemplatePackageProtocol.CandidateExclusionVersion,
+                TemplatePackageProtocol.PageTypeVersion,
                 group.Name,
                 revision.RevisionNo,
                 revision.RevisionId,
@@ -158,7 +158,8 @@ public sealed class TemplatePackageService(
                     ToDomain(packagePage.GenerationMode),
                     packagePage.VariantCapacity,
                     packagePage.Enabled,
-                    resourceId, notes: packagePage.Notes, sizeTableCalibration: packagePage.SizeTableCalibration));
+                    resourceId, notes: packagePage.Notes, sizeTableCalibration: packagePage.SizeTableCalibration,
+                    typeRecognition: packagePage.TypeRecognition));
             }
 
             foreach (var packagePage in manifest.Pages)
@@ -246,7 +247,7 @@ public sealed class TemplatePackageService(
                 // Output validation evidence is not a portable template rule or part of template-package/v1.
                 Layers = resource.Inspection.Layers.Select(layer => layer with { ContentEvidence = null }).ToArray()
             },
-            bindings.Select(ToPackageBinding).ToArray(), page.SizeTableCalibration, page.Notes);
+            bindings.Select(ToPackageBinding).ToArray(), page.SizeTableCalibration, page.Notes, page.TypeRecognition);
 
     internal static TemplatePackageFrameBinding ToPackageBinding(FrameBinding binding) => new(
         binding.FrameId,

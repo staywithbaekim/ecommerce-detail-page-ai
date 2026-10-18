@@ -353,7 +353,7 @@ public sealed class RenderStyleOutputRegistryTests
             Assert.Equal(input, JsonSerializer.Serialize(await reopened.GetAsync("batch_test", default)));
         }
         Assert.Equal(migrations, await fixture.Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations WHERE version<=19 ORDER BY version);"));
-        Assert.Equal(fail ? "19" : "28", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "19" : "29", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
         Assert.Equal(fail ? "0" : "2", await fixture.Scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('render_output_registrations','render_output_stages');"));
     }
 

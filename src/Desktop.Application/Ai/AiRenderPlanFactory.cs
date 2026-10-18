@@ -508,6 +508,7 @@ public sealed class AiRenderPlanFactory(
 
         var revisionPages = revision.Pages.ToDictionary(page => page.PageId, StringComparer.Ordinal);
         var bindingsByPage = revision.ActiveFrameBindings
+            .Where(binding => revisionPages[binding.PageId].ContentType == TemplatePageContentType.NormalComposition)
             .GroupBy(binding => binding.PageId, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,

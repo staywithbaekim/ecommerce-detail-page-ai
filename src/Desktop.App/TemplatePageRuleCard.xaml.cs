@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Desktop.Application.Templates;
 
 namespace Desktop.App;
 
@@ -27,7 +28,8 @@ public partial class TemplatePageRuleCard : UserControl
         return null;
     }
     private TemplateRulePageViewModel? Page => DataContext as TemplateRulePageViewModel;
-    private TemplateRuleWorkbenchControl? Board => Ancestor<TemplateRuleWorkbenchControl>(this);
+    internal TemplateRuleWorkbenchControl? OwnerBoard { get; init; }
+    private TemplateRuleWorkbenchControl? Board => OwnerBoard ?? Ancestor<TemplateRuleWorkbenchControl>(this);
     private void Whole_Click(object sender, RoutedEventArgs args)
     { Preview.FitWhole = !Preview.FitWhole; FitButton.Content = Preview.FitWhole ? "适宽" : "整页"; }
     private void Card_SizeChanged(object sender, SizeChangedEventArgs args)
@@ -35,13 +37,29 @@ public partial class TemplatePageRuleCard : UserControl
     private void Enlarge_Click(object sender, RoutedEventArgs args)
     {
         // Same component, same page/selection/edit bindings, not a second editor.
-        var card = new TemplatePageRuleCard { DataContext = Page };
+        var card = new TemplatePageRuleCard { DataContext = Page, OwnerBoard = Board };
         new Window { Owner = Window.GetWindow(this), Title = Page?.Name ?? "PSD", Width = 1050, Height = 700,
             Content = new ScrollViewer { Content = card, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
             WindowStartupLocation = WindowStartupLocation.CenterOwner }.ShowDialog();
     }
     private async void Purpose_Click(object sender, RoutedEventArgs args)
     { if (Board is { } board) await board.EditGroupAsync(); }
+    private async void SizeCalibration_Click(object sender, RoutedEventArgs args)
+    {
+        if (Page is { CanCalibrateSizeTable: true } page && Board is { } board)
+            await board.ConfigureSizeTableAsync(page.PageId, Window.GetWindow(this));
+    }
+    private async void PageType_SelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (args.RemovedItems.Count == 0 || Page is not { IsReadOnly: false } page
+            || ((ComboBox)sender).SelectedItem is not string selected
+            || Board is not { } board) return;
+        var contentType = selected == "尺码页"
+            ? TemplatePageContentTypeOption.DynamicSizeTable
+            : TemplatePageContentTypeOption.NormalComposition;
+        await board.ChangePageTypeAsync(page, contentType);
+        PageTypeSelector.GetBindingExpression(ComboBox.SelectedItemProperty)?.UpdateTarget();
+    }
     private async void ToggleExclude_Click(object sender, RoutedEventArgs args)
     {
         if (Board is not { } board || Page is not { IsReadOnly: false } page

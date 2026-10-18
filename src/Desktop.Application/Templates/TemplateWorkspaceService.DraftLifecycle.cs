@@ -365,16 +365,23 @@ public sealed partial class TemplateWorkspaceService
                     GetPreviewSource(importedResource, paths)));
         }
 
+        var recognition = TemplatePageTypeRecognizer.Recognize(pageName, importedResource.Inspection);
+        var contentType = recognition switch
+        {
+            TemplatePageTypeRecognition.SizeTablePage => TemplatePageContentType.DynamicSizeTable,
+            _ => TemplatePageContentType.NormalComposition
+        };
         var page = TemplatePage.Create(
             NewId("page"),
             revision.RevisionId,
             revision.Pages.Length,
             pageName,
-            TemplatePageContentType.NormalComposition,
+            contentType,
             TemplateGenerationMode.OncePerProduct,
             variantCapacity: null,
             enabled: true,
-            importedResource.ResourceId);
+            importedResource.ResourceId,
+            typeRecognition: recognition);
         var updated = revision.AddPage(page);
         await templates.SaveDraftRevisionAsync(updated, cancellationToken).ConfigureAwait(false);
         return new TemplateWorkspaceImportResult(

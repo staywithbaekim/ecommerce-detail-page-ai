@@ -304,7 +304,7 @@ public sealed class RenderStyleOutputPublicationTests
             await reopened.InitializeAsync();
             Assert.Equal(input, JsonSerializer.Serialize(await reopened.GetAsync("batch_test", default)));
         }
-        Assert.Equal(fail ? "20" : "28", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "20" : "29", await fixture.Scalar("SELECT max(version) FROM schema_migrations;"));
         Assert.Equal(fail ? "0" : "2", await fixture.Scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('render_output_publications','render_output_publication_files');"));
         Assert.Equal(migrations, await fixture.Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations WHERE version<=20 ORDER BY version);"));
         Assert.Equal(registration, await fixture.Scalar("SELECT payload_json||payload_sha256 FROM render_output_registrations;"));

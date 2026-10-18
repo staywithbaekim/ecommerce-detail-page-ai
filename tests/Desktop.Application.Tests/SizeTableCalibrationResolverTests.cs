@@ -74,7 +74,27 @@ public sealed class SizeTableCalibrationResolverTests
         var updated = draft.CalibrateSizeTable("page", c).ReorderPages(["page"]);
         Assert.Null(old.SizeTableCalibration);
         Assert.Equal(JsonSerializer.Serialize(c), JsonSerializer.Serialize(updated.Pages[0].InheritTo("next").SizeTableCalibration));
-        Assert.Null(updated.ConfigurePage("page", "normal", TemplatePageContentType.NormalComposition,
+        Assert.Equal(c, updated.ConfigurePage("page", "normal", TemplatePageContentType.NormalComposition,
             TemplateGenerationMode.OncePerProduct, null, true).Pages[0].SizeTableCalibration);
+    }
+
+    [Fact]
+    public void InactiveCalibrationSurvivesSwitchesButCannotAuthorizeOrdinaryPageInsertion()
+    {
+        var calibration = Calibration();
+        var size = TemplatePage.Create("page", "revision", 0, "size", TemplatePageContentType.DynamicSizeTable,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource", sizeTableCalibration: calibration);
+        var normal = size.Reconfigure(0, "size", TemplatePageContentType.NormalComposition,
+            TemplateGenerationMode.OncePerProduct, null, true);
+        Assert.Equal(calibration, normal.SizeTableCalibration);
+        Assert.Equal(TemplatePageTypeRecognition.SizeTablePage, normal.TypeRecognition);
+        var raster = new SizeTableRasterizedResource("raster", "deterministic_size_table", "image/png", new string('a', 64),
+            128, 1000, 400, "sha256:" + new string('b', 64), "style", "layout", "raster.png");
+        var error = Assert.Throws<InvalidOperationException>(() => SizeTableCalibrationResolver.Resolve(normal, raster));
+        Assert.Equal("SIZE_TABLE_RENDER_TARGET_REQUIRED", error.Message);
+        var restored = normal.InheritTo("next").Reconfigure(0, "size", TemplatePageContentType.DynamicSizeTable,
+            TemplateGenerationMode.OncePerProduct, null, true);
+        Assert.Equal(calibration, restored.SizeTableCalibration);
+        Assert.Equal("next", SizeTableCalibrationResolver.Resolve(restored, raster).TemplateRevisionId);
     }
 }

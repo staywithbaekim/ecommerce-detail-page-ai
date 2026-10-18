@@ -251,7 +251,7 @@ public sealed class BatchInputInfrastructureTests
         }
         Assert.Equal(migrations, await ReadIntentScalar(options,
             "SELECT group_concat(version || ':' || checksum || ':' || applied_at, '|') FROM (SELECT * FROM schema_migrations WHERE version<=18 ORDER BY version);"));
-        Assert.Equal(fail ? "18" : "28", await ReadIntentScalar(options, "SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "18" : "29", await ReadIntentScalar(options, "SELECT max(version) FROM schema_migrations;"));
         if (fail) Assert.Equal("0", await ReadIntentScalar(options,
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='input_output_selections';"));
     }

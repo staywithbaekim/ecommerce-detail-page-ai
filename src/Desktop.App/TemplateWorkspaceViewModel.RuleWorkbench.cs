@@ -27,6 +27,16 @@ public sealed partial class TemplateWorkspaceViewModel
         if (RuleWorkbench is { } workbench) { workbench.CancelInterpretation(); await workbench.FlushAsync().ConfigureAwait(true); }
     }
 
+    public async Task SetTemplatePageTypeAsync(TemplateRulePageViewModel page, TemplatePageContentTypeOption contentType)
+    {
+        if (RuleWorkbench is not { } workbench) return;
+        await workbench.SetPageTypeAsync(page, contentType).ConfigureAwait(true);
+        // Keep the existing page coordinator and its learning/calibration routes
+        // on the same persisted type as the current card.
+        await LoadDraftPagesAsync(populateImportedFiles: false).ConfigureAwait(true);
+        SelectedTemplatePage = TemplatePages.Single(item => item.PageId == page.PageId);
+    }
+
     public async Task LearnRulesInWorkbenchAsync()
     {
         if (ReferenceLearningBusy || TemplateBusy || RuleWorkbench is null) return;

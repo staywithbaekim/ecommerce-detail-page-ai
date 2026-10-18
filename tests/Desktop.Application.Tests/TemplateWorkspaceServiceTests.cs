@@ -12,6 +12,62 @@ public sealed class TemplateWorkspaceServiceTests
     private const string StructureHash =
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
+    [Theory]
+    [InlineData("grid", true)]
+    [InlineData("named-layer", true)]
+    [InlineData("ordinary-copy", false)]
+    [InlineData("anonymous-layers", false)]
+    public async Task ImportedPagePersistsRecognitionAndManualOverrideSurvivesImportReplay(string scenario, bool isSizeTable)
+    {
+        var templates = new MemoryTemplateRepository();
+        var resources = new MemoryResourceRepository();
+        var service = CreateService(templates, resources);
+        var session = await service.BeginCreateAsync("识别回归", default);
+        var resource = Resource("resource", session, 790, 1252);
+        string[] names = scenario switch
+        {
+            "grid" => ["项目", "腰围", "裤长", "L", "76", "100", "XL", "80", "102"],
+            "named-layer" => ["尺码表"],
+            "ordinary-copy" => ["模特尺码 M", "胸围", "衣长"],
+            _ => ["图层 1", "图层 2", "图层 3"]
+        };
+        var layers = names.Select((name, index) => new PsdLayerInspection(
+            [index], index + 1, name, "type", false, true, true, false, 255, 255, "norm",
+            new(80 + index % 3 * 180, 200 + index / 3 * 75, 170 + index % 3 * 180, 230 + index / 3 * 75),
+            false, false, null, null)).ToArray();
+        resource = resource with { Inspection = resource.Inspection with { Layers = layers, LayerCount = layers.Length, SmartObjectCount = 0 } };
+        // Resume after inspection has been persisted: this exercises the real import
+        // orchestration without opening a user PSD or invoking Photoshop.
+        await resources.SaveImportedAsync("import", resource, default);
+        var result = await service.ImportPageAsync(session, "import", resource.ResourceId, "fixture.psd", "06",
+            TemplateDuplicateDecision.NotSpecified, null, default);
+
+        Assert.True(result.Import.IsSuccess);
+        var page = Assert.IsType<TemplateDraftPage>(result.AddedPage).Page;
+        var expectedType = isSizeTable ? TemplatePageContentTypeOption.DynamicSizeTable : TemplatePageContentTypeOption.NormalComposition;
+        var expectedRecognition = isSizeTable ? TemplatePageTypeRecognitionOption.SizeTablePage : TemplatePageTypeRecognitionOption.OrdinaryPage;
+        Assert.Equal(expectedType, page.ContentType);
+        Assert.Equal(expectedRecognition, page.TypeRecognition);
+        var stored = Assert.Single((await templates.GetRevisionAsync(session.DraftRevisionId, default))!.Pages);
+        Assert.Equal(isSizeTable ? TemplatePageContentType.DynamicSizeTable : TemplatePageContentType.NormalComposition, stored.ContentType);
+        Assert.Equal(isSizeTable ? TemplatePageTypeRecognition.SizeTablePage : TemplatePageTypeRecognition.OrdinaryPage, stored.TypeRecognition);
+
+        var overriddenType = isSizeTable ? TemplatePageContentTypeOption.NormalComposition : TemplatePageContentTypeOption.DynamicSizeTable;
+        await service.ConfigurePageAsync(session, page.PageId, "用户选择", overriddenType,
+            TemplateGenerationModeOption.OncePerProduct, null, true, default);
+        var replay = await service.ImportPageAsync(session, "import", resource.ResourceId, "fixture.psd", "尺码表",
+            TemplateDuplicateDecision.NotSpecified, null, default);
+        Assert.True(replay.Import.IsSuccess);
+        Assert.True(replay.Import.Idempotent);
+        Assert.Equal(page.PageId, replay.AddedPage!.Page.PageId);
+        Assert.Equal(overriddenType, replay.AddedPage.Page.ContentType);
+        Assert.Equal(expectedRecognition, replay.AddedPage.Page.TypeRecognition);
+        var resumed = await service.ResumeDraftAsync(session.GroupId, default);
+        var reopened = Assert.Single((await service.GetDraftAsync(resumed, default)).Pages).Page;
+        Assert.Equal(overriddenType, reopened.ContentType);
+        Assert.Equal(expectedRecognition, reopened.TypeRecognition);
+    }
+
     [Fact]
     public async Task DraftConfigurationAndOrderFlowThroughWorkspaceCommands()
     {

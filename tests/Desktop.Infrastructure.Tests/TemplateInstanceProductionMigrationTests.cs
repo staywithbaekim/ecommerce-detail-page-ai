@@ -39,6 +39,7 @@ public sealed class TemplateInstanceProductionMigrationTests
             DROP TABLE template_instance_manual_selections;
             ALTER TABLE batch_template_snapshots DROP COLUMN context_version;
             ALTER TABLE batch_template_snapshots DROP COLUMN business_rule_digest;
+            ALTER TABLE template_pages DROP COLUMN type_recognition;
             DELETE FROM schema_migrations WHERE version>23;
             """);
         var history = await Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations ORDER BY version);");
@@ -54,7 +55,7 @@ public sealed class TemplateInstanceProductionMigrationTests
                 Assert.Null(Assert.Single(await upgraded.LoadAsync("task", default)).Instance);
             }
         }
-        Assert.Equal(fail ? "23" : "28", await Scalar("SELECT max(version) FROM schema_migrations;"));
+        Assert.Equal(fail ? "23" : "29", await Scalar("SELECT max(version) FROM schema_migrations;"));
         Assert.Equal(history, await Scalar("SELECT group_concat(version||checksum||applied_at,'|') FROM (SELECT * FROM schema_migrations WHERE version<=23 ORDER BY version);"));
         Assert.Equal(receipts, await Scalar("SELECT group_concat(manifest_id||relative_path||sha256||state,'|') FROM manifests;"));
         Assert.Equal(fail ? "0" : "2", await Scalar("SELECT count(*) FROM pragma_table_info('render_page_checkpoints') WHERE name IN ('page_instance_id','instance_json');"));

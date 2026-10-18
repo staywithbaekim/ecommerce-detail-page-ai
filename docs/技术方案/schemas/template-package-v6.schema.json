@@ -1,0 +1,1328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/ecommerce-detail/contracts/template-package/v6",
+  "title": "Template package manifest v6: page type recognition and retained size calibration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "groupName",
+    "revisionNo",
+    "revisionId",
+    "ruleDigest",
+    "entries",
+    "pages"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "template-package/v6"
+    },
+    "groupName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "revisionNo": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "revisionId": {
+      "$ref": "#/$defs/id"
+    },
+    "ruleDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/page"
+      }
+    },
+    "ruleWorkspace": {
+      "$ref": "#/$defs/ruleWorkspace"
+    }
+  },
+  "$defs": {
+    "sizeCalibrationLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rootIndex",
+        "layerId",
+        "kind",
+        "name",
+        "structureSignature"
+      ],
+      "properties": {
+        "rootIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "layerId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "group",
+            "pixel",
+            "type"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "structureSignature": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "sizeCalibrationStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fontFamily",
+        "fontSize",
+        "targetWidth",
+        "minimumRowHeight",
+        "horizontalCellPadding",
+        "verticalCellPadding",
+        "backgroundColor",
+        "headerBackgroundColor",
+        "textColor",
+        "gridColor"
+      ],
+      "properties": {
+        "fontFamily": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fontSize": {
+          "type": "number",
+          "minimum": 8,
+          "maximum": 96
+        },
+        "targetWidth": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 8192
+        },
+        "minimumRowHeight": {
+          "type": "number",
+          "minimum": 16,
+          "maximum": 512
+        },
+        "horizontalCellPadding": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "verticalCellPadding": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "backgroundColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{8}$"
+        },
+        "headerBackgroundColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{8}$"
+        },
+        "textColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{8}$"
+        },
+        "gridColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{8}$"
+        }
+      }
+    },
+    "sizeCalibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "templateSha256",
+        "layerName",
+        "aboveLayer",
+        "hiddenLayers",
+        "safeBounds",
+        "style"
+      ],
+      "properties": {
+        "version": {
+          "const": "size-table-template/v1"
+        },
+        "templateSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "layerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "aboveLayer": {
+          "$ref": "#/$defs/sizeCalibrationLayer"
+        },
+        "hiddenLayers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/sizeCalibrationLayer"
+          }
+        },
+        "safeBounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "left",
+            "top",
+            "right",
+            "bottom"
+          ],
+          "properties": {
+            "left": {
+              "type": "number",
+              "minimum": 0
+            },
+            "top": {
+              "type": "number",
+              "minimum": 0
+            },
+            "right": {
+              "type": "number",
+              "minimum": 0
+            },
+            "bottom": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "style": {
+          "$ref": "#/$defs/sizeCalibrationStyle"
+        }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"
+    },
+    "layerPath": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "left",
+        "top",
+        "right",
+        "bottom"
+      ],
+      "properties": {
+        "left": {
+          "type": "integer"
+        },
+        "top": {
+          "type": "integer"
+        },
+        "right": {
+          "type": "integer"
+        },
+        "bottom": {
+          "type": "integer"
+        }
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "depth",
+        "colorMode"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "depth": {
+          "enum": [
+            1,
+            8,
+            16,
+            32
+          ]
+        },
+        "colorMode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "openMilliseconds",
+        "inspectMilliseconds",
+        "totalMilliseconds"
+      ],
+      "properties": {
+        "openMilliseconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "inspectMilliseconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalMilliseconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "mode",
+        "sha256",
+        "sizeBytes"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "clippingBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "layerId",
+        "name",
+        "kind",
+        "visible",
+        "effectiveVisible",
+        "bounds",
+        "hasMask",
+        "hasVectorMask",
+        "opacity",
+        "blendMode"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/layerPath"
+        },
+        "layerId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "effectiveVisible": {
+          "type": "boolean"
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "hasMask": {
+          "type": "boolean"
+        },
+        "hasVectorMask": {
+          "type": "boolean"
+        },
+        "opacity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "blendMode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "smartObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uniqueId",
+        "filename",
+        "kind",
+        "fileType",
+        "detectedFileType",
+        "fileSize",
+        "isPsd",
+        "transformBox"
+      ],
+      "properties": {
+        "uniqueId": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "fileType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "detectedFileType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "fileSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "isPsd": {
+          "type": "boolean"
+        },
+        "transformBox": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "number"
+          }
+        },
+        "embeddedContentSha256": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256"
+            }
+          ]
+        },
+        "embeddedContentAvailable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pixelEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "renderedPixelCount",
+        "compositeContributionPixelCount",
+        "compositeContributionBounds"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "renderedPixelCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compositeContributionPixelCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compositeContributionBounds": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/bounds"
+            }
+          ]
+        },
+        "rasterImage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "available",
+            "colorCount",
+            "detailPixelRatio"
+          ],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "colorCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9216
+            },
+            "detailPixelRatio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "layerId",
+        "name",
+        "kind",
+        "isGroup",
+        "visible",
+        "effectiveVisible",
+        "clipping",
+        "opacity",
+        "fillOpacity",
+        "blendMode",
+        "bounds",
+        "hasMask",
+        "hasVectorMask",
+        "clippingBase",
+        "smartObject"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/layerPath"
+        },
+        "layerId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "isGroup": {
+          "type": "boolean"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "effectiveVisible": {
+          "type": "boolean"
+        },
+        "clipping": {
+          "type": "boolean"
+        },
+        "opacity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "fillOpacity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "blendMode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "hasMask": {
+          "type": "boolean"
+        },
+        "hasVectorMask": {
+          "type": "boolean"
+        },
+        "clippingBase": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/clippingBase"
+            }
+          ]
+        },
+        "smartObject": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/smartObject"
+            }
+          ]
+        },
+        "pixelEvidence": {
+          "$ref": "#/$defs/pixelEvidence"
+        }
+      }
+    },
+    "inspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fileSha256",
+        "sizeBytes",
+        "canvas",
+        "layerCount",
+        "smartObjectCount",
+        "maskCount",
+        "vectorMaskCount",
+        "clippingCount",
+        "structureSignature",
+        "timing",
+        "processPeakWorkingSetBytes",
+        "preview",
+        "layers"
+      ],
+      "properties": {
+        "fileSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "canvas": {
+          "$ref": "#/$defs/canvas"
+        },
+        "layerCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "smartObjectCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maskCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "vectorMaskCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clippingCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "structureSignature": {
+          "$ref": "#/$defs/digest"
+        },
+        "timing": {
+          "$ref": "#/$defs/timing"
+        },
+        "processPeakWorkingSetBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "preview": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/preview"
+            }
+          ]
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/layer"
+          }
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logicalId",
+        "relativePath",
+        "length",
+        "sha256"
+      ],
+      "properties": {
+        "logicalId": {
+          "$ref": "#/$defs/id"
+        },
+        "relativePath": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "supersededLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layerPath",
+        "expectedKind",
+        "expectedVisible",
+        "expectedClipping",
+        "expectedLayerId"
+      ],
+      "properties": {
+        "layerPath": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "expectedKind": {
+          "const": "smartObject"
+        },
+        "expectedVisible": {
+          "const": true
+        },
+        "expectedClipping": {
+          "type": "boolean"
+        },
+        "expectedLayerId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          ]
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frameId",
+        "pageId",
+        "layerPath",
+        "layerId",
+        "layerName",
+        "visible",
+        "clipping",
+        "userMask",
+        "vectorMask",
+        "opacity",
+        "blendMode",
+        "structureSignature",
+        "selectionDescription",
+        "selectionCriteria",
+        "intent",
+        "scale",
+        "offsetX",
+        "offsetY",
+        "safeLeft",
+        "safeTop",
+        "safeRight",
+        "safeBottom"
+      ],
+      "properties": {
+        "frameId": {
+          "$ref": "#/$defs/id"
+        },
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "layerPath": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "layerId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "layerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "visible": {
+          "const": true
+        },
+        "clipping": {
+          "type": "boolean"
+        },
+        "userMask": {
+          "type": "boolean"
+        },
+        "vectorMask": {
+          "type": "boolean"
+        },
+        "opacity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "blendMode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "structureSignature": {
+          "$ref": "#/$defs/digest"
+        },
+        "selectionDescription": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "selectionCriteria": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/criterion"
+          }
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 20
+        },
+        "offsetX": {
+          "type": "number",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "offsetY": {
+          "type": "number",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "safeLeft": {
+          "type": "number",
+          "minimum": 0
+        },
+        "safeTop": {
+          "type": "number",
+          "minimum": 0
+        },
+        "safeRight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "safeBottom": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "supersededLayers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/supersededLayer"
+          }
+        },
+        "expectedKind": {
+          "enum": [
+            "smartObject",
+            "pixel"
+          ]
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pageId",
+        "order",
+        "name",
+        "contentType",
+        "generationMode",
+        "enabled",
+        "resourceLogicalId",
+        "inspection",
+        "bindings",
+        "typeRecognition"
+      ],
+      "properties": {
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "contentType": {
+          "enum": [
+            "NormalComposition",
+            "DynamicSizeTable"
+          ]
+        },
+        "generationMode": {
+          "enum": [
+            "OncePerProduct",
+            "OncePerVariant",
+            "VariantCapacityCombination"
+          ]
+        },
+        "variantCapacity": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "resourceLogicalId": {
+          "$ref": "#/$defs/id"
+        },
+        "inspection": {
+          "$ref": "#/$defs/inspection"
+        },
+        "sizeTableCalibration": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sizeCalibration"
+            }
+          ]
+        },
+        "bindings": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4000
+        },
+        "typeRecognition": {
+          "enum": [
+            "OrdinaryPage",
+            "SizeTablePage"
+          ]
+        }
+      }
+    },
+    "alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pageId",
+        "frameId",
+        "number"
+      ],
+      "properties": {
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "frameId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "colorSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slotId",
+        "source"
+      ],
+      "properties": {
+        "slotId": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "enum": [
+            "Primary",
+            "SingleSecondary",
+            "Allocated"
+          ]
+        }
+      }
+    },
+    "frameColor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frameId",
+        "slotId"
+      ],
+      "properties": {
+        "frameId": {
+          "$ref": "#/$defs/id"
+        },
+        "slotId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum",
+        "maximum",
+        "parity"
+      ],
+      "properties": {
+        "minimum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maximum": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "parity": {
+          "enum": [
+            "Any",
+            "Odd",
+            "Even"
+          ]
+        }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipeId",
+        "pageId",
+        "repeat",
+        "colorRange",
+        "colorSlots",
+        "frameBindings",
+        "expectedInstanceCount"
+      ],
+      "properties": {
+        "recipeId": {
+          "$ref": "#/$defs/id"
+        },
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "repeat": {
+          "enum": [
+            "Once",
+            "ColorChunks"
+          ]
+        },
+        "colorRange": {
+          "enum": [
+            "None",
+            "All",
+            "Secondary"
+          ]
+        },
+        "colorSlots": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/colorSlot"
+          }
+        },
+        "frameBindings": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/frameColor"
+          }
+        },
+        "expectedInstanceCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branchId",
+        "condition",
+        "recipes",
+        "requireCompleteColorCoverage"
+      ],
+      "properties": {
+        "branchId": {
+          "$ref": "#/$defs/id"
+        },
+        "condition": {
+          "$ref": "#/$defs/condition"
+        },
+        "recipes": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/recipe"
+          }
+        },
+        "requireCompleteColorCoverage": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ruleSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "branches"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "branches": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/branch"
+          }
+        }
+      }
+    },
+    "ruleWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "rules",
+        "aliases"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rules": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ruleSet"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aliases": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/alias"
+          }
+        },
+        "excludedCandidates": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/excludedCandidate"
+          }
+        }
+      }
+    },
+    "excludedCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pageId",
+        "templateSha256",
+        "structureSignature",
+        "layerId",
+        "layerPath"
+      ],
+      "properties": {
+        "pageId": {
+          "$ref": "#/$defs/id"
+        },
+        "templateSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "structureSignature": {
+          "$ref": "#/$defs/digest"
+        },
+        "layerId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "layerPath": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

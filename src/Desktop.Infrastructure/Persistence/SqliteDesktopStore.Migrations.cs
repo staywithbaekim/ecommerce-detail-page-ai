@@ -630,6 +630,12 @@ public sealed partial class SqliteDesktopStore
         new(28, "desktop-v28-ai-cached-input-units-001", """
             ALTER TABLE ai_usage_events ADD COLUMN cached_input_units INTEGER NOT NULL DEFAULT 0;
             """),
+        new(29, "desktop-v29-template-page-type-recognition-001", """
+            ALTER TABLE template_pages ADD COLUMN type_recognition TEXT NOT NULL DEFAULT 'OrdinaryPage';
+            UPDATE template_pages
+            SET type_recognition = 'SizeTablePage'
+            WHERE content_type = 'DynamicSizeTable';
+            """),
     ];
 
     private static async Task ApplyMigrationsAsync(

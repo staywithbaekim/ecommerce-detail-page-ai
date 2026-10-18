@@ -2052,7 +2052,7 @@ public sealed partial class WpfShellTests
             {
                 window.Show(); FlushLayout(window);
                 Assert.Contains(Descendants<TextBlock>(card), text => text.Text.Contains("与商品照片共用输入", StringComparison.Ordinal));
-                Assert.Empty(Descendants<ComboBox>(card));
+                Assert.Single(Descendants<ComboBox>(card), combo => combo.Name == "PageTypeSelector");
                 Assert.DoesNotContain(Descendants<Button>(card), button => Equals(button.Content, "设置"));
                 Assert.Equal(mixedTemplate ? 2 : 1, model.Pages.Count);
                 var shell = new TemplateWorkspacePage();

@@ -33,6 +33,12 @@ public enum TemplatePageContentType
     DynamicSizeTable
 }
 
+public enum TemplatePageTypeRecognition
+{
+    OrdinaryPage = 0,
+    SizeTablePage
+}
+
 public enum TemplateGenerationMode
 {
     OncePerProduct = 0,

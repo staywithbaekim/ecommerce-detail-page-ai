@@ -9,6 +9,7 @@ public static class TemplatePackageProtocol
     public const string CurrentVersion = "template-package/v3";
     public const string RasterVersion = "template-package/v4";
     public const string CandidateExclusionVersion = "template-package/v5";
+    public const string PageTypeVersion = "template-package/v6";
 
 }
 
@@ -43,7 +44,9 @@ public sealed record TemplatePackagePage(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     Desktop.Domain.Templates.SizeTableTemplateCalibration? SizeTableCalibration = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? Notes = null);
+    string? Notes = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Desktop.Domain.Templates.TemplatePageTypeRecognition? TypeRecognition = null);
 
 public sealed record TemplatePackageFrameBinding(
     string FrameId,
