@@ -238,9 +238,19 @@ public sealed partial class SqliteDesktopStore :
     private async Task<SqliteConnection> OpenReadConnectionAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            // Ownership reaches the caller only after configuration succeeds.
+            // Shutdown cancellation here must not leave an open database handle.
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static async Task ConfigureConnectionAsync(

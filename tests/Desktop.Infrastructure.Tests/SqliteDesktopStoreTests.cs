@@ -139,6 +139,43 @@ public sealed class SqliteDesktopStoreTests
     }
 
     [Fact]
+    public async Task FailedReadConnectionConfigurationReleasesDatabaseBeforeDirectoryCleanup()
+    {
+        using var directory = new TestDirectory();
+        var options = new DesktopDataOptions(directory.Path);
+        await using (var store = new SqliteDesktopStore(options))
+        {
+            // Hold a shared-cache transaction in DELETE mode so the read connection
+            // opens successfully but its WAL configuration fails before ownership
+            // can be handed to the caller's await using declaration.
+            await using var blocker = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = options.DatabasePath,
+                Cache = SqliteCacheMode.Shared,
+                Pooling = false
+            }.ToString());
+            await blocker.OpenAsync();
+            await using (var command = blocker.CreateCommand())
+            {
+                command.CommandText = "CREATE TABLE cleanup_probe (id INTEGER);";
+                await command.ExecuteNonQueryAsync();
+            }
+            await using (var transaction = blocker.BeginTransaction(deferred: true))
+            {
+                await using var command = blocker.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "SELECT COUNT(*) FROM cleanup_probe;";
+                await command.ExecuteScalarAsync();
+                var error = await Assert.ThrowsAsync<SqliteException>(() => store.ListGroupsAsync(default));
+                Assert.Equal(6, error.SqliteErrorCode); // SQLITE_LOCKED during journal-mode configuration.
+            }
+        }
+
+        // No GC, pool clearing, delay or deletion retry may be needed at exit.
+        using var exclusive = new FileStream(options.DatabasePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    }
+
+    [Fact]
     public async Task DisposeAsyncIsIdempotentForSharedServiceRegistrations()
     {
         using var directory = new TestDirectory();
