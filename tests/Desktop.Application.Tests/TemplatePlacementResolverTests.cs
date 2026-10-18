@@ -7,6 +7,57 @@ namespace Desktop.Application.Tests;
 public sealed class TemplatePlacementResolverTests
 {
     [Theory]
+    [InlineData(TemplateLayerKind.SmartObject, false)]
+    [InlineData(TemplateLayerKind.SmartObject, true)]
+    [InlineData(TemplateLayerKind.Pixel, false)]
+    [InlineData(TemplateLayerKind.Pixel, true)]
+    public void OldLayerSizedCalibrationUsesMatchingVisibleWindowForAllTargetKinds(TemplateLayerKind kind, bool masked)
+    {
+        var legacy = Binding(clipping: true);
+        var binding = FrameBinding.Create(legacy.FrameId, legacy.PageId, legacy.LayerPath,
+            ExpectedLayerEvidence.Create(1, "slot", true, true, masked, masked, 255, "norm",
+                legacy.ExpectedLayer.StructureSignature, kind), [], legacy.SelectionRequirement, legacy.LayoutIntent);
+        var window = new PsdLayerBounds(240, 320, 480, 740);
+        var layer = new PsdLayerInspection([0], 1, "slot", kind == TemplateLayerKind.Pixel ? "pixel" : "smartobject",
+            false, true, true, true, 255, 255, "norm", new(-400, -500, 1600, 1800), masked, masked,
+            new([1], 2, "window", "pixel", true, true, window, false, false, 255, "norm"), null)
+            { PixelEvidence = new(true, 4600000, 100800, window) };
+        var source = new TemplateRenderSource("asset", new string('a', 64), 64, PixelWidth: 1200, PixelHeight: 1800);
+        var subject = new TemplateRenderSubjectGeometry("asset", .25m, .2m, .75m, .95m, 1);
+        var placement = TemplatePlacementResolver.Resolve(binding, source, subject, Inspection() with { Layers = [layer] });
+        Assert.InRange(Math.Abs(placement.Height - 424m), 0, .000000001m);
+        Assert.True(placement.Left + placement.Width * subject.Left >= window.Left);
+        Assert.True(placement.Left + placement.Width * subject.Right <= window.Right);
+        Assert.True(placement.Top + placement.Height * subject.Top >= window.Top);
+        Assert.True(placement.Top + placement.Height * subject.Bottom <= window.Bottom);
+        Assert.Equal(TemplateRect.Create(100, 100, 900, 900), binding.LayoutIntent.SafeBounds);
+    }
+
+    [Fact]
+    public void OlderInspectionUsesStructuralClippingWindowWithoutTakingPhotoLayerBounds()
+    {
+        var layer = new PsdLayerInspection([0], 1, "slot", "smartobject", false, true, true, true,
+            255, 255, "norm", new(-900, -900, 1900, 1900), false, false,
+            new([1], 2, "window", "pixel", true, true, new(200, 300, 400, 600), false, false, 255, "norm"), null);
+        var inspection = Inspection() with { Layers = [layer] };
+        var source = new TemplateRenderSource("asset", new string('a', 64), 64, PixelWidth: 1200, PixelHeight: 1800);
+        var placement = TemplatePlacementResolver.Resolve(Binding(clipping: true), source, null, inspection);
+        Assert.Equal(198m, placement.Left);
+        Assert.Equal(297m, placement.Top);
+        Assert.Equal(204m, placement.Width);
+        Assert.Equal(306m, placement.Height);
+        var underfilled = layer with { Bounds = new(240, 350, 340, 450),
+            PixelEvidence = new(true, 10000, 10000, new(240, 350, 340, 450)) };
+        Assert.Equal(placement, TemplatePlacementResolver.Resolve(Binding(clipping: true), source, null,
+            inspection with { Layers = [underfilled] }));
+        var wrongPath = layer with { Path = [3] };
+        Assert.Throws<TemplateRuleViolationException>(() => TemplatePlacementResolver.Resolve(
+            Binding(clipping: true), source, null, inspection with { Layers = [wrongPath] }));
+        Assert.Throws<TemplateRuleViolationException>(() => TemplatePlacementResolver.Resolve(
+            Binding(clipping: true), source, null, inspection with { Layers = [layer with { PixelEvidence = new(true, 9000000, 0, null) }] }));
+    }
+
+    [Theory]
     [InlineData(1000, 1000, .1, .1, .9, .9)]
     [InlineData(2000, 1000, .4, .1, .7, .9)]
     [InlineData(1000, 2000, .1, .2, .9, .6)]

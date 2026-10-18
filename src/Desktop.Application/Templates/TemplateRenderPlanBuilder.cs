@@ -149,6 +149,7 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 throw new TemplateRuleViolationException("TPL_RENDER_GEOMETRY_INVALID");
             }
 
+            var frameBounds = TemplatePlacementResolver.ResolveFrameBounds(binding, templateResource.Inspection);
             var layout = new Dictionary<string, object>
             {
                 ["intent"] = binding.LayoutIntent.Intent,
@@ -156,8 +157,8 @@ public sealed class TemplateRenderPlanBuilder(IRenderPlanValidator validator) : 
                 ["offset"] = new { x = binding.LayoutIntent.OffsetX, y = binding.LayoutIntent.OffsetY },
                 ["safe_bounds"] = new
                 {
-                    left = binding.LayoutIntent.SafeBounds.Left, top = binding.LayoutIntent.SafeBounds.Top,
-                    right = binding.LayoutIntent.SafeBounds.Right, bottom = binding.LayoutIntent.SafeBounds.Bottom
+                    left = frameBounds.Left, top = frameBounds.Top,
+                    right = frameBounds.Right, bottom = frameBounds.Bottom
                 }
             };
             if (request.RequireAbsolutePlacement)

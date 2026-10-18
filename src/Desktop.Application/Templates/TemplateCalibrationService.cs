@@ -432,7 +432,8 @@ public sealed class TemplateCalibrationService(
                     binding.FrameId,
                     selectionRequirement: SelectionRequirement.Create(
                         normalized,
-                        binding.SelectionRequirement.Criteria)),
+                        binding.SelectionRequirement.Criteria),
+                    layoutIntent: state.BuildLayoutIntent(frameId)),
                 cancellationToken).ConfigureAwait(false);
             state.PersistedBindingIds[frameId] = binding.FrameId;
             state.RegisteredFrames.Add(frameId);
@@ -553,7 +554,7 @@ public sealed class TemplateCalibrationService(
                 target.HasMask, target.HasVectorMask, target.Opacity, target.BlendMode,
                 LayerStructureSignature.Create(NormalizeStructureSignature(target.StructureSignature)), target.LayerKind), target.SupersededLayers,
             SelectionRequirement.Create(description), LayoutIntent.Create("subject_complete", 1, 0, 0,
-                target.LayerKind == TemplateLayerKind.Pixel && target.PreviewBounds is { } visible
+                target.PreviewBounds is { } visible
                     ? TemplateRect.Create(Math.Max(0, visible.Left), Math.Max(0, visible.Top),
                         Math.Min(canvas.Width, visible.Left + visible.Width), Math.Min(canvas.Height, visible.Top + visible.Height))
                     : TemplateRect.Create(Math.Max(0, target.Left), Math.Max(0, target.Top),
@@ -624,7 +625,7 @@ public sealed class TemplateCalibrationService(
                     ? layer.PixelEvidence.HasMeaningfulCompositeContribution
                         && !IsCoveredPhotoEdgeResidual(inspection, layer)
                     : null,
-                PreviewBounds = layer.PixelEvidence.CompositeContributionBounds is { } bounds
+                PreviewBounds = TemplatePlacementResolver.VisibleFrameBounds(layer) is { } bounds
                     ? new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top)
                     : null
             })
@@ -821,7 +822,7 @@ public sealed class TemplateCalibrationService(
                 geometry.Scale,
                 geometry.OffsetX,
                 geometry.OffsetY,
-                frame.LayerKind == TemplateLayerKind.Pixel && frame.PreviewBounds is { } visible
+                frame.PreviewBounds is { } visible
                     ? TemplateRect.Create(Math.Max(0, visible.Left), Math.Max(0, visible.Top),
                         Math.Min(CanvasWidth, visible.Left + visible.Width), Math.Min(CanvasHeight, visible.Top + visible.Height))
                     : TemplateRect.Create(
@@ -937,7 +938,11 @@ public sealed class TemplateCalibrationService(
 
             var frameId = frame.FrameId;
             PersistedBindingIds[frameId] = binding.FrameId;
-            var bounds = binding.LayoutIntent.SafeBounds;
+            // A saved photo-layer rectangle must not replace the inspected visible frame on reopen.
+            var bounds = frame.PreviewBounds is { } visible
+                ? TemplateRect.Create(Math.Max(0, visible.Left), Math.Max(0, visible.Top),
+                    Math.Min(CanvasWidth, visible.Left + visible.Width), Math.Min(CanvasHeight, visible.Top + visible.Height))
+                : binding.LayoutIntent.SafeBounds;
             PreviewBounds[frameId] = new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top);
             SelectionRequirements[frameId] = NormalizeSelectionRequirement(
                 binding.SelectionRequirement.Description);

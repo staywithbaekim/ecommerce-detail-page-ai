@@ -15,7 +15,7 @@ public static class TemplatePlacementResolver
         TemplateRenderSubjectGeometry? subject, PsdInspectionDocument inspection)
     {
         var layout = binding.LayoutIntent;
-        var area = layout.SafeBounds;
+        var area = ResolveFrameBounds(binding, inspection);
         if (source.PixelWidth <= 0 || source.PixelHeight <= 0
             || !double.IsFinite(area.Left) || !double.IsFinite(area.Top)
             || !double.IsFinite(area.Right) || !double.IsFinite(area.Bottom)
@@ -92,6 +92,52 @@ public static class TemplatePlacementResolver
         maxLeft = Math.Max(minLeft, maxLeft); maxTop = Math.Max(minTop, maxTop);
         return new(source.PixelWidth, source.PixelHeight, Math.Clamp(desiredLeft, minLeft, maxLeft),
             Math.Clamp(desiredTop, minTop, maxTop), placedWidth, placedHeight);
+    }
+
+    internal static TemplateRect ResolveFrameBounds(FrameBinding binding, PsdInspectionDocument inspection)
+    {
+        var layer = inspection.Layers.SingleOrDefault(item => item.LayerId == binding.ExpectedLayer.LayerId);
+        if (layer is null) return binding.LayoutIntent.SafeBounds;
+        if (!layer.Path.Select(segment => segment + 1).SequenceEqual(binding.LayerPath.Segments))
+            throw Invalid("TPL_RENDER_GEOMETRY_INVALID");
+
+        // Use persisted final-page evidence for both pixel layers and smart objects.
+        // This also corrects old bindings when making a new plan without rewriting old tasks.
+        PsdLayerBounds? bounds;
+        if (layer.PixelEvidence.Available)
+        {
+            if (!layer.PixelEvidence.HasMeaningfulCompositeContribution)
+                throw Invalid("TPL_RENDER_LAYOUT_REVIEW_REQUIRED");
+            bounds = VisibleFrameBounds(layer);
+        }
+        else
+        {
+            if (layer.HasMask || layer.HasVectorMask)
+                throw Invalid("TPL_RENDER_LAYOUT_REVIEW_REQUIRED");
+            bounds = layer.Clipping && layer.ClippingBase is { EffectiveVisible: true } window
+                ? window.Bounds : null;
+        }
+        // Legacy explicit calibration remains usable when inspection lacks display evidence;
+        // never substitute the raw photo-layer rectangle for an explicit frame here.
+        if (bounds is null) return binding.LayoutIntent.SafeBounds;
+        var left = Math.Max(0, bounds.Left); var top = Math.Max(0, bounds.Top);
+        var right = Math.Min(inspection.Canvas.Width, bounds.Right);
+        var bottom = Math.Min(inspection.Canvas.Height, bounds.Bottom);
+        if (right <= left || bottom <= top) throw Invalid("TPL_RENDER_GEOMETRY_INVALID");
+        return TemplateRect.Create(left, top, right, bottom);
+    }
+
+    internal static PsdLayerBounds? VisibleFrameBounds(PsdLayerInspection layer)
+    {
+        if (layer.PixelEvidence.Available && !layer.PixelEvidence.HasMeaningfulCompositeContribution)
+            return null;
+        // An explicit clipping window belongs to the template, not to the old photo.
+        // A photo that currently underfills that window must not shrink the replacement frame.
+        if (layer.Clipping && !layer.HasMask && !layer.HasVectorMask
+            && layer.ClippingBase is { EffectiveVisible: true, HasMask: false, HasVectorMask: false } window)
+            return window.Bounds;
+        return layer.PixelEvidence.HasMeaningfulCompositeContribution
+            ? layer.PixelEvidence.CompositeContributionBounds : null;
     }
 
     private static TemplateRuleViolationException Invalid(string code) => new(code);

@@ -1006,7 +1006,7 @@ public sealed class ReferenceLearningService(
         var top = box.Count == 8 ? box.Where((_, index) => index % 2 == 1).Min() : layer.Bounds.Top;
         var right = box.Count == 8 ? box.Where((_, index) => index % 2 == 0).Max() : layer.Bounds.Right;
         var bottom = box.Count == 8 ? box.Where((_, index) => index % 2 == 1).Max() : layer.Bounds.Bottom;
-        var frame = layer.ClippingBase?.Bounds ?? layer.Bounds;
+        var frame = TemplatePlacementResolver.VisibleFrameBounds(layer) ?? layer.ClippingBase?.Bounds ?? layer.Bounds;
         var safeLeft = Math.Clamp(frame.Left, 0, Math.Max(0, canvasWidth - 1));
         var safeTop = Math.Clamp(frame.Top, 0, Math.Max(0, canvasHeight - 1));
         var safeRight = Math.Clamp(frame.Right, safeLeft + 1, canvasWidth);

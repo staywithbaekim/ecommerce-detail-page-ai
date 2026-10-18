@@ -10,6 +10,39 @@ namespace Desktop.Application.Tests;
 public sealed class TemplateRenderPlanBuilderTests
 {
     [Theory]
+    [InlineData(TemplateLayerKind.SmartObject)]
+    [InlineData(TemplateLayerKind.Pixel)]
+    public void NewPlanCorrectsLegacyBoundsWithoutChangingTheCommittedBinding(TemplateLayerKind kind)
+    {
+        var page = TemplatePage.Create("page_render", "revision_render", 0, "photo", TemplatePageContentType.NormalComposition,
+            TemplateGenerationMode.OncePerProduct, null, true, "resource_template");
+        var original = Binding();
+        var binding = FrameBinding.Create(original.FrameId, original.PageId, original.LayerPath,
+            ExpectedLayerEvidence.Create(257, "registered_frame", true, true, false, false, 255, "normal",
+                original.ExpectedLayer.StructureSignature, kind), [], original.SelectionRequirement, original.LayoutIntent);
+        var revision = Commit(TemplateRevision.CreateDraft("revision_render", "group_render", 1,
+            DateTimeOffset.UtcNow, [page], [binding]));
+        var window = new PsdLayerBounds(120, 250, 420, 850);
+        var resource = Resource();
+        var layer = new PsdLayerInspection([1], 257, "registered_frame", kind == TemplateLayerKind.Pixel ? "pixel" : "smartobject",
+            false, true, true, true, 255, 255, "normal", new(-1000, -1000, 2000, 3000), false, false, null, null)
+            { PixelEvidence = new(true, 12000000, 180000, window) };
+        resource = resource with { Inspection = resource.Inspection with { Layers = [layer] } };
+        var builder = new TemplateRenderPlanBuilder(new RenderPlanValidator(new JsonSchemaContractValidator()));
+        var request = new TemplateRenderPlanRequest("plan_window", "window_page_01", "corr_window", "batch_window",
+            "product_window", "artifact_window", "01-detail.jpg", false, null, DateTimeOffset.UtcNow,
+            [new("asset_front", new string('c', 64), 32, "image/jpeg", 1200, 1800)], RequireAbsolutePlacement: true);
+        using var json = JsonDocument.Parse(builder.Build(revision, page, resource, request));
+        var layout = json.RootElement.GetProperty("targets")[0].GetProperty("layout");
+        Assert.Equal(120, layout.GetProperty("safe_bounds").GetProperty("left").GetDouble());
+        Assert.Equal(250, layout.GetProperty("safe_bounds").GetProperty("top").GetDouble());
+        Assert.Equal(420, layout.GetProperty("safe_bounds").GetProperty("right").GetDouble());
+        Assert.Equal(850, layout.GetProperty("safe_bounds").GetProperty("bottom").GetDouble());
+        Assert.InRange(Math.Abs(layout.GetProperty("placement").GetProperty("height").GetDecimal() - 604m), 0, .000000001m);
+        Assert.Equal(TemplateRect.Create(0, 0, 790, 1252), binding.LayoutIntent.SafeBounds);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void RasterBindingRequiresNegotiatedCapabilityAndExplicitRendererNeutralPlacement(bool covered)

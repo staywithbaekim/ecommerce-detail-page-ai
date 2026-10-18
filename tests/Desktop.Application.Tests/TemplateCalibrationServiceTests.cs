@@ -252,6 +252,44 @@ public sealed class TemplateCalibrationServiceTests
         Assert.Equal([0, 2], layer.Path);
     }
 
+    [Theory]
+    [InlineData(TemplateLayerKind.SmartObject, false)]
+    [InlineData(TemplateLayerKind.SmartObject, true)]
+    [InlineData(TemplateLayerKind.Pixel, false)]
+    [InlineData(TemplateLayerKind.Pixel, true)]
+    public async Task VisibleWindowIsUsedForNewRulesAndReopenedOldBindings(TemplateLayerKind kind, bool savedBefore)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var group = TemplateGroup.Create("group_cal", "Visible window", now);
+        var old = BindingWithoutAsset();
+        var binding = FrameBinding.Create(old.FrameId, old.PageId, LayerPath.Create([3]),
+            ExpectedLayerEvidence.Create(257, "frame", true, true, false, false, 100, "normal",
+                old.ExpectedLayer.StructureSignature, kind), [], old.SelectionRequirement, old.LayoutIntent);
+        var revision = TemplateRevision.CreateDraft("revision_cal", group.GroupId, 1, now,
+            [TemplatePage.Create("page_cal", "revision_cal", 0, "规则页", TemplatePageContentType.NormalComposition,
+                TemplateGenerationMode.OncePerProduct, null, true, "resource_cal")], savedBefore ? [binding] : []);
+        var templates = new MemoryTemplateRepository(group, revision);
+        var resource = Resource();
+        var photo = resource.Inspection.Layers[0] with
+        {
+            Kind = kind == TemplateLayerKind.Pixel ? "pixel" : "smartObject",
+            SmartObject = kind == TemplateLayerKind.Pixel ? null : resource.Inspection.Layers[0].SmartObject,
+            Bounds = new(-100, -200, 1000, 1600), Clipping = true,
+            PixelEvidence = new(true, 1980000, 54000, new(80, 90, 260, 390))
+                { RasterImage = kind == TemplateLayerKind.Pixel ? new(true, 5000, .5) : null }
+        };
+        resource = resource with { Inspection = resource.Inspection with { Layers = [photo] } };
+        var service = new TemplateCalibrationService(templates, new MemoryResourceRepository(resource));
+        var session = new TemplateDraftSession(group.GroupId, group.Name, revision.RevisionId, 1, new HashSet<string>());
+        var view = await service.LoadAsync(session, "page_cal", default);
+        var frame = Assert.Single(view.Frames);
+        Assert.Equal(new TemplateFramePreviewBounds(80, 90, 180, 300), frame.PreviewBounds);
+        await service.SetSelectionRequirementAsync(session, "page_cal", frame.FrameId, "商品整体", default);
+        var saved = Assert.Single((await templates.GetRevisionAsync(revision.RevisionId, default))!.FrameBindings);
+        Assert.Equal(TemplateRect.Create(80, 90, 260, 390), saved.LayoutIntent.SafeBounds);
+        if (savedBefore) Assert.Equal(TemplateRect.Create(0, 0, 790, 1252), binding.LayoutIntent.SafeBounds);
+    }
+
     [Fact]
     public async Task RegisteredSmartObjectCanBindMoveUndoAndRedo()
     {
