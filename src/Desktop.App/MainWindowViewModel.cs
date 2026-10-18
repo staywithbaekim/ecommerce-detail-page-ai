@@ -70,6 +70,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
                 referenceLearningService, referenceLearningCommitService, referenceLearningAiService,
                 folderPicker, this, templateRuleInterpreter));
         TemplateWorkspace.PropertyChanged += TemplateWorkspace_PropertyChanged;
+        TemplateWorkspace.ScreenChanging += _aiAnalysisPage.ClosePageDialogs;
         SettingsPageViewModel = new SettingsPageViewModel(this, aiCredentialManagement, photoshopPairing,
             diagnosticExporter, photoshopEnvironment, photoshopConnectionCheck, photoshopHostSelection);
 
@@ -99,6 +100,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             _selectedNavigationItem.IsSelected = false;
             _selectedNavigationItem = value;
             _selectedNavigationItem.IsSelected = true;
+            ClosePageDialogs();
             OnPropertyChanged();
             OnPropertyChanged(nameof(PageTitle));
             OnPropertyChanged(nameof(PageSubtitle));
@@ -337,6 +339,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         SettingsPageViewModel.Credentials.ClearAiCredentialInput();
         SizeTableEditorPage.Dispose();
         TemplateWorkspace.PropertyChanged -= TemplateWorkspace_PropertyChanged;
+        TemplateWorkspace.ScreenChanging -= _aiAnalysisPage.ClosePageDialogs;
         BatchInputPageViewModel.Dispose();
         ResultReviewPageViewModel.Dispose();
         TemplateWorkspacePageViewModel.Dispose();

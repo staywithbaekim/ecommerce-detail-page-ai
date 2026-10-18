@@ -14,6 +14,7 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
     private readonly AiAnalysisPageState _aiPageState;
     private readonly IAiBatchAnalysisWorkflow? _aiBatchWorkflow;
     private readonly IAiAnalysisHost _host;
+    private long _pageDialogVersion;
 
     public AiAnalysisViewModel(IAiBatchAnalysisWorkflow? workflow, IAiAnalysisHost host)
         : this(new AiAnalysisPageState(), workflow, host) { }
@@ -46,7 +47,12 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
     private AiConsentContinuation _pendingAiConsentContinuation
     {
         get => _aiPageState.PendingConsentContinuation;
-        set => _aiPageState.PendingConsentContinuation = value;
+        set
+        {
+            _aiPageState.PendingConsentContinuation = value;
+            OnPropertyChanged(nameof(IsBatchScanConsentPending));
+            OnPropertyChanged(nameof(IsReferenceLearningConsentPending));
+        }
     }
     private bool _aiBusy
     {
@@ -456,6 +462,9 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
 
     public bool IsAiUploadConsentRevoked => _uploadConsent?.State == AiUploadConsentState.Revoked;
 
+    public bool IsBatchScanConsentPending => _pendingAiConsentContinuation == AiConsentContinuation.BatchScan;
+    public bool IsReferenceLearningConsentPending => _pendingAiConsentContinuation == AiConsentContinuation.ReferenceLearning;
+
     public bool IsAiUploadConsentDialogVisible
     {
         get => _isAiUploadConsentDialogVisible;
@@ -636,6 +645,17 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
         IsAiCandidatePreviewVisible = false;
         AiCandidatePreview = null;
         NotifyAiChanged();
+    }
+
+    internal void ClosePageDialogs()
+    {
+        // Invalidate late dialog-opening continuations without cancelling paid work.
+        _pageDialogVersion++;
+        _pendingAiConsentContinuation = AiConsentContinuation.None;
+        IsAiUploadConsentDialogVisible = false;
+        AiUploadConsentAcknowledged = false;
+        CloseInstanceSelection();
+        CloseAiCandidatePreview();
     }
 
     internal async Task ConfirmAiCandidateSelectionAsync()
@@ -888,10 +908,13 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
 
     public async Task<bool> EnsureAiUploadConsentForScanAsync()
     {
+        var dialogVersion = _pageDialogVersion;
         if (!await _host.EnsureCredentialConfiguredAsync().ConfigureAwait(true))
         {
             return false;
         }
+
+        if (dialogVersion != _pageDialogVersion) return false;
 
         if (_aiBatchWorkflow is null)
         {
@@ -903,6 +926,7 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
             _uploadConsent = await _aiBatchWorkflow
                 .GetUploadConsentAsync(CancellationToken.None)
                 .ConfigureAwait(true);
+            if (dialogVersion != _pageDialogVersion) return false;
             NotifyAiChanged();
             if (IsAiUploadConsentGranted)
             {
@@ -932,6 +956,7 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
             return;
         }
 
+        var dialogVersion = _pageDialogVersion;
         var granted = false;
         var continuation = AiConsentContinuation.None;
         _aiBusy = true;
@@ -942,7 +967,7 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
                 .GrantUploadConsentAsync(CancellationToken.None)
                 .ConfigureAwait(true);
             granted = _uploadConsent.IsGranted;
-            if (granted)
+            if (granted && dialogVersion == _pageDialogVersion)
             {
                 continuation = _pendingAiConsentContinuation;
                 _pendingAiConsentContinuation = AiConsentContinuation.None;
@@ -973,6 +998,7 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
 
     internal void CancelAiUploadConsent()
     {
+        _pageDialogVersion++;
         _pendingAiConsentContinuation = AiConsentContinuation.None;
         IsAiUploadConsentDialogVisible = false;
         AiUploadConsentAcknowledged = false;
@@ -1379,6 +1405,8 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
         OnPropertyChanged(nameof(IsAiUploadConsentGranted));
         OnPropertyChanged(nameof(IsAiUploadConsentRevoked));
         OnPropertyChanged(nameof(IsAiUploadConsentDialogVisible));
+        OnPropertyChanged(nameof(IsBatchScanConsentPending));
+        OnPropertyChanged(nameof(IsReferenceLearningConsentPending));
         OnPropertyChanged(nameof(AiUploadConsentAcknowledged));
         OnPropertyChanged(nameof(AiUploadConsentStatusText));
         OnPropertyChanged(nameof(AiUploadConsentDetailText));
@@ -1604,11 +1632,14 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
 
     public async Task<bool> EnsureAiUploadConsentForReferenceLearningAsync()
     {
+        var dialogVersion = _pageDialogVersion;
         if (!await _host.EnsureCredentialConfiguredAsync().ConfigureAwait(true))
         {
             _host.ReferenceLearningStatusMessage = _host.BatchStatusMessage;
             return false;
         }
+
+        if (dialogVersion != _pageDialogVersion) return false;
 
         // Offline/unit-test compositions intentionally omit the batch
         // workflow. Preserve their local reference-learning behavior.
@@ -1622,6 +1653,7 @@ public sealed partial class AiAnalysisViewModel : INotifyPropertyChanged, IDispo
             _uploadConsent = await _aiBatchWorkflow
                 .GetUploadConsentAsync(CancellationToken.None)
                 .ConfigureAwait(true);
+            if (dialogVersion != _pageDialogVersion) return false;
             NotifyAiChanged();
             if (IsAiUploadConsentGranted)
             {

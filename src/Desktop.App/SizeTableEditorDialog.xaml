@@ -10,7 +10,6 @@
     <Grid>
         <Grid x:Name="EditorOverlay"
               Grid.Row="0"
-              Panel.ZIndex="40"
               Background="{StaticResource ModalOverlayBrush}"
               Visibility="{Binding IsSizeTableEditorVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
               FocusManager.IsFocusScope="True"

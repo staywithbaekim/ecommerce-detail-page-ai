@@ -370,6 +370,5 @@
         </Grid>
 
 
-        <local:BatchPageSelectionDialog />
     </Grid>
 </UserControl>

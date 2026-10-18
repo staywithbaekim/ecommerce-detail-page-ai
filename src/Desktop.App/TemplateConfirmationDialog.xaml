@@ -8,7 +8,6 @@
              VerticalContentAlignment="Stretch">
     <Grid>
         <Grid Grid.Row="0"
-              Panel.ZIndex="30"
               Background="{StaticResource ModalOverlayBrush}"
               Visibility="{Binding IsTemplateDialogVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
               KeyboardNavigation.TabNavigation="Cycle"

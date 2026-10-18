@@ -1185,6 +1185,7 @@ public sealed partial class WpfShellTests
                 Assert.Equal("frame_257", viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationFrameIdInput);
                 Assert.Single(viewModel.TemplateWorkspacePageViewModel.Coordinator.CalibrationDraft!.Frames);
 
+                viewModel.SelectedNavigationItem = viewModel.NavigationItems.Single(item => item.Key == "templates");
                 var showDialog = typeof(TemplateWorkspaceViewModel).GetMethod(
                     "ShowTemplateDialogAsync",
                     BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
@@ -1496,6 +1497,7 @@ public sealed partial class WpfShellTests
             id => Assert.NotNull(FindByAutomationId<FrameworkElement>(window, id)));
 
         viewModel.BatchInputPageViewModel.Coordinator.OpenBatchPageSelectionCommand.Execute(null);
+        DrainDispatcher();
         FlushLayout(window);
         Assert.Equal(
             Visibility.Visible,
@@ -2790,12 +2792,21 @@ public sealed partial class WpfShellTests
                 FlushLayout(window);
 
                 Assert.True(viewModel.AiAnalysisPageViewModel.IsAiUploadConsentDialogVisible);
+                Assert.True(viewModel.IsTemplateSectionVisible, viewModel.SelectedNavigationItem.Key);
+                Assert.True(viewModel.AiAnalysisPageViewModel.IsReferenceLearningConsentPending);
+                DrainDispatcher();
+                FlushLayout(window);
                 Assert.Contains("参考学习", viewModel.TemplateWorkspacePageViewModel.Coordinator.ReferenceLearningStatusMessage, StringComparison.Ordinal);
                 Assert.Equal(0, learning.StrictResumeCount);
                 Assert.Equal(0, semantic.BatchCalls);
                 Assert.Equal(
                     Visibility.Visible,
                     FindByAutomationId<Grid>(window, "AiUploadConsentDialog").Visibility);
+                var consentControl = Assert.Single(EnumerateVisualDescendants<AiUploadConsentDialog>(window));
+                var modalHost = Assert.IsType<ModalHost>(VisualTreeHelper.GetParent(consentControl));
+                Assert.Same(window.Content, VisualTreeHelper.GetParent(modalHost));
+                Assert.True(modalHost.IsOpen);
+                Assert.True(consentControl.IsVisible);
 
                 viewModel.AiAnalysisPageViewModel.AiUploadConsentAcknowledged = true;
                 viewModel.AiAnalysisPageViewModel.ConfirmAiUploadConsentAsync().GetAwaiter().GetResult();
@@ -2901,6 +2912,7 @@ public sealed partial class WpfShellTests
                 Assert.Equal("3 张素材 · 已处理 1/1 页", blockedStyle.MetaText);
                 var candidate = Assert.Single(firstStyle.Pages[0].Candidates);
                 viewModel.AiAnalysisPageViewModel.OpenAiCandidatePreviewCommand.Execute(candidate);
+                DrainDispatcher();
                 FlushLayout(window);
                 Assert.Equal(Visibility.Visible, FindByAutomationId<Grid>(window, "AiCandidatePreviewDialog").Visibility);
                 Assert.Equal("用于：PSD 页面 中文主图页 · 选择完整清晰的商品主体图。", viewModel.AiAnalysisPageViewModel.AiCandidatePreview!.UsageText);
@@ -4819,6 +4831,7 @@ public sealed partial class WpfShellTests
 
     private sealed class TemplateLibraryWorkspaceStub : ITemplateWorkspaceService
     {
+        public Func<TemplateDuplicateDecision, Task<TemplateWorkspaceImportResult>>? ImportOverride { get; set; }
         private const string GroupId = "group_template_library_ui";
         private const string RevisionId = "revision_template_library_ui";
         private string _name = "模板库交互测试";
@@ -4909,7 +4922,7 @@ public sealed partial class WpfShellTests
         public Task<TemplateDraftSession> BeginPageEditAsync(string groupId, string pageId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftSession> BeginFullEditAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<TemplateDraftSession> ResumeDraftAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<TemplateWorkspaceImportResult> ImportPageAsync(TemplateDraftSession session, string commandId, string resourceId, string sourcePsdPath, string pageName, TemplateDuplicateDecision duplicateDecision, string? selectedDuplicateResourceId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<TemplateWorkspaceImportResult> ImportPageAsync(TemplateDraftSession session, string commandId, string resourceId, string sourcePsdPath, string pageName, TemplateDuplicateDecision duplicateDecision, string? selectedDuplicateResourceId, CancellationToken cancellationToken) => ImportOverride?.Invoke(duplicateDecision) ?? throw new NotSupportedException();
         public Task<TemplateDraftView> GetDraftAsync(TemplateDraftSession session, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task ConfigurePageAsync(TemplateDraftSession session, string pageId, string name, TemplatePageContentTypeOption contentType, TemplateGenerationModeOption generationMode, int? variantCapacity, bool enabled, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task ReorderPagesAsync(TemplateDraftSession session, IReadOnlyList<string> orderedPageIds, CancellationToken cancellationToken) => throw new NotSupportedException();

@@ -237,7 +237,8 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
         KeepImportedDuplicateCommand = new AsyncRelayCommand(
             () => ResolveDuplicateAsync(TemplateDuplicateDecision.ContinueAsSeparate));
         CancelDuplicateCommand = new AsyncRelayCommand(
-            () => ResolveDuplicateAsync(TemplateDuplicateDecision.Cancel));
+            () => ResolveDuplicateAsync(TemplateDuplicateDecision.Cancel),
+            onError: HandleTemplateCommandException);
         ConfirmTemplateDialogCommand = new RelayCommand(
             () => CompleteTemplateDialog(TemplateDialogChoice.Primary),
             () => !TemplateDialogHasTextInput || !string.IsNullOrWhiteSpace(TemplateDialogInputText));
@@ -322,6 +323,7 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
 
     private void BeginNewTemplate()
     {
+        ClosePageDialogs();
         RuleWorkbench?.Dispose(); RuleWorkbench = null;
         OnPropertyChanged(nameof(RuleWorkbench));
         _templateDraft = null;
@@ -471,15 +473,18 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
 
     private async Task<bool> ImportPendingAsync(
         PendingTemplateImport pending,
-        TemplateDuplicateDecision decision)
+        TemplateDuplicateDecision decision,
+        TemplateDraftSession? draft = null)
     {
-        if (_templateWorkspace is null || _templateDraft is null)
+        draft ??= _templateDraft;
+        if (_templateWorkspace is null || draft is null)
         {
             return false;
         }
 
+        var dialogVersion = _pageDialogVersion;
         var result = await _templateWorkspace.ImportPageAsync(
-            _templateDraft,
+            draft,
             pending.CommandId,
             pending.ResourceId,
             pending.SourcePath,
@@ -489,6 +494,18 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
             CancellationToken.None).ConfigureAwait(true);
         if (result.Import.Status == TemplatePageImportStatus.DuplicateReviewRequired)
         {
+            if (decision != TemplateDuplicateDecision.Cancel
+                && (dialogVersion != _pageDialogVersion || !_host.IsTemplateSectionVisible))
+            {
+                // Cleanup must address the original staging copy, never a newly selected draft.
+                await ImportPendingAsync(pending, TemplateDuplicateDecision.Cancel, draft).ConfigureAwait(true);
+                return false;
+            }
+            if (decision == TemplateDuplicateDecision.Cancel)
+            {
+                TemplateStatusMessage = "重复 PSD 取消尚未完成，请恢复原草稿核对；不会重新确认导入。";
+                return false;
+            }
             _pendingTemplateImport = pending with
             {
                 DuplicateResourceId = result.Import.DuplicateCandidates[0].ResourceId

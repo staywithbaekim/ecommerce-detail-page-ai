@@ -53,18 +53,15 @@ public sealed partial class MainWindowViewModel : IAiAnalysisHost
     }
     void IAiAnalysisHost.ShowAiAnalysis()
     {
-        _batchScreen = BatchWorkspaceScreen.AiAnalysis;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.AiAnalysis);
     }
     void IAiAnalysisHost.ShowAiStyleReview()
     {
-        _batchScreen = BatchWorkspaceScreen.AiStyleReview;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.AiStyleReview);
     }
     void IAiAnalysisHost.ShowResultOverview()
     {
-        _batchScreen = BatchWorkspaceScreen.ResultOverview;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.ResultOverview);
     }
     void IAiAnalysisHost.RaiseResultCommandsChanged() => RaiseResultCommandsChanged();
     void IAiAnalysisHost.ApplyRenderPreparation(AiRenderPlanPreparation preparation) => ApplyRenderPreparation(preparation);

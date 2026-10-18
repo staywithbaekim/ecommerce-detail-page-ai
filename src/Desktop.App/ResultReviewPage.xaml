@@ -334,6 +334,5 @@
             </Border>
         </Grid>
 
-        <local:SizeTableEditorDialog DataContext="{Binding SizeTableEditorPage}" />
     </Grid>
 </UserControl>

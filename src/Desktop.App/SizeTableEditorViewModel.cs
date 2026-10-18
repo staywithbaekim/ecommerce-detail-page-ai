@@ -12,6 +12,7 @@ public sealed partial class SizeTableEditorViewModel : INotifyPropertyChanged, I
     private readonly IRenderBatchWorkflow? _rendering;
     private const string FrozenPlanMessage = "当前批次已有冻结的渲染计划，暂不能保存尺码修改。重新生成仅使用原计划；请保留旧结果，在新批次生成前修正尺码。";
     private bool _isSizeTableEditorVisible;
+    private long _pageDialogVersion;
 
     public SizeTableEditorState SizeTableEditor { get; } = new();
 
@@ -68,6 +69,7 @@ public sealed partial class SizeTableEditorViewModel : INotifyPropertyChanged, I
 
     private async Task OpenSizeTableEditorAsync(ResultPageCardViewModel? page)
     {
+        var dialogVersion = _pageDialogVersion;
         var batchId = _host.BatchId;
         if (page is null || !page.IsSizeTablePage || IsOpening || IsSizeTableEditorVisible || !_host.CanOpenEditor
             || _sizeTableEditingWorkflow is null && _repairs is null
@@ -88,7 +90,7 @@ public sealed partial class SizeTableEditorViewModel : INotifyPropertyChanged, I
         try
         {
         var journal = _rendering is null ? null : await _rendering.LoadAsync(batchId, CancellationToken.None).ConfigureAwait(true);
-        if (batchId != _host.BatchId) return;
+        if (batchId != _host.BatchId || dialogVersion != _pageDialogVersion) return;
         if (journal is not null)
         {
             if (!_host.CanEditRenderedBatch(batchId))
@@ -99,7 +101,7 @@ public sealed partial class SizeTableEditorViewModel : INotifyPropertyChanged, I
             if (_repairs is null) { _host.ShowAnalysisStatus(FrozenPlanMessage); return; }
             var baseline = await _repairs.LoadSizeTableRepairAsync(batchId, page.StyleId, page.PageId,
                 page.OutputVariantId, CancellationToken.None).ConfigureAwait(true);
-            if (batchId != _host.BatchId) return;
+            if (batchId != _host.BatchId || dialogVersion != _pageDialogVersion) return;
             _repairBaseline = baseline;
             SizeTableEditor.Load(baseline.Document, _host.GetSourcePreviewPath(page.StyleId, baseline.Document.SourceAssetId));
             SizeTableEditor.IsRepair = true;
@@ -114,7 +116,7 @@ public sealed partial class SizeTableEditorViewModel : INotifyPropertyChanged, I
             page.StyleId,
             page.PageId,
             CancellationToken.None).ConfigureAwait(true);
-        if (batchId != _host.BatchId) return;
+        if (batchId != _host.BatchId || dialogVersion != _pageDialogVersion) return;
         if (loaded.Document is null)
         {
             _host.ShowAnalysisStatus(loaded.Status == SizeTableEditorLoadStatus.RecoveryRequired
@@ -139,6 +141,13 @@ public sealed partial class SizeTableEditorViewModel : INotifyPropertyChanged, I
     private void CloseSizeTableEditor()
     {
         if (!SizeTableEditor.IsSaving) IsSizeTableEditorVisible = false;
+    }
+
+    internal void ClosePageDialogs()
+    {
+        _pageDialogVersion++;
+        // Only dismiss presentation. Preserve any in-flight save and immutable repair request.
+        IsSizeTableEditorVisible = false;
     }
 
     private async Task SaveSizeTableAsync()

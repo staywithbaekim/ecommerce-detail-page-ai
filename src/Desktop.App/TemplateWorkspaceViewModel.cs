@@ -17,6 +17,7 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
     private readonly IFolderPicker? _folderPicker;
     public TemplateWorkspacePageState State { get; } = new();
     public event PropertyChangedEventHandler? PropertyChanged;
+    internal event Action? ScreenChanging;
 
     public TemplateWorkspaceViewModel(
         ITemplateWorkspaceService? templateWorkspace,
@@ -53,6 +54,7 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
     private PendingTemplateImport? _pendingTemplateImport;
     private TaskCompletionSource<TemplateDialogChoice>? _templateDialogCompletion;
     private long _calibrationPageLoadVersion;
+    private long _pageDialogVersion;
 
     private TemplateWorkspacePageState TemplateWorkspaceState => State;
 

@@ -54,6 +54,7 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
         bool hasTextInput,
         string inputText)
     {
+        if (!_host.IsTemplateSectionVisible) return Task.FromResult(TemplateDialogChoice.Cancelled);
         if (_templateDialogCompletion is not null)
         {
             throw new InvalidOperationException("A template dialog is already open.");
@@ -70,11 +71,11 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
         TemplateDialogIsDestructive = isDestructive;
         TemplateDialogInputText = inputText;
         TemplateDialogHasTextInput = hasTextInput;
-        IsTemplateDialogVisible = true;
-
-        _templateDialogCompletion = new TaskCompletionSource<TemplateDialogChoice>(
+        var completion = new TaskCompletionSource<TemplateDialogChoice>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        return _templateDialogCompletion.Task;
+        _templateDialogCompletion = completion;
+        IsTemplateDialogVisible = true;
+        return completion.Task;
     }
 
     private void CompleteTemplateDialog(TemplateDialogChoice choice)
@@ -90,8 +91,19 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
         completion.TrySetResult(choice);
     }
 
+    internal void ClosePageDialogs()
+    {
+        _pageDialogVersion++;
+        CompleteTemplateDialog(TemplateDialogChoice.Cancelled);
+        IsTemplateDialogVisible = false;
+        if (IsDuplicateReviewVisible)
+            CancelDuplicateCommand.Execute(null);
+        IsDuplicateReviewVisible = false;
+    }
+
     private enum TemplateDialogChoice
     {
+        Cancelled,
         Primary,
         Secondary,
         Tertiary
@@ -159,6 +171,11 @@ public sealed partial class TemplateWorkspaceViewModel : INotifyPropertyChanged,
 
     private void SetTemplateScreen(TemplateScreen screen)
     {
+        if (_templateScreen != screen)
+        {
+            ScreenChanging?.Invoke();
+            ClosePageDialogs();
+        }
         if (screen != TemplateScreen.ReferenceLearning)
         {
             CaptureReferenceLearningInputs();

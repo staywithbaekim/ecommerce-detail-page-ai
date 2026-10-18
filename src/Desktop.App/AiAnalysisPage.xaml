@@ -669,28 +669,5 @@
             </Border>
         </Grid>
         
-        <local:AiCandidatePreviewDialog />
-        <local:AiUploadConsentDialog />
-        <Border Background="#AA000000" Visibility="{Binding IsInstanceSelectionVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
-                AutomationProperties.AutomationId="InstanceSelectionDialog">
-            <Border Width="640" Padding="24" VerticalAlignment="Center" HorizontalAlignment="Center"
-                    Background="{StaticResource SurfaceBrush}" CornerRadius="8">
-                <StackPanel>
-                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="选择需要锁定用图的输出实例" />
-                    <TextBlock Margin="0,8,0,12" Style="{StaticResource CaptionTextStyle}" TextWrapping="Wrap"
-                               Text="仅修改选中的实例。列表来自已登记的本款素材与颜色事实；确认后保存此实例的选图，生成时冻结。" />
-                    <ComboBox ItemsSource="{Binding InstanceSelectionTargets}" SelectedItem="{Binding SelectedInstanceTarget}"
-                              DisplayMemberPath="Label" AutomationProperties.AutomationId="InstanceSelectionTarget" />
-                    <TextBlock Margin="0,8,0,0" Style="{StaticResource CaptionTextStyle}"
-                               Text="{Binding SelectedInstanceTarget.Label, StringFormat=当前选图：{0}}" TextWrapping="Wrap" />
-                    <TextBlock Style="{StaticResource CaptionTextStyle}" Text="已保存的选图只作用于当前实例。" />
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-                        <Button Content="取消" Margin="0,0,8,0" Style="{StaticResource GhostButtonStyle}" Command="{Binding CancelInstanceSelectionCommand}" />
-                        <Button Content="确认此实例" Style="{StaticResource PrimaryButtonStyle}" Command="{Binding ConfirmInstanceSelectionCommand}"
-                                AutomationProperties.AutomationId="ConfirmInstanceSelection" />
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-        </Border>
     </Grid>
 </UserControl>

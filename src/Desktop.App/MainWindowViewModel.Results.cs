@@ -26,18 +26,15 @@ public sealed partial class MainWindowViewModel : IResultReviewPageHost
 
     void IResultReviewHost.ShowDetails()
     {
-        _batchScreen = BatchWorkspaceScreen.ResultDetail;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.ResultDetail);
     }
     void IResultReviewHost.ShowOverview()
     {
-        _batchScreen = BatchWorkspaceScreen.ResultOverview;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.ResultOverview);
     }
     void IResultReviewHost.ShowPreflight()
     {
-        _batchScreen = BatchWorkspaceScreen.AiAnalysis;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.AiAnalysis);
     }
     void IResultReviewHost.NotifyDetailSelectionChanged() => OnPropertyChanged(nameof(IsResultDetailVisible));
     void IResultReviewHost.RefreshGenerationCommand() =>

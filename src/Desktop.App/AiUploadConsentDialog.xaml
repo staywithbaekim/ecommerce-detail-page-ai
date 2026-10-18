@@ -9,7 +9,6 @@
              >
     <Grid>
         <Grid Grid.Row="0"
-              Panel.ZIndex="40"
               Background="{StaticResource ModalOverlayBrush}"
               Visibility="{Binding IsAiUploadConsentDialogVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
               KeyboardNavigation.TabNavigation="Cycle"

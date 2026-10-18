@@ -348,7 +348,5 @@
             <local:TemplateRuleWorkbenchControl DataContext="{Binding Coordinator}" Visibility="{Binding IsRuleWorkbenchVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
         </Grid>
         
-        <local:TemplateConfirmationDialog />
-        <local:DuplicateReviewDialog />
     </Grid>
 </UserControl>

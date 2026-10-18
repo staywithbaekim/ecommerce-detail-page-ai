@@ -7,6 +7,39 @@ namespace Desktop.App.UiTests;
 public sealed class SizeTableEditorViewModelTests
 {
     [Fact]
+    public async Task NavigationInvalidatesLateSizeEditorLoad()
+    {
+        var deferred = new TaskCompletionSource<SizeTableEditorLoadResult>();
+        var workflow = new EditingWorkflow { LoadOverride = () => deferred.Task };
+        using var editor = new SizeTableEditorViewModel(workflow, new EditorHost());
+        var open = typeof(SizeTableEditorViewModel).GetMethod("OpenSizeTableEditorAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var pending = Assert.IsAssignableFrom<Task>(open.Invoke(editor, [Page()]));
+        Assert.True(editor.IsOpening);
+        editor.ClosePageDialogs();
+        deferred.SetResult(new(SizeTableEditorLoadStatus.Loaded, EditingWorkflow.Document, null));
+        await pending;
+        Assert.False(editor.IsOpening);
+        Assert.False(editor.IsSizeTableEditorVisible);
+        Assert.Null(editor.SizeTableEditor.SourceDocument);
+        Assert.Null(workflow.LastSave);
+    }
+
+    [Fact]
+    public void NavigationDismissesBusyEditorWithoutInterruptingSaveOrClearingDraft()
+    {
+        var workflow = new EditingWorkflow();
+        using var editor = new SizeTableEditorViewModel(workflow, new EditorHost());
+        editor.OpenSizeTableEditorCommand.Execute(Page());
+        editor.SizeTableEditor.Rows[0].Cells[1].SourceText = "62";
+        editor.SizeTableEditor.IsSaving = true;
+        editor.ClosePageDialogs();
+        Assert.False(editor.IsSizeTableEditorVisible);
+        Assert.True(editor.SizeTableEditor.IsSaving);
+        Assert.Equal("62", editor.SizeTableEditor.Rows[0].Cells[1].SourceText);
+        Assert.Null(workflow.LastSave);
+    }
+    [Fact]
     public void PublicOutputFrozenPlanExplainsEditingBoundaryWithoutOpeningEditor()
     {
         var workflow = new EditingWorkflow();
@@ -176,7 +209,8 @@ public sealed class SizeTableEditorViewModelTests
 
     private sealed class EditingWorkflow : ISizeTableEditingWorkflow
     {
-        private static SizeTableEditorDocument Document => new(
+        public Func<Task<SizeTableEditorLoadResult>>? LoadOverride { get; init; }
+        public static SizeTableEditorDocument Document => new(
             "table_size", "batch_size", "style_size", "page_size", "asset_size",
             "sha256:" + new string('a', 64), 3, SizeTableEditorStatus.Valid,
             [new("col_1", "尺码"), new("col_2", "衣长")],
@@ -190,6 +224,7 @@ public sealed class SizeTableEditorViewModelTests
             string batchId, string styleId, string pageId, CancellationToken cancellationToken)
         {
             Assert.Equal(("batch_size", "style_size", "page_size"), (batchId, styleId, pageId));
+            if (LoadOverride is not null) return LoadOverride();
             return Task.FromResult(new SizeTableEditorLoadResult(
                 LoadStatus, LoadStatus == SizeTableEditorLoadStatus.Loaded ? Document : null, null));
         }

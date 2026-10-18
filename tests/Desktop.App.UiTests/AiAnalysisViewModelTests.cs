@@ -7,6 +7,83 @@ public sealed class AiAnalysisViewModelTests
 {
     private static readonly string[] ControlCalls = ["start:batch_1", "pause:batch_1", "resume:batch_1", "refresh:batch_1"];
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NavigationInvalidatesLateConsentReads(bool referenceLearning)
+    {
+        var deferred = new TaskCompletionSource<AiUploadConsentRecord?>();
+        var workflow = new Workflow { ConsentReadOverride = () => deferred.Task };
+        var host = new Host();
+        using var page = new AiAnalysisViewModel(workflow, host);
+        var pending = referenceLearning ? page.EnsureAiUploadConsentForReferenceLearningAsync() : page.EnsureAiUploadConsentForScanAsync();
+        page.ClosePageDialogs();
+        deferred.SetResult(null);
+        Assert.False(await pending);
+        Assert.False(page.IsAiUploadConsentDialogVisible);
+        Assert.False(page.IsBatchScanConsentPending);
+        Assert.False(page.IsReferenceLearningConsentPending);
+        Assert.Equal(0, workflow.Grants + host.Scans + host.ReferenceStarts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NavigationDuringExplicitConsentGrantDoesNotResumeOldPage(bool referenceLearning)
+    {
+        var deferred = new TaskCompletionSource<AiUploadConsentRecord>();
+        var workflow = new Workflow { ConsentGrantOverride = () => deferred.Task };
+        var host = new Host();
+        using var page = new AiAnalysisViewModel(workflow, host);
+        if (referenceLearning) await page.EnsureAiUploadConsentForReferenceLearningAsync();
+        else await page.EnsureAiUploadConsentForScanAsync();
+        page.AiUploadConsentAcknowledged = true;
+        var pending = page.ConfirmAiUploadConsentAsync();
+        page.ClosePageDialogs();
+        deferred.SetResult(new(AiConsentScopes.AnalysisCopy, "consent", AiUploadConsentState.Granted,
+            AiConsentPolicy.Version, DateTimeOffset.UnixEpoch));
+        await pending;
+        Assert.Equal(1, workflow.Grants);
+        Assert.True(page.IsAiUploadConsentGranted);
+        Assert.False(page.IsAiUploadConsentDialogVisible);
+        Assert.False(page.AiUploadConsentAcknowledged);
+        Assert.Equal(0, host.Scans + host.ReferenceStarts);
+    }
+
+    [Fact]
+    public async Task NavigationInvalidatesLateInstanceReviewWithoutFallingBackToLegacyLock()
+    {
+        var deferred = new TaskCompletionSource<TemplateInstanceSelectionReview?>();
+        var workflow = new Workflow { InstanceReviewOverride = () => deferred.Task };
+        using var page = new AiAnalysisViewModel(workflow, new Host());
+        var candidate = new AiCandidateViewModel(new("batch_1", "style_1", "frame", "asset_1", "fixture.png", 1, 0.9m, [], false, "frame"));
+        var pending = page.TryLockAiSelectionAsync(candidate);
+        page.ClosePageDialogs();
+        deferred.SetResult(new("batch_1", "style_1", "frame", "asset_1", 1, "digest", [new("instance", "实例", "asset_1", 0)]));
+        await pending;
+        Assert.False(page.IsInstanceSelectionVisible);
+        Assert.Null(page.SelectedInstanceTarget);
+        Assert.Null(workflow.InstanceCommand);
+        Assert.Empty(workflow.Calls);
+    }
+
+    [Fact]
+    public async Task NavigationClearsOpenInstanceSelectionWithoutConfirmingIt()
+    {
+        var workflow = new Workflow { InstanceReview = new("batch_1", "style_1", "frame", "asset_1", 1,
+            "digest", [new("instance", "实例", "asset_1", 0)]) };
+        using var page = new AiAnalysisViewModel(workflow, new Host());
+        await page.TryLockAiSelectionAsync(new(new("batch_1", "style_1", "frame", "asset_1", "fixture.png", 1, 0.9m, [], false, "frame")));
+        Assert.True(page.IsInstanceSelectionVisible);
+        page.ClosePageDialogs();
+        Assert.False(page.IsInstanceSelectionVisible);
+        Assert.Empty(page.InstanceSelectionTargets);
+        Assert.Null(page.SelectedInstanceTarget);
+        page.ConfirmInstanceSelectionCommand.Execute(null);
+        Assert.Null(workflow.InstanceCommand);
+        Assert.Empty(workflow.Calls);
+    }
+
     [Fact]
     public async Task MissingCredentialStopsBothConsentFlowsBeforeWorkflowCalls()
     {
@@ -229,10 +306,13 @@ public sealed class AiAnalysisViewModelTests
 
     private sealed class Workflow : IAiBatchAnalysisWorkflow, ITemplateInstanceSelectionWorkflow
     {
+        public Func<Task<AiUploadConsentRecord?>>? ConsentReadOverride { get; init; }
+        public Func<Task<AiUploadConsentRecord>>? ConsentGrantOverride { get; init; }
+        public Func<Task<TemplateInstanceSelectionReview?>>? InstanceReviewOverride { get; init; }
         public TemplateInstanceSelectionReview? InstanceReview { get; init; }
         public TemplateInstanceSelectionCommand? InstanceCommand { get; private set; }
         public Task<TemplateInstanceSelectionReview?> ReviewInstanceSelectionAsync(string batchId, string styleId, string frameId, string assetId, CancellationToken token)
-            => Task.FromResult(InstanceReview);
+            => InstanceReviewOverride?.Invoke() ?? Task.FromResult(InstanceReview);
         public Task LockInstanceSelectionAsync(TemplateInstanceSelectionCommand command, CancellationToken token)
         { InstanceCommand = command; return Task.CompletedTask; }
         private AiUploadConsentRecord? _consent;
@@ -257,9 +337,9 @@ public sealed class AiAnalysisViewModelTests
         public Task<AiBatchAnalysisProjection> AnalyzeSelectedAssetAsync(string batchId, string styleId, string assetId, bool includeSizeTableSource, CancellationToken token) => throw new NotSupportedException();
         public Task<AiRenderPlanPreparation> PrepareRenderingAsync(string batchId, CancellationToken token) => throw new NotSupportedException();
         public Task<AiUploadConsentRecord?> GetUploadConsentAsync(CancellationToken token)
-        { ConsentReads++; return Task.FromResult(_consent); }
+        { ConsentReads++; return ConsentReadOverride?.Invoke() ?? Task.FromResult(_consent); }
         public Task<AiUploadConsentRecord> GrantUploadConsentAsync(CancellationToken token)
-        { Grants++; return SetConsent(AiUploadConsentState.Granted); }
+        { Grants++; return ConsentGrantOverride?.Invoke() ?? SetConsent(AiUploadConsentState.Granted); }
         public Task<AiUploadConsentRecord> RevokeUploadConsentAsync(CancellationToken token) => SetConsent(AiUploadConsentState.Revoked);
         private Task<AiUploadConsentRecord> SetConsent(AiUploadConsentState state)
         {

@@ -38,15 +38,13 @@ public sealed partial class MainWindowViewModel : IBatchInputPageHost
     Task IBatchInputHost.LoadTemplateLibraryAsync() => LoadTemplateLibraryAsync();
     void IBatchInputHost.ShowBatchInput()
     {
-        _batchScreen = BatchWorkspaceScreen.BatchInput;
+        SetBatchScreen(BatchWorkspaceScreen.BatchInput);
         SelectedNavigationItem = NavigationItems.First(item => item.Key == "workbench");
-        NotifyBatchScreenChanged();
     }
 
     void IBatchInputHost.ShowWorkbench()
     {
-        _batchScreen = BatchWorkspaceScreen.Workbench;
-        NotifyBatchScreenChanged();
+        SetBatchScreen(BatchWorkspaceScreen.Workbench);
     }
 
     void IBatchInputHost.CreateTemplate()
@@ -120,6 +118,25 @@ public sealed partial class MainWindowViewModel : IBatchInputPageHost
         OnPropertyChanged(nameof(IsResultDetailVisible));
         OnPropertyChanged(nameof(IsPlaceholderVisible));
         AiAnalysisPageViewModel.NotifyShellViewChanged();
+    }
+
+    private void SetBatchScreen(BatchWorkspaceScreen screen)
+    {
+        if (_batchScreen != screen)
+        {
+            ClosePageDialogs();
+            _batchScreen = screen;
+        }
+        NotifyBatchScreenChanged();
+    }
+
+    private void ClosePageDialogs()
+    {
+        if (BatchInputState.IsPageSelectionVisible)
+            BatchInput.CancelBatchPageSelectionCommand.Execute(null);
+        AiAnalysisPageViewModel.ClosePageDialogs();
+        SizeTableEditorPage.ClosePageDialogs();
+        TemplateWorkspace.ClosePageDialogs();
     }
 
     private enum BatchWorkspaceScreen

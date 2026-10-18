@@ -21,7 +21,9 @@ public sealed partial class AiAnalysisViewModel
     private async Task<bool> BeginInstanceSelectionAsync(string batchId, string styleId, string frameId, string assetId)
     {
         if (_aiBatchWorkflow is not ITemplateInstanceSelectionWorkflow workflow) return false;
+        var dialogVersion = _pageDialogVersion;
         var review = await workflow.ReviewInstanceSelectionAsync(batchId, styleId, frameId, assetId, CancellationToken.None).ConfigureAwait(true);
+        if (dialogVersion != _pageDialogVersion) return true;
         if (review is null) return false; // Only legacy templates retain the original frame-wide command.
         if (review.Targets.Count == 0)
         {

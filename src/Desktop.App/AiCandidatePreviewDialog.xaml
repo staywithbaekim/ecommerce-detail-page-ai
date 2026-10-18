@@ -9,7 +9,6 @@
              >
     <Grid>
         <Grid Grid.Row="0"
-              Panel.ZIndex="41"
               Background="{StaticResource ModalOverlayBrush}"
               Visibility="{Binding IsAiCandidatePreviewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
               KeyboardNavigation.TabNavigation="Cycle"
